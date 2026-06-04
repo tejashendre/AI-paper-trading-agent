@@ -946,7 +946,7 @@ function DashboardContent({ secret }: { secret: string }) {
                     const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
                     const pnl = isShort 
                       ? (pos.entryPrice - currentPrice) * pos.amount 
-                      : (pos.amount * currentPrice) - pos.usdInvested;
+                      : (currentPrice - pos.entryPrice) * pos.amount;
                     const pnlPercent = (pnl / pos.usdInvested) * 100;
                     
                     return (
@@ -1277,7 +1277,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
                       const pnl = isShort 
                         ? (pos.entryPrice - currentPrice) * pos.amount 
-                        : (pos.amount * currentPrice) - pos.usdInvested;
+                        : (currentPrice - pos.entryPrice) * pos.amount;
                       const pnlPercent = (pnl / pos.usdInvested) * 100;
                       
                       return (

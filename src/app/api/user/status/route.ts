@@ -38,12 +38,10 @@ export async function GET(request: Request) {
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
                         const isShort = pos.direction === 'SHORT';
-                        if (isShort) {
-                            const pnl = (pos.entryPrice - currentPrice) * pos.amount;
-                            return pos.usdInvested + pnl;
-                        } else {
-                            return pos.amount * currentPrice;
-                        }
+                        const pnl = isShort
+                            ? (pos.entryPrice - currentPrice) * pos.amount
+                            : (currentPrice - pos.entryPrice) * pos.amount;
+                        return pos.usdInvested + pnl;
                     };
 
                     if (portfolio.openPositions?.[asset]) {
@@ -129,7 +127,7 @@ export async function GET(request: Request) {
                     const isShort = pos.direction === 'SHORT';
                     return isShort
                         ? (pos.entryPrice - currentPrice) * pos.amount
-                        : (pos.amount * currentPrice) - pos.usdInvested;
+                        : (currentPrice - pos.entryPrice) * pos.amount;
                 };
 
                 const openUnrealized = calculateUnrealized(portfolio.openPositions?.[asset]);
