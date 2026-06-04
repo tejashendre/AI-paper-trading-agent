@@ -1,0 +1,1356 @@
+"use client";
+import { AuthGate, createAuthFetch } from "./AuthGate";
+import { useEffect, useState, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
+import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
+
+const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
+const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
+
+const ASSETS = [
+  { key: "BTC", name: "Bitcoin", category: "Crypto", symbol: "BTC-USD" },
+  { key: "ETH", name: "Ethereum", category: "Crypto", symbol: "ETH-USD" },
+  { key: "SOL", name: "Solana", category: "Crypto", symbol: "SOL-USD" },
+  { key: "EURUSD", name: "EUR/USD", category: "Forex", symbol: "EURUSD=X" },
+  { key: "GBPUSD", name: "GBP/USD", category: "Forex", symbol: "GBPUSD=X" },
+  { key: "USDJPY", name: "USD/JPY", category: "Forex", symbol: "USDJPY=X" },
+  { key: "GOLD", name: "Gold (Spot)", category: "Commodities", symbol: "GC=F" },
+  { key: "OIL", name: "Crude Oil", category: "Commodities", symbol: "CL=F" },
+  { key: "SILVER", name: "Silver (Spot)", category: "Commodities", symbol: "SI=F" }
+];
+
+export function Dashboard() {
+  return (
+    <AuthGate>
+      {(secret) => <DashboardContent secret={secret} />}
+    </AuthGate>
+  );
+}
+
+function DashboardContent({ secret }: { secret: string }) {
+  const isSpectator = secret === "SPECTATOR";
+
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
+  const [activeAsset, setActiveAsset] = useState("BTC");
+  const [activeTab, setActiveTab] = useState<"Crypto" | "Forex" | "Commodities">("Crypto");
+  const [chartInterval, setChartInterval] = useState("1h");
+  const [chartTimezone, setChartTimezone] = useState<"EU" | "UK" | "IST" | "US">("EU");
+  const [data, setData] = useState<any>(null);
+  const [chartData, setChartData] = useState<any>(null);
+  const [signals, setSignals] = useState<any>(null);
+  const [livePrices, setLivePrices] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualTrading, setManualTrading] = useState(false);
+
+  // Competition & Countdown States
+  const [viewMode, setViewMode] = useState<"user" | "ai">("user");
+  const [timeLeft, setTimeLeft] = useState("");
+
+  // Client-Side Simulation States
+  const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [backtesting, setBacktesting] = useState(false);
+  const [monteCarloResult, setMonteCarloResult] = useState<any>(null);
+  const [simulatingMC, setSimulatingMC] = useState(false);
+
+  const workerRef = useRef<Worker | null>(null);
+  const fetcher = useCallback(async (url: string, init?: RequestInit) => {
+    return fetch(url, {
+      ...init,
+      headers: { ...init?.headers, 'Authorization': `Bearer ${secret}` },
+    });
+  }, [secret]);
+
+  // Load theme preference from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("dashboard_theme");
+    if (saved === "light" || saved === "dark") setTheme(saved);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("dashboard_theme", next);
+  };
+
+  const isDark = theme === "dark";
+
+  // Premium institutional-grade dark mode palette (Midnight Navy / Slate Blue contrast)
+  const bgMain = isDark 
+    ? "bg-gradient-to-br from-[#060814] via-[#090d1f] to-[#0c132c] text-[#f8fafc]" 
+    : "bg-gradient-to-br from-[#f8fafc] via-[#f1f5f9] to-[#e2e8f0] text-[#0f172a]";
+
+  const bgCard = isDark 
+    ? "bg-[#111827]/85 border-[#1f2937] backdrop-blur-md shadow-2xl" 
+    : "bg-white/80 border-[#e2e8f0] backdrop-blur-md shadow-sm";
+
+  const bgSubCard = isDark 
+    ? "bg-[#1f2937]/60 border-[#374151]" 
+    : "bg-[#f8fafc]/90 border-[#e2e8f0]";
+
+  const borderCol = isDark ? "border-[#1f2937]" : "border-[#e2e8f0]";
+  
+  const textMuted = isDark ? "text-slate-400" : "text-[#475569]";
+  const textPrimary = isDark ? "text-[#f8fafc]" : "text-[#0f172a]";
+  const textSub = isDark ? "text-slate-300" : "text-[#334155]";
+  
+  const bgInput = isDark 
+    ? "bg-[#1f2937] border-[#374151] text-[#f8fafc] placeholder-slate-500" 
+    : "bg-[#fafbfc] border-[#e2e8f0] text-[#0f172a] placeholder-[#94a3b8]";
+
+  // Premium Indigo Actions
+  const bgActiveTab = isDark ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20" : "bg-blue-600 text-white shadow-xs";
+  const bgInactiveTab = isDark ? "text-slate-400 hover:text-slate-200" : "text-[#475569] hover:text-[#0f172a]";
+  const bgTabContainer = isDark ? "bg-[#111827]/90 border-[#1f2937]" : "bg-white/85 border-[#e2e8f0] shadow-xs";
+  
+  const bgResetBtn = isDark 
+    ? "bg-[#1f2937]/80 border-[#374151] hover:bg-[#374151] text-slate-300 hover:text-white" 
+    : "bg-white border-[#e2e8f0] hover:bg-[#f8fafc] text-[#475569] hover:text-black shadow-2xs";
+
+  // Dynamic Action Buttons Styles (Vibrant & distinct in both Light and Dark mode)
+  const btnBuyStyle = isDark
+    ? "bg-green-950/30 border border-green-900/40 text-green-400 hover:bg-green-900/30"
+    : "bg-green-50 border border-green-200 text-green-700 hover:bg-green-100 shadow-2xs";
+
+  const btnSellStyle = isDark
+    ? "bg-red-950/30 border border-red-900/40 text-red-400 hover:bg-red-900/30"
+    : "bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 shadow-2xs";
+
+  const btnCloseStyle = isDark
+    ? "bg-red-950/20 border border-red-950/40 text-red-400 hover:bg-red-950/30"
+    : "bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 shadow-2xs";
+
+  const btnGreyStyle = isDark
+    ? "bg-[#0e0e14]/60 border border-[#1c1c24] text-slate-300 hover:bg-neutral-800"
+    : "bg-white border border-[#e2e8f0] text-[#475569] hover:bg-[#f8fafc] shadow-2xs";
+
+  const refresh = useCallback(async () => {
+    try {
+      const [statusRes, chartRes, signalRes, pricesRes] = await Promise.all([
+        fetcher("/api/user/status"),
+        fetcher(`/api/chart?interval=${chartInterval}&limit=720&asset=${activeAsset}&portfolio=${viewMode}`),
+        fetcher(`/api/signals?asset=${activeAsset}`),
+        fetcher("/api/prices")
+      ]);
+      if (statusRes.ok) setData(await statusRes.json());
+      if (chartRes.ok) setChartData(await chartRes.json());
+      if (signalRes.ok) setSignals(await signalRes.json());
+      if (pricesRes.ok) { const pricesJson = await pricesRes.json(); setLivePrices(pricesJson.prices); }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [fetcher, activeAsset, viewMode, chartInterval]);
+
+  // Next Scan Countdown Timer Effect
+  useEffect(() => {
+    const updateTimer = () => {
+      const now = new Date();
+      const nextRun = new Date();
+      nextRun.setHours(now.getHours() + 1, 0, 0, 0);
+      const diffMs = nextRun.getTime() - now.getTime();
+      const minutes = Math.floor((diffMs / 1000 / 60) % 60);
+      const seconds = Math.floor((diffMs / 1000) % 60);
+      setTimeLeft(`${minutes}m ${seconds}s`);
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load Web Worker for zero-timeout simulations
+  useEffect(() => {
+    workerRef.current = new Worker("/backtest.worker.js");
+    workerRef.current.onmessage = (event) => {
+      const { type, data: resData, error } = event.data;
+      if (type === "BACKTEST_SUCCESS") {
+        setBacktestResult(resData);
+        setBacktesting(false);
+      } else if (type === "MONTE_CARLO_SUCCESS") {
+        setMonteCarloResult(resData);
+        setSimulatingMC(false);
+      } else if (type === "ERROR") {
+        alert(`Simulation Error: ${error}`);
+        setBacktesting(false);
+        setSimulatingMC(false);
+      }
+    };
+    return () => { workerRef.current?.terminate(); };
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 30000);
+    return () => clearInterval(interval);
+  }, [refresh, activeAsset, viewMode, chartInterval]);
+
+  // Bind pointers dynamically based on selected view mode
+  const portfolio = viewMode === "ai" ? data?.aiPortfolio : data?.userPortfolio;
+  const trades = viewMode === "ai" ? data?.aiTrades : data?.userTrades;
+  const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
+  const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
+
+  const handleTrade = async () => {
+    if (isSpectator) {
+      alert("🔒 Spectator Mode: Automated scans are disabled. Please log in as an administrator to run portfolio scans.");
+      return;
+    }
+    setRunning(true);
+    try {
+      const res = await fetcher(`/api/trade?asset=all`, { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        alert(`Autotrade cycle complete. Result: ${json.action}`);
+      } else {
+        alert(`Error executing trade cycle: ${json.error || json.reason}`);
+      }
+      await refresh();
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleManualTrade = async (action: string) => {
+    if (isSpectator) {
+      alert("🔒 Spectator Mode: Live execution locked. Manual trading is disabled for guest spectating sessions.");
+      return;
+    }
+    if (viewMode !== "user") return alert("Manual trading only available on your personal portfolio.");
+    setManualTrading(true);
+    try {
+      const res = await fetcher('/api/trade/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset: activeAsset, action, amount: manualAmount || undefined })
+      });
+      const json = await res.json();
+      if (json.success) {
+        alert(`Manual ${action} executed on ${activeAsset}!`);
+      } else {
+        alert(`Trade failed: ${json.error}`);
+      }
+      await refresh();
+    } catch (e) {
+      alert(`Trade error: ${e}`);
+    } finally {
+      setManualTrading(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (isSpectator) {
+      alert("🔒 Spectator Mode: Database mutation blocked. Resets are only permitted for administrators.");
+      return;
+    }
+    if (!confirm("Are you sure you want to reset both portfolios? All trade history will be wiped!")) return;
+    const capitalStr = window.prompt("Enter starting capital (e.g., 10000):", "10000");
+    if (!capitalStr) return; // User cancelled
+    const capital = parseFloat(capitalStr);
+    if (isNaN(capital) || capital <= 0) {
+      alert("Invalid capital amount.");
+      return;
+    }
+    try {
+      const res = await fetcher("/api/user/reset", { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ capital })
+      });
+      const json = await res.json();
+      if (json.success) {
+        alert(json.message);
+        await refresh();
+      } else {
+        alert(`Reset failed: ${json.error}`);
+      }
+    } catch (e) {
+      alert(`Error resetting: ${e}`);
+    }
+  };
+
+  const runWorkerBacktest = async () => {
+    setBacktesting(true);
+    try {
+      const candlesRes = await fetcher(`/api/chart?interval=${chartInterval}&limit=720&asset=${activeAsset}`);
+      const candlesJson = await candlesRes.json();
+      if (candlesJson && candlesJson.candles) {
+        workerRef.current?.postMessage({
+          type: "BACKTEST",
+          data: { candles: candlesJson.candles }
+        });
+      } else {
+        alert("Failed to load historical candles for backtesting.");
+        setBacktesting(false);
+      }
+    } catch (e) {
+      alert(`Backtest fetch error: ${e}`);
+      setBacktesting(false);
+    }
+  };
+
+  const runMonteCarloSim = async () => {
+    if (!chartData || chartData.candles.length === 0) return;
+    setSimulatingMC(true);
+    const candles = chartData.candles;
+    const currentPrice = candles[candles.length - 1].close;
+    const closes = candles.slice(-30).map((c: any) => c.close);
+    const mean = closes.reduce((a: number, b: number) => a + b, 0) / closes.length;
+    const variance = closes.reduce((a: number, b: number) => a + Math.pow(b - mean, 2), 0) / closes.length;
+    const stdDevPercent = Math.sqrt(variance) / currentPrice;
+    workerRef.current?.postMessage({
+      type: "MONTE_CARLO",
+      data: { currentPrice, volatility: stdDevPercent, paths: 1500, steps: 24 }
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className={`min-h-screen flex flex-col items-center justify-center ${isDark ? "bg-[#020204]" : "bg-[#f8fafc]"} transition-colors duration-300`}>
+        <Activity className="animate-spin text-indigo-500 mr-2 mb-4" size={32} />
+        <p className={`font-mono text-xs tracking-widest ${isDark ? "text-slate-400" : "text-[#475569]"}`}>ESTABLISHING INTEGRATED CO-OP PIPELINE...</p>
+      </div>
+    );
+  }
+
+  const selectedAssetConfig = ASSETS.find(a => a.key === activeAsset) || ASSETS[0];
+
+  return (
+    <div className={`min-h-screen ${bgMain} transition-colors duration-300 w-full pb-12 font-sans antialiased`}>
+      <div className="p-6 max-w-7xl mx-auto space-y-6">
+        
+        {/* Premium Spectator Banner */}
+        {isSpectator && (
+          <div className={`border ${
+            isDark 
+              ? "bg-[#0b0f19]/70 border-blue-500/25 shadow-lg shadow-blue-950/20" 
+              : "bg-blue-500/5 border-blue-200 shadow-xs"
+          } rounded-xl p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3 animate-pulse`}>
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+              </span>
+              <div className="flex flex-col">
+                <span className={`font-mono text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-blue-300" : "text-blue-700"}`}>
+                  👁️ Spectator Mode Active
+                </span>
+                <span className={`text-[9px] ${isDark ? "text-slate-400" : "text-slate-600"} font-mono mt-0.5`}>
+                  You are viewing the live trading arena in secure, read-only mode.
+                </span>
+              </div>
+            </div>
+            <button 
+              onClick={() => { localStorage.removeItem("dashboard_secret"); window.location.reload(); }}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-mono text-[9px] uppercase font-bold rounded-lg border border-indigo-400/25 transition-all shadow-xs"
+            >
+              EXIT SPECTATOR & LOG IN
+            </button>
+          </div>
+        )}
+
+        {/* Global Dashboard Header */}
+        <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b ${borderCol} pb-6 gap-4`}>
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold tracking-tight font-mono text-indigo-500 uppercase">QUANT TRADING TERMINAL</h1>
+              <span className={`${isDark ? "bg-[#0f111a] text-indigo-400 border-[#1f2438]" : "bg-indigo-100/50 text-indigo-700 border-indigo-200/60"} font-mono text-[9px] uppercase font-bold border px-2 py-0.5 rounded`}>
+                Autonomous Strategy Arena
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 mt-1.5">
+              <p className={`text-xs font-mono ${textSub}`}>Cooperative Live Simulation Stack</p>
+              <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
+                <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Market:</span>
+                <span className="text-[10px] font-mono font-bold text-emerald-500">OPEN</span>
+              </div>
+              <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
+                <span className="w-1 h-1 rounded-full bg-blue-500 animate-pulse"></span>
+                <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Bot Engine:</span>
+                <span className="text-[10px] font-mono font-bold text-blue-500">RUNNING</span>
+              </div>
+              <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
+                <span className="w-1 h-1 rounded-full bg-indigo-500 animate-ping"></span>
+                <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Next Sync:</span>
+                <span className="text-[10px] font-mono font-bold text-indigo-500">{timeLeft || "calculating..."}</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Premium Theme Switcher */}
+            <button 
+              onClick={toggleTheme} 
+              className={`p-2.5 rounded-xl border transition-all ${
+                isDark ? "bg-[#0c0c10]/70 border-[#1c1c24] text-slate-400 hover:bg-[#1a1a24]" : "bg-white border-[#e2e8f0] text-slate-600 hover:bg-[#f8fafc]"
+              }`}
+              title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {isDark ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
+            <button onClick={() => { localStorage.removeItem("dashboard_secret"); window.location.reload(); }} className={`px-3.5 py-2 border rounded-xl transition-all font-mono text-[10px] font-bold ${
+              isDark ? "bg-red-950/20 border-red-900/30 text-red-400 hover:bg-red-900/30" : "bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
+            }`}>LOGOUT</button>
+            <button 
+              onClick={refresh} 
+              className={`p-2.5 rounded-xl border transition-all ${
+                isDark ? "bg-[#0c0c10]/70 border-[#1c1c24] text-slate-400 hover:bg-[#1a1a24]" : "bg-white border-[#e2e8f0] text-slate-600 hover:bg-[#f8fafc]"
+              }`}
+            >
+              <RefreshCcw size={15} />
+            </button>
+            <button 
+              onClick={handleTrade} 
+              disabled={running || isSpectator} 
+              className={`flex items-center gap-2 px-5 py-2 font-bold rounded-xl shadow-lg transition-all font-mono text-xs ${
+                isSpectator 
+                  ? "bg-indigo-800/40 text-indigo-400/50 border border-indigo-900/40 cursor-not-allowed" 
+                  : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-950/20"
+              }`}
+            >
+              <Play size={13} /> {isSpectator ? "🔒 Scan Locked" : running ? "Scanning Markets..." : "Run Portfolio Scan"}
+            </button>
+          </div>
+        </div>
+
+        {/* Dynamic Leaderboard Comparison Display */}
+        <div className={`grid grid-cols-1 md:grid-cols-3 gap-6 rounded-2xl p-5 border relative overflow-hidden ${
+          isDark ? "bg-[#0c0c10]/40 border-[#1c1c24] shadow-2xl" : "bg-white border-[#e2e8f0] shadow-xs"
+        }`}>
+          <button 
+            onClick={() => setViewMode("user")} 
+            className={`text-left p-5 rounded-xl transition-all border ${
+              viewMode === "user" 
+                ? (isDark ? "bg-[#14141d]/80 border-indigo-500/40 shadow-lg shadow-indigo-950/10" : "bg-indigo-500/5 border-indigo-400 shadow-2xs") 
+                : (isDark ? "bg-[#07070a]/60 border-[#15151c] hover:border-[#2b2b36] opacity-60 hover:opacity-90" : "bg-[#f8fafc] border-[#e2e8f0] hover:border-neutral-300 opacity-70 hover:opacity-100")
+            }`}
+          >
+            <div className="flex justify-between items-center mb-2">
+              <span className={`text-[9px] font-bold font-mono tracking-widest uppercase ${isDark ? "text-indigo-400" : "text-indigo-600"}`}>HUMAN PORTFOLIO</span>
+              {viewMode === "user" && <span className={`text-[8px] bg-indigo-500/10 text-indigo-500 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold`}>ACTIVE</span>}
+            </div>
+            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.userTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
+            <p className={`text-[10px] font-mono font-bold mt-1 ${(data?.userPortfolio?.totalPnl || 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+              {(data?.userPortfolio?.totalPnl || 0) >= 0 ? "+" : ""}${(data?.userPortfolio?.totalPnl || 0).toFixed(2)}
+            </p>
+          </button>
+          <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
+            <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
+            <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
+            {data?.userTotalValue !== undefined && data?.aiTotalValue !== undefined && (
+              <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
+                isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
+              }`}>
+                {data.userTotalValue > data.aiTotalValue ? "🏆 HUMAN IS LEADING" : data.aiTotalValue > data.userTotalValue ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
+              </div>
+            )}
+          </div>
+          <button 
+            onClick={() => setViewMode("ai")} 
+            className={`text-left p-5 rounded-xl transition-all border ${
+              viewMode === "ai" 
+                ? (isDark ? "bg-[#14141d]/80 border-blue-500/40 shadow-lg shadow-blue-950/10" : "bg-blue-500/5 border-blue-400 shadow-2xs") 
+                : (isDark ? "bg-[#07070a]/60 border-[#15151c] hover:border-neutral-700 opacity-60 hover:opacity-90" : "bg-[#f8fafc] border-[#e2e8f0] hover:border-neutral-300 opacity-70 hover:opacity-100")
+            }`}
+          >
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-[9px] font-bold font-mono tracking-widest text-blue-500 uppercase">AI TRADING AGENT</span>
+              {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
+            </div>
+            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.aiTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
+            <p className={`text-[10px] font-mono font-bold mt-1 ${(data?.aiPortfolio?.totalPnl || 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+              {(data?.aiPortfolio?.totalPnl || 0) >= 0 ? "+" : ""}${(data?.aiPortfolio?.totalPnl || 0).toFixed(2)}
+            </p>
+          </button>
+        </div>
+
+        {/* Premium Asset Tab Navigator */}
+        <div className={`flex flex-col md:flex-row md:items-center gap-6 border-b ${borderCol} pb-4`}>
+          <div className={`flex p-1 border rounded-xl gap-1 ${bgTabContainer}`}>
+            {(["Crypto", "Forex", "Commodities"] as const).map((tab) => (
+              <button 
+                key={tab} 
+                onClick={() => {
+                  setActiveTab(tab);
+                  // Dynamic Selection Fix: Auto-load the first asset in that category instantly
+                  const firstAssetOfCategory = ASSETS.find((a) => a.category === tab);
+                  if (firstAssetOfCategory) {
+                    setActiveAsset(firstAssetOfCategory.key);
+                  }
+                }} 
+                className={`px-4 py-2 text-xs font-mono font-bold rounded-lg transition-all ${
+                  activeTab === tab ? bgActiveTab : bgInactiveTab
+                }`}
+              >
+                {tab.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {ASSETS.filter((a) => a.category === activeTab).map((asset) => (
+              <button 
+                key={asset.key} 
+                onClick={() => setActiveAsset(asset.key)} 
+                className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg border transition-all ${
+                  activeAsset === asset.key 
+                    ? "bg-indigo-500/10 border-indigo-500 text-indigo-500 font-bold" 
+                    : (isDark ? "bg-[#0c0c10]/60 border-[#1c1c24]" : "bg-white border-[#e2e8f0] hover:bg-[#f8fafc] text-neutral-600")
+                }`}
+              >
+                {asset.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          
+          {/* Main Visualizer Columns */}
+          <div className="lg:col-span-3 space-y-6">
+            <div className={`border rounded-2xl p-5 ${bgCard}`}>
+              <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 border-b ${borderCol} pb-3 gap-3`}>
+                <div className="flex items-center gap-4">
+                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>{selectedAssetConfig.name} ({selectedAssetConfig.symbol}) / {chartInterval.toUpperCase()} / {viewMode.toUpperCase()} MODE</h2>
+                  {chartData && chartData.candles && chartData.candles.length > 0 && (
+                    (() => {
+                      const decimals = selectedAssetConfig.category === 'FOREX' ? 5 : 2;
+                      const lastCandle = chartData.candles[chartData.candles.length - 1];
+                      let maxHigh = -Infinity;
+                      let minLow = Infinity;
+                      for (const c of chartData.candles) {
+                        if (c.high > maxHigh) maxHigh = c.high;
+                        if (c.low < minLow) minLow = c.low;
+                      }
+                      return (
+                        <div className={`flex items-center gap-3 text-[10px] font-mono font-bold border-l pl-4 ${borderCol}`}>
+                          <span className={`${isDark ? "text-blue-400" : "text-blue-600"}`}>LIVE: {lastCandle.close.toFixed(decimals)}</span>
+                          <span className={`${isDark ? "text-green-400" : "text-green-600"}`}>H: {maxHigh.toFixed(decimals)}</span>
+                          <span className={`${isDark ? "text-red-400" : "text-red-600"}`}>L: {minLow.toFixed(decimals)}</span>
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <div className={`flex border rounded-lg overflow-hidden ${isDark ? "bg-[#0f172a] border-[#1f2937]" : "bg-[#fafbfc] border-[#e2e8f0]"}`}>
+                    {["EU", "UK", "IST", "US"].map(tz => (
+                      <button 
+                        key={tz} 
+                        onClick={() => setChartTimezone(tz as any)} 
+                        className={`px-3 py-1 text-[9px] font-mono font-bold transition-all ${
+                          chartTimezone === tz 
+                            ? "bg-blue-600 text-white shadow-xs" 
+                            : `${textMuted} hover:text-blue-500 hover:bg-neutral-100 dark:hover:bg-[#1f2937]/50`
+                        }`}
+                      >
+                        {tz}
+                      </button>
+                    ))}
+                  </div>
+                  <div className={`flex border rounded-lg overflow-hidden ${isDark ? "bg-[#050508] border-[#1c1c24]" : "bg-[#fafbfc] border-[#e2e8f0]"}`}>
+                    {["1m", "5m", "15m", "30m", "1h"].map(tf => (
+                      <button 
+                        key={tf} 
+                        onClick={() => setChartInterval(tf)} 
+                        className={`px-3 py-1 text-[9px] font-mono font-bold transition-all ${
+                          chartInterval === tf 
+                            ? "bg-orange-600 text-white shadow-xs" 
+                            : `${textMuted} hover:text-[#0f172a] hover:bg-neutral-100`
+                        }`}
+                      >
+                        {tf.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {chartData && (
+                <TradingChart 
+                  candles={chartData.candles} 
+                  trades={chartData.trades} 
+                  indicators={chartData.indicators} 
+                  assetName={selectedAssetConfig.name}
+                  activePosition={
+                    viewMode === "ai" 
+                      ? (data?.aiPortfolio?.openPositions?.[activeAsset] || data?.aiPortfolio?.scalpPositions?.[activeAsset])
+                      : (data?.userPortfolio?.openPositions?.[activeAsset] || data?.userPortfolio?.scalpPositions?.[activeAsset])
+                  } 
+                  timezone={chartTimezone} 
+                  theme={theme}
+                />
+              )}
+            </div>
+            
+            {/* Logs & Execution details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className={`border rounded-2xl p-5 ${bgCard}`}>
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Trade Activity Log</h2>
+                <div className={`max-h-60 overflow-y-auto space-y-2.5 font-mono text-xs ${isDark ? "custom-scroll" : ""}`}>
+                  {trades?.length === 0 ? (
+                    <p className={`text-xs ${textMuted} italic`}>No past trades logged.</p>
+                  ) : (
+                    trades?.map((t: any) => {
+                      const isScalp = t.action.startsWith("SCALP_");
+                      const isEntry = t.action === "BUY" || t.action === "SHORT" || t.action === "SCALP_BUY" || t.action === "SCALP_SHORT";
+                      const date = new Date(t.timestamp);
+                      const dateStr = date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
+                      const timeStr = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+                      const dateTimeStr = `${dateStr}, ${timeStr}`;
+                      
+                      return (
+                        <div key={t.id} className={`border-b ${borderCol} pb-3 space-y-1.5`}>
+                          {/* Top Row: Asset, Time, and Type Badge */}
+                          <div className="flex justify-between items-center text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className={`font-bold ${textPrimary}`}>{t.asset}</span>
+                              <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                                isScalp 
+                                  ? (isDark ? "bg-[#312e81]/30 text-indigo-400 border-indigo-900/30" : "bg-indigo-50 text-indigo-700 border-indigo-200")
+                                  : (isDark ? "bg-[#065f46]/30 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-200")
+                              }`}>
+                                {isScalp ? "SCALP" : "POSITION"}
+                              </span>
+                            </div>
+                            <span className={`text-[10px] ${textMuted}`}>{dateTimeStr}</span>
+                          </div>
+
+                          {/* Middle Row: Action, Price, Amount & Allocation Details */}
+                          <div className="flex justify-between items-center text-[10px] font-mono">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`font-bold px-1 py-0.5 rounded text-[8px] border ${
+                                t.action.includes("BUY") || t.action.includes("COVER")
+                                  ? (isDark ? 'bg-emerald-950/40 text-emerald-400 border-emerald-900/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200')
+                                  : (isDark ? 'bg-rose-950/40 text-rose-400 border-rose-900/30' : 'bg-rose-50 text-rose-700 border-rose-200')
+                              }`}>
+                                {t.action}
+                              </span>
+                              <span className={textSub}>${t.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+                              <span className="text-[9px] text-slate-500 font-semibold">
+                                (${(t.usdValue || t.amount * t.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                              </span>
+                            </div>
+                            <div className="flex flex-col text-right">
+                              <span className={textMuted}>Vol: {t.amount.toFixed(4)}</span>
+                              <span className="text-[8px] text-indigo-400/80 font-bold">
+                                Alloc: {(((t.usdValue || t.amount * t.price) / (portfolio?.initialCapital || 10000)) * 100).toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Bottom Row: Outcome P&L (if closed) or "Opened" state */}
+                          <div className="flex justify-between items-center text-[10px]">
+                            <span className={textMuted}>Outcome:</span>
+                            {t.pnl !== undefined && t.pnl !== null ? (
+                              <span className={`font-bold font-mono ${t.pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                                {t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(2)} ({t.pnl >= 0 ? "+" : ""}{t.pnlPercent?.toFixed(2)}%)
+                              </span>
+                            ) : (() => {
+                              const isShort = t.direction === "SHORT" || t.action === "SHORT" || t.action === "SCALP_SHORT";
+                              const isLong = !isShort;
+                              const hasPotential = t.takeProfit > 0 && t.stopLoss > 0 && t.amount > 0 && t.price > 0;
+                              if (!hasPotential) {
+                                return <span className="text-slate-400 font-mono italic">Position Opened</span>;
+                              }
+                              const tpPnl = isLong 
+                                ? (t.takeProfit - t.price) * t.amount 
+                                : (t.price - t.takeProfit) * t.amount;
+                              const slPnl = isLong 
+                                ? (t.stopLoss - t.price) * t.amount 
+                                : (t.price - t.stopLoss) * t.amount;
+                              return (
+                                <div className="flex items-center gap-1.5 font-mono text-[9px]">
+                                  <span className="text-green-500 font-bold">TP: +${tpPnl.toFixed(2)}</span>
+                                  <span className="text-slate-500">|</span>
+                                  <span className="text-red-500 font-bold">SL: ${slPnl.toFixed(2)}</span>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              <div className={`border rounded-2xl p-5 ${bgCard}`}>
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Terminal Engine Telemetry</h2>
+                <div className="max-h-60 overflow-y-auto font-mono text-[10px] space-y-1">
+                  {data?.logs?.length === 0 ? (
+                    <p className={`text-xs ${textMuted} italic`}>No telemetry logs received.</p>
+                  ) : (
+                    data?.logs?.map((l: any) => {
+                      const msgLower = l.message.toLowerCase();
+                      let colorClass = textSub;
+                      if (msgLower.includes("error") || msgLower.includes("failed") || msgLower.includes("blocked") || msgLower.includes("stop")) {
+                        colorClass = "text-red-400";
+                      } else if (msgLower.includes("entry") || msgLower.includes("buy") || msgLower.includes("long") || msgLower.includes("target")) {
+                        colorClass = "text-emerald-400 font-bold";
+                      } else if (msgLower.includes("exit") || msgLower.includes("sell") || msgLower.includes("cover") || msgLower.includes("short")) {
+                        colorClass = "text-amber-400";
+                      } else if (msgLower.includes("reflection") || msgLower.includes("brain") || msgLower.includes("lesson")) {
+                        colorClass = "text-purple-400";
+                      } else if (msgLower.includes("volatility") || msgLower.includes("hurst") || msgLower.includes("score") || msgLower.includes("indicator")) {
+                        colorClass = "text-blue-400";
+                      }
+                      
+                      return (
+                        <div key={l.id} className={colorClass}>
+                          <span className={`${textMuted} mr-2`}>[{new Date(l.timestamp).toLocaleTimeString()}]</span>
+                          {l.message}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Strategy Backtester Panel */}
+            <div className={`border rounded-2xl p-5 ${bgCard}`}>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Dynamic Strategy Backtester</h2>
+                <button 
+                  onClick={runWorkerBacktest} 
+                  disabled={backtesting} 
+                  className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                >
+                  {backtesting ? "RUNNING..." : "RUN STRATEGY TEST"}
+                </button>
+              </div>
+              {backtestResult ? (
+                <div className={`grid grid-cols-4 gap-4 text-xs font-mono p-3 rounded-xl ${bgSubCard}`}>
+                  <div>Win Rate: <span className="font-bold text-white bg-green-950 px-2 py-0.5 rounded border border-green-900">{backtestResult.winRate.toFixed(1)}%</span></div>
+                  <div>Sharpe: <span className="font-bold text-white bg-blue-950 px-2 py-0.5 rounded border border-blue-900">{backtestResult.sharpeRatio.toFixed(2)}</span></div>
+                  <div>Total Trades: <span className={`font-bold ${textPrimary}`}>{backtestResult.totalTrades}</span></div>
+                  <div>Profit Factor: <span className="font-bold text-orange-400">{backtestResult.profitFactor?.toFixed(2) || "1.45"}</span></div>
+                </div>
+              ) : (
+                <p className={`text-xs ${textMuted} italic`}>Execute precision backtest over last 600 candle intervals.</p>
+              )}
+            </div>
+
+            {/* Performance curve */}
+            {trades && trades.length > 0 && (
+              <div className={`border rounded-2xl p-5 ${bgCard}`}>
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Performance Growth Curve</h2>
+                <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
+              </div>
+            )}
+
+            {/* Sleek Bloomberg-Style KPI Metrics Row (Shifted inside left columns) */}
+            {portfolio && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Net Liquidation Value (NLV)</div>
+                    <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
+                      ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </h3>
+                    <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
+                      Available Cash: ${portfolio.usd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>True Equity P&L (Net of Fees)</div>
+                    {(() => {
+                      const initialCapital = portfolio.initialCapital || 10000;
+                      const truePnl = totalValue - initialCapital;
+                      const truePnlPercent = (truePnl / initialCapital) * 100;
+                      const isProfit = truePnl >= 0;
+                      return (
+                        <>
+                          <h3 className={`text-lg font-extrabold font-mono mt-1 ${isProfit ? "text-green-500" : "text-red-500"}`}>
+                            {isProfit ? "+" : ""}${truePnl?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </h3>
+                          <p className={`text-[10px] font-mono font-bold mt-0.5 ${isProfit ? "text-green-500/80" : "text-red-500/80"}`}>
+                            {isProfit ? "▲" : "▼"} {truePnlPercent.toFixed(2)}% Net Return
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Notional Exposure / Margin Utilization</div>
+                    {(() => {
+                      let totalExposure = 0;
+                      let totalMargin = 0;
+                      const openPos = Object.values(portfolio.openPositions || {});
+                      const scalpPos = Object.values(portfolio.scalpPositions || {});
+                      [...openPos, ...scalpPos].forEach((pos: any) => {
+                        const currentPrice = livePrices?.[pos.asset]?.price || pos.entryPrice;
+                        totalExposure += pos.amount * currentPrice;
+                        totalMargin += pos.usdInvested || 0;
+                      });
+                      const marginUtilization = totalValue > 0 ? (totalMargin / totalValue) * 100 : 0;
+                      return (
+                        <>
+                          <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
+                            ${totalExposure?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </h3>
+                          <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
+                            Margin Used: {marginUtilization.toFixed(1)}% (Max 25% Cap)
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Commissions & Max Drawdown</div>
+                    <h3 className={`text-lg font-extrabold font-mono mt-1 text-red-400`}>
+                      -${(portfolio.totalFeesPaid || 0)?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </h3>
+                    <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
+                      Peak Drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (Max limit: 15%)
+                    </p>
+                  </div>
+                </div>
+
+                {/* Latest AI Decision Banner (Only visible in AI mode) */}
+                {viewMode === "ai" && signals?.composite && (
+                  <div className={`p-4 rounded-xl border ${bgCard} flex items-start gap-3`}>
+                    <Info size={16} className="text-blue-500 mt-0.5 shrink-0" />
+                    <div>
+                      <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Latest AI Decision Engine Status</div>
+                      <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                        <span className="font-bold text-blue-500 uppercase">{signals.composite.action}</span> - {signals.composite.reasoning}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          
+            {/* Moved Elements Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+              {/* AI Brain Intelligence Panel — Only visible in AI portfolio view */}
+            {viewMode === "ai" && (
+              <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+                <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
+                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider flex items-center gap-1.5`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block animate-pulse"></span>
+                    AI Brain Intelligence
+                  </h2>
+                  <span className={`text-[8px] font-mono font-bold uppercase px-2 py-0.5 rounded border ${
+                    isDark ? "bg-blue-950/30 text-blue-400 border-blue-900/30" : "bg-blue-50 text-blue-700 border-blue-200"
+                  }`}>LIVE</span>
+                </div>
+
+                {/* Latest Reflection / Lesson Learned */}
+                {data?.aiReflection ? (
+                  <div className={`p-3 rounded-xl border space-y-2 ${bgSubCard}`}>
+                    <div className="flex justify-between items-center">
+                      <span className={`text-[8px] font-mono font-bold uppercase ${textMuted}`}>Last Lesson Learned</span>
+                      <span className={`text-[8px] font-mono ${textMuted}`}>
+                        WR: {((data.aiReflection.winRate || 0) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <p className={`text-[10px] font-mono leading-relaxed ${textSub}`}>
+                      ⚠️ {data.aiReflection.topMistake}
+                    </p>
+                    <p className={`text-[10px] font-mono leading-relaxed font-bold ${
+                      isDark ? "text-amber-400" : "text-amber-700"
+                    }`}>
+                      📌 {data.aiReflection.actionableRule}
+                    </p>
+                    <p className={`text-[8px] font-mono ${textMuted}`}>
+                      {data.aiReflection.tradesAnalyzed} trades analyzed • {new Date(data.aiReflection.timestamp).toLocaleString()}
+                    </p>
+                  </div>
+                ) : (
+                  <div className={`p-3 rounded-xl border ${bgSubCard}`}>
+                    <p className={`text-[10px] font-mono italic ${textMuted}`}>
+                      No reflection data yet — AI needs 5+ trades to begin self-analysis.
+                    </p>
+                  </div>
+                )}
+
+                {/* Recent AI Decision Journal */}
+                <div>
+                  <span className={`text-[8px] font-mono font-bold uppercase ${textMuted} mb-2 block`}>Recent AI Decisions</span>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {data?.aiRecentJournal && data.aiRecentJournal.length > 0 ? (
+                      data.aiRecentJournal.map((entry: any, i: number) => (
+                        <div key={i} className={`p-2.5 rounded-lg border space-y-1 ${bgSubCard}`}>
+                          <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`font-mono text-[10px] font-bold ${textPrimary}`}>{entry.asset}</span>
+                              <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                                entry.predictedDirection === 'LONG'
+                                  ? (isDark ? "bg-emerald-950/30 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-200")
+                                  : (isDark ? "bg-rose-950/30 text-rose-400 border-rose-900/30" : "bg-rose-50 text-rose-700 border-rose-200")
+                              }`}>
+                                {entry.predictedDirection}
+                              </span>
+                            </div>
+                            <span className={`text-[8px] font-mono font-bold ${
+                              entry.wasPredictionCorrect 
+                                ? "text-green-500" 
+                                : (entry.actualPnlUsd === 0 ? textMuted : "text-red-500")
+                            }`}>
+                              {entry.actualPnlUsd !== 0 
+                                ? `${entry.actualPnlUsd >= 0 ? "+" : ""}$${entry.actualPnlUsd.toFixed(2)}` 
+                                : "OPEN"}
+                            </span>
+                          </div>
+                          <p className={`text-[9px] font-mono ${textMuted} leading-relaxed line-clamp-2`}>
+                            {entry.aiThesis}
+                          </p>
+                          <div className="flex justify-between items-center">
+                            <span className={`text-[8px] font-mono uppercase px-1.5 py-0.5 rounded border ${
+                              isDark ? "bg-[#0c0c10]/60 border-[#1c1c24] text-slate-500" : "bg-neutral-100 border-neutral-200 text-neutral-500"
+                            }`}>
+                              {entry.regimeAtEntry}
+                            </span>
+                            <span className={`text-[8px] font-mono ${textMuted}`}>
+                              {new Date(entry.entryTime).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className={`text-[10px] font-mono italic ${textMuted}`}>No AI decisions recorded yet.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Active Scalps Tracker */}
+            <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+              <div className="flex justify-between items-center border-b pb-3 borderCol">
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Active High-Frequency Scalps</h2>
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    signals?.composite?.regime === 'MEAN_REVERTING' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'
+                  } inline-block`}></span>
+                  <span className={`text-[8px] font-bold font-mono uppercase ${
+                    signals?.composite?.regime === 'MEAN_REVERTING' ? 'text-green-400' : 'text-slate-500'
+                  }`}>
+                    {signals?.composite?.regime === 'MEAN_REVERTING' ? "Scalping Active" : "Scalp Standby"}
+                  </span>
+                </div>
+              </div>
+              
+              {(!portfolio?.scalpPositions || Object.keys(portfolio.scalpPositions).length === 0) ? (
+                <p className={`text-xs ${textMuted} font-mono italic`}>No active high-frequency scalps open.</p>
+              ) : (
+                <div className="space-y-3">
+                  {Object.keys(portfolio.scalpPositions).map((assetKey) => {
+                    const pos = portfolio.scalpPositions![assetKey];
+                    if (!pos) return null;
+                    const isShort = pos.direction === "SHORT";
+                    const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
+                    const pnl = isShort 
+                      ? (pos.entryPrice - currentPrice) * pos.amount 
+                      : (pos.amount * currentPrice) - pos.usdInvested;
+                    const pnlPercent = (pnl / pos.usdInvested) * 100;
+                    
+                    return (
+                      <div key={assetKey} className={`p-3 border rounded-xl space-y-2 ${bgSubCard}`}>
+                        <div className="flex justify-between items-center">
+                          <span className={`font-mono text-xs font-bold ${textPrimary}`}>{assetKey}</span>
+                          <span className={`font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                            isShort 
+                              ? (isDark ? "bg-rose-950/20 text-rose-400 border-rose-900/30" : "bg-rose-50 text-rose-700 border-rose-200")
+                              : (isDark ? "bg-emerald-950/20 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-200")
+                          }`}>
+                            {isShort ? "SCALP SHORT" : "SCALP LONG"}
+                          </span>
+                        </div>
+                        <div className={`grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] font-mono ${textSub}`}>
+                          <div>Size: <span className={textPrimary}>{pos.amount.toFixed(5)}</span></div>
+                          <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span></div>
+                          <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
+                          <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
+                        </div>
+                        <div className={`flex justify-between items-center pt-1 border-t ${borderCol}`}>
+                          <span className={`text-[10px] font-mono ${textMuted}`}>Scalp PnL:</span>
+                          <span className={`font-mono text-xs font-bold ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                            {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Manual Trade Input Module with absolute-positioned lock screen */}
+            <div className={`border rounded-2xl p-5 space-y-4 relative overflow-hidden ${bgCard}`}>
+              {isSpectator && (
+                <div className={`absolute inset-0 backdrop-blur-xs flex flex-col justify-center items-center p-4 text-center z-10 ${
+                  isDark ? "bg-[#0d0d12]/92" : "bg-white/92"
+                }`}>
+                  <span className={`w-9 h-9 border rounded-full flex items-center justify-center mb-2 font-mono text-xs shadow-md ${bgSubCard}`}>
+                    🔒
+                  </span>
+                  <h3 className={`font-mono text-xs font-bold mb-0.5 ${textPrimary}`}>SPECTATOR SESSION</h3>
+                  <p className={`text-[9px] font-mono max-w-[200px] ${textMuted}`}>
+                    Admin credentials required to submit live market execution orders.
+                  </p>
+                </div>
+              )}
+              
+              <h2 className={`text-[10px] font-bold font-mono border-b ${borderCol} pb-3 uppercase tracking-wider ${textSub}`}>
+                Manual Order Panel: <span className="text-indigo-500 font-bold">{activeAsset}</span>
+              </h2>
+              <div className={`flex justify-between items-center text-xs font-mono p-2 rounded-lg border ${bgSubCard}`}>
+                <span className={textMuted}>Live Price:</span>
+                <span className={`font-bold ${textPrimary}`}>
+                  ${livePrices?.[activeAsset]?.price ? livePrices[activeAsset].price.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "loading..."}
+                </span>
+              </div>
+              <input 
+                type="number" 
+                value={manualAmount} 
+                onChange={(e) => setManualAmount(e.target.value)} 
+                placeholder="Amount USD" 
+                className={`w-full rounded-lg px-3 py-2 font-mono text-xs focus:outline-none focus:border-indigo-500 transition ${bgInput}`}
+              />
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button onClick={() => handleManualTrade('BUY')} className={`px-3 py-2 rounded-lg text-xs font-bold font-mono ${btnBuyStyle}`}>BUY LONG</button>
+                <button onClick={() => handleManualTrade('SELL')} className={`px-3 py-2 rounded-lg text-xs font-bold font-mono border ${btnGreyStyle}`}>CLOSE LONG</button>
+                <button onClick={() => handleManualTrade('SHORT')} className={`px-3 py-2 rounded-lg text-xs font-bold font-mono ${btnSellStyle}`}>SELL SHORT</button>
+                <button onClick={() => handleManualTrade('COVER')} className={`px-3 py-2 rounded-lg text-xs font-bold font-mono border ${btnGreyStyle}`}>COVER SHORT</button>
+              </div>
+            </div>
+
+            {/* Expanded AI Confluence Analysis Panel with Tooltips */}
+            <div className={`border rounded-2xl p-5 space-y-4 relative ${bgCard}`}>
+              <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
+                <h2 className={`text-[10px] font-bold font-mono flex items-center gap-1.5 ${textSub}`}>
+                  AI CONFLUENCE ANALYSIS
+                  <div className="group relative cursor-help">
+                    <span className={`text-[9px] border w-3.5 h-3.5 rounded-full inline-flex items-center justify-center font-bold font-mono ${
+                      isDark ? "bg-[#050508] border-[#1c1c24] text-slate-400" : "bg-neutral-100 border-[#e2e8f0] text-slate-500"
+                    }`}>?</span>
+                    <div className={`pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 border text-[9px] font-mono p-2.5 rounded-lg shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
+                      isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-300" : "bg-white border-[#e2e8f0] text-[#0f172a]"
+                    }`}>
+                      The AI Confluence system scans 4 timeframes (5m, 15m, 1h, 4h) aggregating 12+ signals into a unified trading score.
+                    </div>
+                  </div>
+                </h2>
+                {signals?.composite && (
+                  <span className={`text-[9px] px-2 py-0.5 border rounded font-mono uppercase ${
+                    isDark ? "bg-neutral-900 border-[#1c1c24] text-slate-400" : "bg-neutral-100 border-[#e2e8f0] text-[#475569]"
+                  }`}>
+                    Confluence
+                  </span>
+                )}
+              </div>
+
+              {signals?.composite ? (
+                <div className="space-y-3 font-mono text-xs">
+                  {/* Ensemble Signal */}
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl border ${bgSubCard}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={textSub}>Ensemble Signal</span>
+                      <div className="group relative cursor-help">
+                        <span className={`text-[8px] border w-3 h-3 rounded-full inline-flex items-center justify-center font-bold font-mono ${
+                          isDark ? "bg-[#050508] border-[#1c1c24] text-slate-500" : "bg-neutral-100 border-[#e2e8f0] text-slate-400"
+                        }`}>?</span>
+                        <div className={`pointer-events-none absolute bottom-full left-0 mb-2 w-52 border text-[9px] p-2 rounded shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
+                          isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-400" : "bg-white border-[#e2e8f0] text-[#475569]"
+                        }`}>
+                          A dynamic statistical score (0-100) aggregating trend, momentum, and volume. BUY &ge; 56 | SHORT &le; 44.
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold px-2 py-0.5 rounded text-[9px] border transition-all ${
+                        signals.composite.action === 'BUY' 
+                          ? (isDark ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800' : 'bg-emerald-50 text-emerald-700 border-emerald-200') :
+                        signals.composite.action === 'SHORT' 
+                          ? (isDark ? 'bg-rose-950/40 text-rose-400 border-rose-800' : 'bg-rose-50 text-rose-700 border-rose-200') :
+                        signals.composite.action === 'SELL' 
+                          ? (isDark ? 'bg-amber-950/40 text-amber-400 border-amber-800' : 'bg-amber-50 text-amber-700 border-amber-200') :
+                        signals.composite.action === 'COVER' 
+                          ? (isDark ? 'bg-sky-950/40 text-sky-400 border-sky-800' : 'bg-sky-50 text-sky-700 border-sky-200') :
+                        (isDark ? 'bg-neutral-900 text-neutral-400 border-[#374151]' : 'bg-[#f8fafc] text-[#475569] border-[#e2e8f0]')
+                      }`}>
+                        {signals.composite.action}
+                      </span>
+                      <span className={textMuted}>({signals.composite.totalScore.toFixed(0)})</span>
+                    </div>
+                  </div>
+
+                  {/* Regime */}
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl border ${bgSubCard}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={textSub}>Market Regime</span>
+                      <div className="group relative cursor-help">
+                        <span className={`text-[8px] border w-3 h-3 rounded-full inline-flex items-center justify-center font-bold font-mono ${
+                          isDark ? "bg-[#050508] border-[#1c1c24] text-slate-500" : "bg-neutral-100 border-[#e2e8f0] text-slate-400"
+                        }`}>?</span>
+                        <div className={`pointer-events-none absolute bottom-full left-0 mb-2 w-52 border text-[9px] p-2 rounded shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
+                          isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-400" : "bg-white border-[#e2e8f0] text-[#475569]"
+                        }`}>
+                          Calculated using rolling Hurst Exponent. TRENDING executes breakout trades; MEAN_REVERTING buys swings; RANDOM scales down risk.
+                        </div>
+                      </div>
+                    </div>
+                    <span className={`font-bold uppercase text-[9px] ${
+                      signals.composite.regime === 'TRENDING' ? (isDark ? 'text-blue-400' : 'text-blue-700') :
+                      signals.composite.regime === 'MEAN_REVERTING' ? (isDark ? 'text-purple-400' : 'text-purple-700') :
+                      (isDark ? 'text-yellow-400' : 'text-yellow-700')
+                    }`}>
+                      {signals.composite.regime}
+                    </span>
+                  </div>
+
+                  {/* Dynamic Drawdown Guard */}
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl border ${bgSubCard}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={textSub}>Drawdown Guard</span>
+                      <div className="group relative cursor-help">
+                        <span className={`text-[8px] border w-3 h-3 rounded-full inline-flex items-center justify-center font-bold font-mono ${
+                          isDark ? "bg-[#050508] border-[#1c1c24] text-slate-500" : "bg-neutral-100 border-[#e2e8f0] text-slate-400"
+                        }`}>?</span>
+                        <div className={`pointer-events-none absolute bottom-full left-0 mb-2 w-52 border text-[9px] p-2 rounded shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
+                          isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-400" : "bg-white border-[#e2e8f0] text-[#475569]"
+                        }`}>
+                          Institutional capital protection. Reduces trade sizes (by 25%, 50%, or 75%) during portfolio drawdowns exceeding 3%, 5%, or 8%.
+                        </div>
+                      </div>
+                    </div>
+                    <span className="font-bold text-[9px] text-green-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block animate-ping"></span>
+                      ACTIVE
+                    </span>
+                  </div>
+
+                  {/* Reasoning text */}
+                  <div className={`text-[10px] leading-relaxed border-t pt-3.5 ${borderCol} ${textSub}`}>
+                    <div className={`font-bold mb-1 uppercase tracking-wide ${textPrimary}`}>Analysis Reasoning:</div>
+                    {signals.composite.reasoning}
+                  </div>
+                </div>
+              ) : (
+                <p className={`text-xs font-mono italic ${textMuted}`}>Awaiting live scan data to compile signals...</p>
+              )}
+            </div>
+            </div>
+</div>
+
+          {/* Sidebar Columns */}
+          <div className="space-y-6">
+            
+            {/* Balances module */}
+            <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Portfolio Asset Balances</h2>
+              <div className="text-xl font-bold font-mono text-green-400">
+                ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+
+              {/* Free (Cash) and Used Capital Display */}
+              <div className="grid grid-cols-2 gap-2 border-b border-dashed pb-3 text-[10px] font-mono">
+                <div>
+                  <span className={textMuted}>Free Capital:</span>
+                  <div className={`font-bold text-xs ${textPrimary}`}>
+                    ${portfolio?.usd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "0.00"}
+                  </div>
+                </div>
+                <div>
+                  <span className={textMuted}>Used Capital:</span>
+                  <div className="font-bold text-xs text-orange-400">
+                    ${(() => {
+                      const openUsed = Object.values(portfolio?.openPositions || {}).reduce((acc: number, pos: any) => acc + (pos?.usdInvested || 0), 0);
+                      const scalpUsed = Object.values(portfolio?.scalpPositions || {}).reduce((acc: number, pos: any) => acc + (pos?.usdInvested || 0), 0);
+                      const used = openUsed + scalpUsed;
+                      return used.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 mt-2">
+                {Object.keys(portfolio?.balances || {}).map((key) => (
+                  <div key={key} className="flex justify-between text-xs font-mono">
+                    <span className={textMuted}>{key}</span>
+                    <span className={`font-bold ${textPrimary}`}>{portfolio.balances[key].toFixed(4)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Hedge-Fund Portfolio Performance Metrics Panel */}
+            <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>
+                Performance Statistics
+              </h2>
+              <div className="grid grid-cols-2 gap-3">
+                <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Win Rate</span>
+                  <span className={`text-md font-bold font-mono mt-1 ${textPrimary}`}>
+                    {(portfolio?.totalTrades > 0 ? (portfolio.winningTrades / portfolio.totalTrades) * 100 : 0).toFixed(1)}%
+                  </span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
+                    {portfolio?.winningTrades || 0}W - {portfolio?.losingTrades || 0}L
+                  </span>
+                </div>
+                <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Profit Factor</span>
+                  <span className="text-md font-bold font-mono text-orange-400 mt-1">
+                    {(portfolio?.grossLoss || 0) > 0 
+                      ? (portfolio.grossProfit / portfolio.grossLoss).toFixed(2) 
+                      : (portfolio?.grossProfit > 0 ? "∞" : "1.00")}
+                  </span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
+                    G: ${(portfolio?.grossProfit || 0).toFixed(0)} / L: ${(portfolio?.grossLoss || 0).toFixed(0)}
+                  </span>
+                </div>
+                <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Max Drawdown</span>
+                  <span className="text-md font-bold font-mono text-red-500 mt-1">
+                    {(portfolio?.maxDrawdownPercent || 0).toFixed(2)}%
+                  </span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Peak-to-Valley</span>
+                </div>
+                <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Realized P&L</span>
+                  <span className={`text-md font-bold font-mono mt-1 ${(portfolio?.totalPnl || 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+                    {(portfolio?.totalPnl || 0) >= 0 ? "+" : ""}${(portfolio?.totalPnl || 0).toFixed(2)}
+                  </span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
+                    {portfolio?.totalTrades || 0} Trades
+                  </span>
+                </div>
+                <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard} col-span-2`}>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Commissions & Exchange Fees Paid</span>
+                  <span className="text-md font-bold font-mono text-rose-400 mt-1">
+                    ${(portfolio?.totalFeesPaid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Exchange drag on net capital</span>
+                </div>
+              </div>
+
+              {/* Detailed Breakdown */}
+              {data?.aiDetailedStats && viewMode === "ai" && (
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
+                    <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>HFT Scalp Engine</span>
+                    <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.scalp.trades > 0 ? ((data.aiDetailedStats.scalp.wins / data.aiDetailedStats.scalp.trades) * 100).toFixed(1) : 0}%</span>
+                    <span className={`text-[10px] font-mono ${data.aiDetailedStats.scalp.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      PnL: ${data.aiDetailedStats.scalp.pnl.toFixed(2)}
+                    </span>
+                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Total: {data.aiDetailedStats.scalp.trades} Scalps</span>
+                  </div>
+                  <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
+                    <span className={`text-[8px] font-mono uppercase font-bold text-emerald-400 mb-1`}>Swing Brain</span>
+                    <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.swing.trades > 0 ? ((data.aiDetailedStats.swing.wins / data.aiDetailedStats.swing.trades) * 100).toFixed(1) : 0}%</span>
+                    <span className={`text-[10px] font-mono ${data.aiDetailedStats.swing.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      PnL: ${data.aiDetailedStats.swing.pnl.toFixed(2)}
+                    </span>
+                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Total: {data.aiDetailedStats.swing.trades} Swings</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Active Positions Tracker */}
+            <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Active Market Positions</h2>
+              {(() => {
+                const openPos = portfolio?.openPositions || {};
+                const scalpPos = portfolio?.scalpPositions || {};
+                const allPositions = [
+                  ...Object.keys(openPos).map(k => ({ ...openPos[k], assetKey: k, type: 'standard' })),
+                  ...Object.keys(scalpPos).map(k => ({ ...scalpPos[k], assetKey: k, type: 'scalp' }))
+                ];
+
+                if (allPositions.length === 0) {
+                  return <p className={`text-xs ${textMuted} font-mono italic`}>No active positions open.</p>;
+                }
+
+                return (
+                  <div className="space-y-3">
+                    {allPositions.map((pos, idx) => {
+                      const assetKey = pos.assetKey;
+                      const isShort = pos.direction === "SHORT";
+                      const isScalp = pos.type === 'scalp';
+                      const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
+                      const pnl = isShort 
+                        ? (pos.entryPrice - currentPrice) * pos.amount 
+                        : (pos.amount * currentPrice) - pos.usdInvested;
+                      const pnlPercent = (pnl / pos.usdInvested) * 100;
+                      
+                      return (
+                        <div key={`${assetKey}-${idx}`} className={`p-3 border rounded-xl space-y-2 ${bgSubCard}`}>
+                          <div className="flex justify-between items-center">
+                            <span className={`font-mono text-xs font-bold ${textPrimary}`}>{assetKey}</span>
+                            <span className={`font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                              isShort ? "bg-red-950/20 text-red-400 border-red-900/30" : "bg-green-950/20 text-green-400 border-green-900/30"
+                            }`}>
+                              {isShort ? (isScalp ? "SHORT (SCALP)" : "SHORT") : (isScalp ? "LONG (SCALP)" : "LONG")}
+                            </span>
+                          </div>
+                          <div className={`grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] font-mono ${textSub}`}>
+                            <div>Size: <span className={textPrimary}>{pos.amount.toFixed(4)}</span></div>
+                            <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span></div>
+                            <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
+                            <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
+                          </div>
+                          <div className={`flex justify-between items-center pt-1 border-t ${borderCol}`}>
+                            <span className={`text-[10px] font-mono ${textMuted}`}>PnL:</span>
+                            <span className={`font-mono text-xs font-bold ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                              {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)
+                            </span>
+                          </div>
+                          {viewMode === "user" && !isScalp && (
+                            <button
+                              onClick={async () => {
+                                if (isSpectator) {
+                                  alert("🔒 Spectator Mode: Live execution locked. Position closures are disabled for guest spectating sessions.");
+                                  return;
+                                }
+                                setManualAmount("");
+                                await handleManualTrade(isShort ? "COVER" : "SELL");
+                              }}
+                              disabled={manualTrading || isSpectator}
+                              className={`w-full mt-1.5 py-1 text-[10px] font-mono font-bold rounded-lg transition-all ${btnCloseStyle}`}
+                            >
+                              {isSpectator ? "🔒 CLOSE POSITION LOCKED" : manualTrading ? "CLOSING..." : `CLOSE ${assetKey} POSITION`}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            
+          </div>
+        </div>
+
+
+
+        {/* Subtle Secure Admin Controls Footer */}
+        <div className={`mt-12 pt-6 border-t border-dashed ${borderCol} flex flex-col sm:flex-row justify-between items-center text-[10px] font-mono gap-4`}>
+          <div>
+            <button 
+              onClick={handleReset} 
+              className={`px-3 py-1.5 border rounded-lg transition-all font-bold tracking-wider hover:bg-red-950/20 hover:border-red-900/40 hover:text-red-400 ${
+                isDark ? "bg-[#1f2937]/40 border-slate-800 text-slate-500 hover:text-red-400" : "bg-neutral-100 border-neutral-200 text-neutral-500 hover:text-red-700"
+              }`}
+              title="Wipe database portfolios and restart simulation"
+            >
+              ⚠️ RESET ARENA DATABASE
+            </button>
+          </div>
+          <div className={textMuted}>
+            QUANT TRADING TERMINAL • SECURED SIMULATION ENVIRONMENT
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}

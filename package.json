@@ -1,0 +1,40 @@
+{
+    "name": "bitcoin-quant-trader",
+    "version": "3.0.0",
+    "private": true,
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start",
+        "lint": "next lint",
+        "daemon:swing": "npx tsx src/daemon/swingDaemon.ts"
+    },
+    "dependencies": {
+        "@supabase/supabase-js": "^2.106.2",
+        "@vercel/analytics": "^1.6.1",
+        "ccxt": "^4.5.56",
+        "date-fns": "^3.6.0",
+        "ioredis": "^5.11.0",
+        "lightweight-charts": "^4.2.0",
+        "lucide-react": "^0.446.0",
+        "next": "^14.2.35",
+        "protobufjs": "^8.5.0",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+        "ws": "^8.21.0",
+        "zod": "^3.25.76"
+    },
+    "devDependencies": {
+        "@types/node": "^20.16.5",
+        "@types/react": "^18.3.5",
+        "@types/react-dom": "^18.3.0",
+        "@types/ws": "^8.18.1",
+        "autoprefixer": "^10.4.20",
+        "eslint": "^8.57.1",
+        "eslint-config-next": "14.2.13",
+        "postcss": "^8.4.47",
+        "tailwindcss": "^3.4.12",
+        "tsx": "^4.19.1",
+        "typescript": "^5.6.2"
+    }
+}

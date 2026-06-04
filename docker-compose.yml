@@ -1,0 +1,53 @@
+version: '3.8'
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    logging: *default-logging
+
+  quant-dashboard:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    logging: *default-logging
+
+  swing-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-swing-daemon
+    command: npm run daemon:swing
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  redis_data:
