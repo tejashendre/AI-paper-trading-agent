@@ -19,7 +19,7 @@ This project is intentionally **paper trading by default**. The goal is to test 
 - Work even when LLM APIs are missing, blocked, or rate-limited.
 - Keep live trading disabled unless it is explicitly enabled.
 
-The system is **not** designed to spam one-second scalps. It can consume fast price updates where free WebSocket data is available, but trade entry decisions are intentionally slower and more selective.
+The system is **not** designed to spam one-second scalps. It can consume fast price updates where free WebSocket data is available, checks active swing exits every 5 seconds, and keeps new entry decisions intentionally slower and more selective.
 
 ---
 
@@ -80,7 +80,7 @@ flowchart LR
 ## How The Autonomous Loop Works
 
 1. The daemon starts and connects the crypto WebSocket mesh for live price cache updates.
-2. Every daemon cycle, it checks active positions first.
+2. A fast exit watchdog checks active swing positions every 5 seconds.
 3. If stop loss or take profit is hit, it closes the paper position.
 4. If there is no open position for an asset, it scans for a new setup.
 5. The `SwingEngine` pulls 15m, 1h, and 4h candles.
@@ -90,9 +90,9 @@ flowchart LR
 9. If the score is strong enough, the trade is sent to the `TradeAdmissionController`.
 10. The risk controller sizes margin, leverage, notional exposure, fees, max loss, and portfolio exposure.
 11. If approved, a paper trade is opened and written to Redis.
-12. The dashboard reads Redis and displays the current portfolio, logs, trades, and chart state.
+12. The dashboard reads Redis and displays the current portfolio, logs, trades, chart state, latest scan results, and no-trade reasons.
 
-The current daemon entry scan interval is one minute. That is deliberate for this version because the strategy depends on higher-timeframe candles, not sub-second order flow.
+The current daemon entry scan interval is one minute. That is deliberate for this version because the strategy depends on higher-timeframe candles, not sub-second order flow. Active swing exits are monitored separately every 5 seconds.
 
 ---
 
@@ -252,7 +252,7 @@ docker compose ps
 
 The next best upgrades are:
 
-- Fast active-position exit watchdog.
+- Per-position exit watchdog refinements and feed-health alerts.
 - Per-setup performance analytics.
 - Trade-quality memory from real completed paper trades.
 - More transparent dashboard explanations.
