@@ -185,7 +185,7 @@ function classifyRegime(
     return 'MEAN_REVERTING';
   }
 
-  return 'RANDOM';
+  return 'CHOPPY';
 }
 
 // ── Directional Bias ───────────────────────────────────────────────
@@ -476,7 +476,7 @@ function computeTradeability(
     case 'PANIC':
       score -= 15; // Can trade but carefully
       break;
-    case 'RANDOM':
+    case 'CHOPPY':
       score -= 25;
       break;
   }

@@ -101,7 +101,7 @@ export interface StatisticalMetrics {
   priceZScore: number;            // current price z-score vs rolling mean
   rsiZScore: number;              // current RSI z-score vs its rolling mean
   hurstExponent: number;          // >0.55 trending, <0.45 mean-reverting
-  regime: 'TRENDING' | 'MEAN_REVERTING' | 'RANDOM';
+  regime: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY';
   volatilityPercentile: number;   // 0-100, where current ATR sits in 90-day dist
   volumePercentile: number;       // 0-100, where current volume sits in 30-candle dist
   regressionSlope: number;        // OLS slope of last 20 closes
@@ -132,7 +132,7 @@ export interface CompositeSignal {
   totalScore: number;     // 0–100
   action: 'BUY' | 'SELL' | 'SHORT' | 'COVER' | 'HOLD';
   confidence: number;     // 0–1  (totalScore / 100)
-  regime: 'TRENDING' | 'MEAN_REVERTING' | 'RANDOM';
+  regime: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY';
   timeframes: TimeframeSignal[];
   reasoning: string;
   timestamp: string;
@@ -346,7 +346,7 @@ export type MarketRegime =
   | 'BREAKOUT'
   | 'PANIC'
   | 'FAKEOUT_RISK'
-  | 'RANDOM'
+  | 'CHOPPY'
   | 'SCALP';
 
 /** Volatility regime categorization. */

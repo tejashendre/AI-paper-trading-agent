@@ -1091,7 +1091,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         <div className={`pointer-events-none absolute bottom-full left-0 mb-2 w-52 border text-[9px] p-2 rounded shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
                           isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-400" : "bg-white border-[#e2e8f0] text-[#475569]"
                         }`}>
-                          Calculated using rolling Hurst Exponent. TRENDING executes breakout trades; MEAN_REVERTING buys swings; RANDOM scales down risk.
+                          Calculated using rolling Hurst Exponent. TRENDING executes breakout trades; MEAN_REVERTING buys swings; CHOPPY scales down risk.
                         </div>
                       </div>
                     </div>
@@ -1100,7 +1100,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       signals.composite.regime === 'MEAN_REVERTING' ? (isDark ? 'text-purple-400' : 'text-purple-700') :
                       (isDark ? 'text-yellow-400' : 'text-yellow-700')
                     }`}>
-                      {signals.composite.regime}
+                      {signals.composite.regime === 'CHOPPY' ? 'CHOPPY (NO CLEAR TREND)' : signals.composite.regime}
                     </span>
                   </div>
 

@@ -14,10 +14,30 @@ export class PortfolioManager {
     static async getPortfolio(type: "user" | "ai" = "user"): Promise<Portfolio> {
         const redis = getRedis();
         const keys = this.getKeys(type);
-        const data = await redis.get<Portfolio>(keys.portfolio);
-        if (!data) {
-            return this.resetPortfolio(type);
+        let data = await redis.get<Portfolio>(keys.portfolio);
+        
+        // If data is null or failed to parse into an object (e.g. malformed string), try to recover from backup
+        if (!data || typeof data !== 'object') {
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const backupPath = path.join(process.cwd(), 'data', `${type}_portfolio_backup.json`);
+                if (fs.existsSync(backupPath)) {
+                    const backupRaw = fs.readFileSync(backupPath, 'utf-8');
+                    data = JSON.parse(backupRaw) as Portfolio;
+                    await Logger.info(`Redis portfolio [${type.toUpperCase()}] corrupted/missing. Auto-recovered from local JSON backup.`);
+                    // Restore to Redis instantly
+                    await redis.set(keys.portfolio, data);
+                }
+            } catch (e) {
+                console.error("Backup recovery failed:", e);
+            }
+
+            if (!data || typeof data !== 'object') {
+                return this.resetPortfolio(type);
+            }
         }
+
         // Initialize dynamic fields if they do not exist
         if (!data.balances) {
             data.balances = {
@@ -93,24 +113,82 @@ export class PortfolioManager {
         const keys = this.getKeys(type);
         portfolio.lastUpdated = new Date().toISOString();
         await redis.set(keys.portfolio, portfolio);
+
+        // Save local backup to prevent total data loss if Redis crashes
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const dataDir = path.join(process.cwd(), 'data');
+            if (!fs.existsSync(dataDir)) {
+                fs.mkdirSync(dataDir, { recursive: true });
+            }
+            const backupPath = path.join(dataDir, `${type}_portfolio_backup.json`);
+            fs.writeFileSync(backupPath, JSON.stringify(portfolio, null, 2));
+        } catch (e) {
+            console.error("Failed to save portfolio backup:", e);
+        }
     }
 
     static async logTrade(trade: Trade, type: "user" | "ai" = "user"): Promise<void> {
         const redis = getRedis();
         const keys = this.getKeys(type);
         await redis.lpush(keys.trades, JSON.stringify(trade));
+
+        // Save local backup to prevent total data loss if Redis crashes
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const dataDir = path.join(process.cwd(), 'data');
+            if (!fs.existsSync(dataDir)) {
+                fs.mkdirSync(dataDir, { recursive: true });
+            }
+            const backupPath = path.join(dataDir, `${type}_trades_backup.json`);
+            let trades: Trade[] = [];
+            if (fs.existsSync(backupPath)) {
+                trades = JSON.parse(fs.readFileSync(backupPath, 'utf-8'));
+            }
+            trades.unshift(trade);
+            if (trades.length > 1000) trades = trades.slice(0, 1000);
+            fs.writeFileSync(backupPath, JSON.stringify(trades, null, 2));
+        } catch (e) {
+            console.error("Failed to save trades backup:", e);
+        }
     }
 
     static async getTrades(type: "user" | "ai" = "user"): Promise<Trade[]> {
         const redis = getRedis();
         const keys = this.getKeys(type);
         const rawTrades = await redis.lrange(keys.trades, 0, 999);
-        return rawTrades.map((t) => {
+        let parsed = rawTrades.map((t) => {
             if (typeof t === "string") {
-                try { return JSON.parse(t) as Trade; } catch { return t as unknown as Trade; }
+                try { return JSON.parse(t) as Trade; } catch { return null; }
             }
             return t as Trade;
-        });
+        }).filter(t => t !== null) as Trade[];
+
+        // If data is empty or failed to parse into an object, try to recover from backup
+        if (parsed.length === 0) {
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const backupPath = path.join(process.cwd(), 'data', `${type}_trades_backup.json`);
+                if (fs.existsSync(backupPath)) {
+                    const backupRaw = fs.readFileSync(backupPath, 'utf-8');
+                    parsed = JSON.parse(backupRaw) as Trade[];
+                    await Logger.info(`Redis trades [${type.toUpperCase()}] corrupted/missing. Auto-recovered from local JSON backup.`);
+                    
+                    // Restore to Redis instantly
+                    await redis.del(keys.trades);
+                    for (let i = parsed.length - 1; i >= 0; i--) {
+                        await redis.lpush(keys.trades, JSON.stringify(parsed[i]));
+                    }
+                }
+            } catch (e) {
+                console.error("Trades backup recovery failed:", e);
+            }
+        }
+        
+        return parsed;
     }
 
     static async saveSignal(signal: CompositeSignal, type: "user" | "ai" = "user"): Promise<void> {

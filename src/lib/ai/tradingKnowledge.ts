@@ -69,7 +69,7 @@ export function getTradingKnowledge(regime: MarketRegime): string {
 - Wait for confirmation or trade the failure (e.g., if a bullish breakout fails, aggressively short).
 - Reduce position size.`;
 
-    case 'RANDOM':
+    case 'CHOPPY':
       return `REGIME PRINCIPLES: NO CLEAR EDGE
 - Price action is erratic. Statistical edge is low.
 - Capital preservation is the priority.

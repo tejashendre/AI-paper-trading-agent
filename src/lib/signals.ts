@@ -13,7 +13,7 @@ export class SignalEngine {
     }
 
     // Determine regime from reasoning
-    let regime = "RANDOM";
+    let regime = "CHOPPY";
     if (swingSignal.reasoning.includes("Mean Reversion")) {
       regime = "MEAN_REVERTING";
     } else if (swingSignal.reasoning.includes("Trend") || swingSignal.reasoning.includes("Structural")) {

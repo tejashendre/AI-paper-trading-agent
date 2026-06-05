@@ -167,7 +167,7 @@ export function computeStatistics(
   const realVol = realizedVolatility(rets, 365 * 24); // Assuming hourly approx, parameterize if needed
   
   const h = hurstExponent(closes, 20);
-  let regime: 'TRENDING' | 'MEAN_REVERTING' | 'RANDOM' = 'RANDOM';
+  let regime: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' = 'CHOPPY';
   if (h > 0.55) regime = 'TRENDING';
   else if (h < 0.45) regime = 'MEAN_REVERTING';
 
