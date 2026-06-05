@@ -28,6 +28,8 @@ services:
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
     depends_on:
       - redis
     restart: unless-stopped
@@ -44,6 +46,8 @@ services:
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
     depends_on:
       - redis
     restart: unless-stopped
