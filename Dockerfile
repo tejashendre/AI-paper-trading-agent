@@ -13,7 +13,7 @@ COPY . .
 # We also compile the daemon using tsc if needed, but we can run it via ts-node or compile it.
 RUN npm run build
 RUN npm install -g typescript tsx
-RUN tsc --noEmit || echo "TypeScript compilation finished."
+RUN tsc --noEmit
 
 # Production image
 FROM node:20-alpine AS runner
