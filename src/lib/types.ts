@@ -169,6 +169,12 @@ export interface OpenPosition {
   direction: 'LONG' | 'SHORT';
   isScalp?: boolean;
   entryFeePaid?: number;
+  notionalUsd?: number;
+  leverageUsed?: number;
+  riskAmountUsd?: number;
+  maxLossUsd?: number;
+  admissionScore?: number;
+  strategyType?: 'swing' | 'manual' | 'scalp';
   highestPriceReached?: number;
   lowestPriceReached?: number;
   isTrailing?: boolean;

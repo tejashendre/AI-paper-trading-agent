@@ -19,6 +19,23 @@ const ASSETS = [
   { key: "SILVER", name: "Silver (Spot)", category: "Commodities", symbol: "SI=F" }
 ];
 
+function calculateDisplayPnl(assetKey: string, pos: any, currentPrice: number) {
+  const isShort = pos.direction === "SHORT";
+  const signedMove = isShort
+    ? pos.entryPrice - currentPrice
+    : currentPrice - pos.entryPrice;
+
+  if (assetKey === "USDJPY") {
+    return (signedMove * pos.amount) / Math.max(currentPrice, 1e-9);
+  }
+
+  return signedMove * pos.amount;
+}
+
+function estimateDisplayNotional(assetKey: string, amount: number, price: number) {
+  return assetKey === "USDJPY" ? amount : amount * price;
+}
+
 export function Dashboard() {
   return (
     <AuthGate>
@@ -781,7 +798,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       const scalpPos = Object.values(portfolio.scalpPositions || {});
                       [...openPos, ...scalpPos].forEach((pos: any) => {
                         const currentPrice = livePrices?.[pos.asset]?.price || pos.entryPrice;
-                        totalExposure += pos.amount * currentPrice;
+                        totalExposure += estimateDisplayNotional(pos.asset, pos.amount, currentPrice);
                         totalMargin += pos.usdInvested || 0;
                       });
                       const marginUtilization = totalValue > 0 ? (totalMargin / totalValue) * 100 : 0;
@@ -944,9 +961,7 @@ function DashboardContent({ secret }: { secret: string }) {
                     if (!pos) return null;
                     const isShort = pos.direction === "SHORT";
                     const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
-                    const pnl = isShort 
-                      ? (pos.entryPrice - currentPrice) * pos.amount 
-                      : (currentPrice - pos.entryPrice) * pos.amount;
+                    const pnl = calculateDisplayPnl(assetKey, pos, currentPrice);
                     const pnlPercent = (pnl / pos.usdInvested) * 100;
                     
                     return (
@@ -1275,9 +1290,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       const isShort = pos.direction === "SHORT";
                       const isScalp = pos.type === 'scalp';
                       const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
-                      const pnl = isShort 
-                        ? (pos.entryPrice - currentPrice) * pos.amount 
-                        : (currentPrice - pos.entryPrice) * pos.amount;
+                      const pnl = calculateDisplayPnl(assetKey, pos, currentPrice);
                       const pnlPercent = (pnl / pos.usdInvested) * 100;
                       
                       return (

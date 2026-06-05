@@ -4,6 +4,7 @@ import { Logger } from '@/lib/logger';
 import { MarketService, SUPPORTED_ASSETS } from '@/lib/market';
 import { PortfolioManager } from '@/lib/portfolio';
 import { Trade, OpenPosition } from '@/lib/types';
+import { amountFromNotionalUsd, calculatePnlUsd } from '@/lib/trading/assetSpecs';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,7 +38,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Invalid amount. Available: $${portfolio.usd.toFixed(2)}` }, { status: 400 });
       }
 
-      const units = usdAmount / currentPrice;
+      const units = amountFromNotionalUsd(asset, usdAmount, currentPrice);
       portfolio.usd -= usdAmount;
       if (portfolio.balances) portfolio.balances[asset] = (portfolio.balances[asset] || 0) + units;
 
@@ -72,7 +73,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Invalid margin amount. Available: $${portfolio.usd.toFixed(2)}` }, { status: 400 });
       }
 
-      const units = usdAmount / currentPrice;
+      const units = amountFromNotionalUsd(asset, usdAmount, currentPrice);
       portfolio.usd -= usdAmount;
 
       const pos: OpenPosition = {
@@ -101,8 +102,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `No LONG position open in ${asset} to sell` }, { status: 400 });
       }
       const pos = currentPosition;
-      const proceeds = pos.amount * currentPrice;
-      const pnl = proceeds - pos.usdInvested;
+      const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'LONG');
+      const proceeds = pos.usdInvested + pnl;
       const pnlPercent = (pnl / pos.usdInvested) * 100;
 
       portfolio.usd += proceeds;
@@ -138,7 +139,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `No SHORT position open in ${asset} to cover` }, { status: 400 });
       }
       const pos = currentPosition;
-      const pnl = (pos.entryPrice - currentPrice) * pos.amount;
+      const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'SHORT');
       const pnlPercent = (pnl / pos.usdInvested) * 100;
 
       portfolio.usd += pos.usdInvested + pnl;

@@ -6,7 +6,8 @@ import { getRedis } from "../lib/redis";
 import { RiskManager } from "../lib/riskManager";
 import { Trade, OpenPosition } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
-import { TradeLedger } from "../lib/memory/tradeLedger";
+import { calculatePnlUsd, estimateFeeUsd } from "../lib/trading/assetSpecs";
+import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
 import crypto from "crypto";
 
 // Use the dedicated AI portfolio key
@@ -15,9 +16,6 @@ const updateAIPortfolio = (p: any) => PortfolioManager.updatePortfolio(p, "ai");
 const logAITrade = (t: any) => PortfolioManager.logTrade(t, "ai");
 
 const TICK_INTERVAL_MS = 60000; // 1-minute interval for Swing tracking
-const RISK_PER_TRADE_PERCENT = 0.015; // Strict 1.5% portfolio equity risk per trade
-const MAX_LEVERAGE = 5.0; // Hard cap on leverage for swing trades to prevent liquidation
-const TRANSACTION_FEE_RATE = 0.0005;
 
 // Start Live Websocket Mesh
 const wsMesh = new WebsocketDataMesh();
@@ -66,20 +64,13 @@ async function runSwingTick() {
         if (sltp.triggered) {
           const isShort = pos.direction === "SHORT";
           
-          const priceChange = isShort
-            ? pos.entryPrice - sltp.exitPrice
-            : sltp.exitPrice - pos.entryPrice;
-          
-          let grossPnl = priceChange * pos.amount;
-          if (asset.startsWith("USD") && asset !== "USD") {
-              grossPnl = grossPnl / sltp.exitPrice;
-          }
+          const grossPnl = calculatePnlUsd(asset, pos.entryPrice, sltp.exitPrice, pos.amount, pos.direction);
           
           const entryFee = pos.entryFeePaid !== undefined 
             ? pos.entryFeePaid 
-            : ((pos.amount * pos.entryPrice) * TRANSACTION_FEE_RATE);
+            : estimateFeeUsd(asset, pos.amount, pos.entryPrice);
           
-          const exitFee = (pos.amount * sltp.exitPrice) * TRANSACTION_FEE_RATE;
+          const exitFee = estimateFeeUsd(asset, pos.amount, sltp.exitPrice);
           const totalFees = entryFee + exitFee;
           
           const netPnl = grossPnl - totalFees;
@@ -174,58 +165,50 @@ async function runSwingTick() {
         const currentLivePrice = swingSignal.entryPrice;
         const isShort = swingSignal.action === "SWING_SHORT";
 
-        // Institutional Position Sizing: Risk exactly 1.5% of Equity
-        const riskAmountUsd = portfolio.usd * RISK_PER_TRADE_PERCENT;
-        const priceDistance = Math.abs(currentLivePrice - swingSignal.stopLoss);
-        
-        if (priceDistance <= 0) continue; // Invalid SL
+        const admission = TradeAdmissionController.evaluate({
+          portfolio,
+          asset,
+          direction: isShort ? "SHORT" : "LONG",
+          entryPrice: currentLivePrice,
+          stopLoss: swingSignal.stopLoss,
+          takeProfit: swingSignal.takeProfit,
+          signalScore: swingSignal.score,
+          reasoning: swingSignal.reasoning,
+          strategyType: "swing",
+        });
 
-        let priceDistanceUsd = priceDistance;
-        if (asset.startsWith("USD") && asset !== "USD") {
-            priceDistanceUsd = priceDistance / currentLivePrice;
+        if (!admission.approved) {
+          await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
+          continue;
         }
 
-        // Calculate amount of asset to buy so that (amount * priceDistanceUsd) == riskAmountUsd
-        const amount = riskAmountUsd / priceDistanceUsd;
-        
-        const notionalPositionSizeUsd = (asset.startsWith("USD") && asset !== "USD") 
-            ? amount 
-            : amount * currentLivePrice;
-        
-        // Calculate required margin (Assuming max 5x leverage for swings)
-        const requiredMarginUsd = notionalPositionSizeUsd / MAX_LEVERAGE;
-        
-        if (requiredMarginUsd > portfolio.usd) {
-           // Skip if we don't have enough margin for even a 5x leveraged trade
-           await Logger.warn(`[SWING ENGINE] Skipped ${asset} - Insufficient margin for strict risk parameters.`);
-           continue;
-        }
-
-        const entryFee = notionalPositionSizeUsd * TRANSACTION_FEE_RATE;
-
-        if (requiredMarginUsd + entryFee > portfolio.usd) continue;
-
-        portfolio.usd -= (requiredMarginUsd + entryFee);
-        portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
+        portfolio.usd -= (admission.requiredMarginUsd + admission.entryFeeUsd);
+        portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + admission.entryFeeUsd;
 
         if (!isShort) {
-          portfolio.balances[asset] = (portfolio.balances[asset] || 0) + amount;
+          portfolio.balances[asset] = (portfolio.balances[asset] || 0) + admission.amount;
         }
 
         const newPos: OpenPosition = {
           asset,
           entryPrice: currentLivePrice,
-          amount,
-          btcAmount: amount, 
-          usdInvested: requiredMarginUsd,
+          amount: admission.amount,
+          btcAmount: admission.amount, 
+          usdInvested: admission.requiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           entryTime: new Date().toISOString(),
           signalScore: swingSignal.score,
-          reasoning: swingSignal.reasoning,
+          reasoning: `${swingSignal.reasoning} | ${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
           isScalp: false,
-          entryFeePaid: entryFee
+          entryFeePaid: admission.entryFeeUsd,
+          notionalUsd: admission.notionalUsd,
+          leverageUsed: admission.leverage,
+          riskAmountUsd: admission.riskAmountUsd,
+          maxLossUsd: admission.maxLossUsd,
+          admissionScore: admission.admissionScore,
+          strategyType: "swing"
         };
 
         portfolio.openPositions[asset] = newPos;
@@ -236,20 +219,20 @@ async function runSwingTick() {
           asset,
           action: isShort ? "SHORT" : "BUY",
           direction: isShort ? "SHORT" : "LONG",
-          amount,
-          btcAmount: amount,
+          amount: admission.amount,
+          btcAmount: admission.amount,
           price: currentLivePrice,
-          usdValue: requiredMarginUsd,
+          usdValue: admission.requiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
-          reasoning: swingSignal.reasoning
+          reasoning: newPos.reasoning
         };
 
         await updateAIPortfolio(portfolio);
         await logAITrade(entryTrade);
 
-        await Logger.info(`⚡ [SWING ENTRY] ${asset} ${isShort ? 'SHORT' : 'LONG'} @ $${currentLivePrice.toLocaleString()} | Risking $${riskAmountUsd.toFixed(2)} | Margin: $${requiredMarginUsd.toFixed(2)} | SL: $${swingSignal.stopLoss.toFixed(2)}`);
+        await Logger.info(`[SWING ENTRY] ${asset} ${isShort ? 'SHORT' : 'LONG'} @ $${currentLivePrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Max Loss: $${admission.maxLossUsd.toFixed(2)} | Margin: $${admission.requiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x | SL: $${swingSignal.stopLoss.toFixed(2)}`);
 
       } catch (scanErr) {
         console.error(`[SWING ENGINE] Scan error on ${asset}:`, scanErr);
