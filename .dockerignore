@@ -5,5 +5,13 @@ out
 build
 dist
 .git
+.env
 .env.local
+.env*.local
+ssh-key-*.key*
+*.key
+*.pem
+*.tar.gz
+*.zip
+*.tsbuildinfo
 .DS_Store
