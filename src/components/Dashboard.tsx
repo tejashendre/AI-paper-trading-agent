@@ -748,7 +748,7 @@ function DashboardContent({ secret }: { secret: string }) {
             </div>
 
             {/* Performance curve */}
-            {trades && trades.length > 0 && (
+            {trades && (
               <div className={`border rounded-2xl p-5 ${bgCard}`}>
                 <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Performance Growth Curve</h2>
                 <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />

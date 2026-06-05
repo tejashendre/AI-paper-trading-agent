@@ -18,7 +18,7 @@ export function EquityCurve({ trades, initialCapital }: Props) {
   const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
-    if (!chartContainerRef.current || !trades || trades.length === 0) return;
+    if (!chartContainerRef.current || !trades) return;
 
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#A3A3A3" },
