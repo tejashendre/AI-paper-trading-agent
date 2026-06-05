@@ -35,3 +35,5 @@ yarn-error.log*
 # keys & secrets
 ssh-key-*.key*
 *.key
+*.tar.gz
+*.zip
