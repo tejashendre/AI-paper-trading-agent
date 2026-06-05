@@ -70,7 +70,10 @@ async function runSwingTick() {
             ? pos.entryPrice - sltp.exitPrice
             : sltp.exitPrice - pos.entryPrice;
           
-          const grossPnl = priceChange * pos.amount;
+          let grossPnl = priceChange * pos.amount;
+          if (asset.startsWith("USD") && asset !== "USD") {
+              grossPnl = grossPnl / sltp.exitPrice;
+          }
           
           const entryFee = pos.entryFeePaid !== undefined 
             ? pos.entryFeePaid 
@@ -177,9 +180,17 @@ async function runSwingTick() {
         
         if (priceDistance <= 0) continue; // Invalid SL
 
-        // Calculate amount of asset to buy so that (amount * priceDistance) == riskAmountUsd
-        const amount = riskAmountUsd / priceDistance;
-        const notionalPositionSizeUsd = amount * currentLivePrice;
+        let priceDistanceUsd = priceDistance;
+        if (asset.startsWith("USD") && asset !== "USD") {
+            priceDistanceUsd = priceDistance / currentLivePrice;
+        }
+
+        // Calculate amount of asset to buy so that (amount * priceDistanceUsd) == riskAmountUsd
+        const amount = riskAmountUsd / priceDistanceUsd;
+        
+        const notionalPositionSizeUsd = (asset.startsWith("USD") && asset !== "USD") 
+            ? amount 
+            : amount * currentLivePrice;
         
         // Calculate required margin (Assuming max 5x leverage for swings)
         const requiredMarginUsd = notionalPositionSizeUsd / MAX_LEVERAGE;

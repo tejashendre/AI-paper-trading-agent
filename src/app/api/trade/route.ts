@@ -69,8 +69,15 @@ async function handleSwingTrade(request: Request) {
           
           if (priceDistance <= 0) continue;
 
-          const amount = riskAmountUsd / priceDistance;
-          const notionalPositionSizeUsd = amount * currentPrice;
+          let priceDistanceUsd = priceDistance;
+          if (asset.startsWith("USD") && asset !== "USD") {
+              priceDistanceUsd = priceDistance / currentPrice;
+          }
+
+          const amount = riskAmountUsd / priceDistanceUsd;
+          const notionalPositionSizeUsd = (asset.startsWith("USD") && asset !== "USD") 
+              ? amount 
+              : amount * currentPrice;
           const requiredMarginUsd = notionalPositionSizeUsd / MAX_LEVERAGE;
           
           if (requiredMarginUsd > portfolio.usd) {

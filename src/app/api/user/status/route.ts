@@ -38,9 +38,12 @@ export async function GET(request: Request) {
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
                         const isShort = pos.direction === 'SHORT';
-                        const pnl = isShort
+                        let pnl = isShort
                             ? (pos.entryPrice - currentPrice) * pos.amount
                             : (currentPrice - pos.entryPrice) * pos.amount;
+                        if (asset.startsWith("USD") && asset !== "USD") {
+                            pnl = pnl / currentPrice;
+                        }
                         return pos.usdInvested + pnl;
                     };
 
@@ -125,9 +128,13 @@ export async function GET(request: Request) {
                     if (!pos) return 0;
                     const currentPrice = prices[asset] || pos.entryPrice;
                     const isShort = pos.direction === 'SHORT';
-                    return isShort
+                    let pnl = isShort
                         ? (pos.entryPrice - currentPrice) * pos.amount
                         : (currentPrice - pos.entryPrice) * pos.amount;
+                    if (asset.startsWith("USD") && asset !== "USD") {
+                        pnl = pnl / currentPrice;
+                    }
+                    return pnl;
                 };
 
                 const openUnrealized = calculateUnrealized(portfolio.openPositions?.[asset]);
