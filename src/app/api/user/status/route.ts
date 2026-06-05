@@ -5,6 +5,7 @@ import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
 import { calculatePnlUsd } from "@/lib/trading/assetSpecs";
+import { getRedis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +18,16 @@ export async function GET(request: Request) {
         
         const isSpectator = authResult.source === "spectator";
 
-        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs] = await Promise.all([
+        const redis = getRedis();
+
+        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep] = await Promise.all([
             PortfolioManager.getPortfolio("user"),
             PortfolioManager.getTrades("user"),
             PortfolioManager.getPortfolio("ai"),
             PortfolioManager.getTrades("ai"),
             Logger.getLogs(),
+            redis.get("swing:lastScan:ai"),
+            redis.get("swing:lastExitSweep:ai"),
         ]);
 
         const calculateTrueValue = async (portfolio: any, type: "user" | "ai") => {
@@ -187,13 +192,13 @@ export async function GET(request: Request) {
             // User (Human) Data
             portfolio: userPortfolio,
             userPortfolio: userPortfolio,
-            userTrades: isSpectator ? userTrades.slice(0, 10) : userTrades, // Limit trades for spectators
+            userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades, // Keep restored history visible while bounded
             userTotalValue: userSync.totalValue,
             userProfitByAsset,
 
             // AI Data
             aiPortfolio: aiPortfolio,
-            aiTrades: isSpectator ? aiTrades.slice(0, 10) : aiTrades, // Limit trades for spectators
+            aiTrades: isSpectator ? aiTrades.slice(0, 100) : aiTrades, // Keep restored history visible while bounded
             aiTotalValue: aiSync.totalValue,
             aiProfitByAsset,
             aiDetailedStats,
@@ -207,6 +212,8 @@ export async function GET(request: Request) {
             btcPrice,
             totalValue: userSync.totalValue,
             profitByAsset: userProfitByAsset,
+            swingScan,
+            lastExitSweep,
             logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators
         });
     } catch (error) {

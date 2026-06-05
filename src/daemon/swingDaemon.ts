@@ -1,175 +1,167 @@
+import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
-import { MarketService, SUPPORTED_ASSETS } from "../lib/market";
+import { SUPPORTED_ASSETS } from "../lib/market";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
-import { RiskManager } from "../lib/riskManager";
 import { Trade, OpenPosition } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
-import { calculatePnlUsd, estimateFeeUsd } from "../lib/trading/assetSpecs";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
-import crypto from "crypto";
+import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
 
-// Use the dedicated AI portfolio key
+const ENTRY_SCAN_INTERVAL_MS = 60_000;
+const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
+const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
+
+type SwingScanAction = "HOLD" | "BLOCKED" | "ENTRY" | "SKIPPED" | "ERROR";
+
+interface SwingScanResult {
+  asset: string;
+  action: SwingScanAction;
+  reason: string;
+  score?: number;
+  price?: number;
+  margin?: number;
+  leverage?: number;
+  timestamp: string;
+}
+
 const getAIPortfolio = () => PortfolioManager.getPortfolio("ai");
 const updateAIPortfolio = (p: any) => PortfolioManager.updatePortfolio(p, "ai");
 const logAITrade = (t: any) => PortfolioManager.logTrade(t, "ai");
 
-const TICK_INTERVAL_MS = 60000; // 1-minute interval for Swing tracking
-
-// Start Live Websocket Mesh
 const wsMesh = new WebsocketDataMesh();
 wsMesh.start();
 
-let isTicking = false;
+let isEntryScanning = false;
+let isExitWatching = false;
 let lastSummaryLogTime = 0;
 
-async function runSwingTick() {
-  if (isTicking) return;
-  isTicking = true;
+function ensurePortfolioShape(portfolio: any) {
+  portfolio.openPositions = portfolio.openPositions || {};
+  portfolio.balances = portfolio.balances || {};
+  portfolio.returns = portfolio.returns || [];
+  portfolio.totalFeesPaid = portfolio.totalFeesPaid || 0;
+}
+
+function summarizeResults(results: SwingScanResult[]) {
+  return results.reduce<Record<SwingScanAction, number>>(
+    (acc, result) => {
+      acc[result.action] += 1;
+      return acc;
+    },
+    { HOLD: 0, BLOCKED: 0, ENTRY: 0, SKIPPED: 0, ERROR: 0 }
+  );
+}
+
+async function saveScanSnapshot(
+  results: SwingScanResult[],
+  exitSweep: SwingExitSweepResult,
+  startedAt: string
+) {
+  const redis = getRedis();
+  const now = Date.now();
+  const summary = summarizeResults(results);
+
+  await redis.set(
+    SCAN_SNAPSHOT_KEY,
+    {
+      startedAt,
+      completedAt: new Date().toISOString(),
+      nextScanAt: new Date(now + ENTRY_SCAN_INTERVAL_MS).toISOString(),
+      entryScanIntervalMs: ENTRY_SCAN_INTERVAL_MS,
+      exitWatchdogIntervalMs: EXIT_WATCHDOG_INTERVAL_MS,
+      summary,
+      exitSweep,
+      results,
+    },
+    { ex: 600 }
+  );
+}
+
+async function runExitWatchdog() {
+  if (isExitWatching) return;
+  isExitWatching = true;
+
+  try {
+    const portfolio = await getAIPortfolio();
+    ensurePortfolioShape(portfolio);
+    await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+  } catch (error) {
+    await Logger.error(`[EXIT_WATCHDOG] Failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    isExitWatching = false;
+  }
+}
+
+async function runEntryScan() {
+  if (isEntryScanning) return;
+  isEntryScanning = true;
+
+  const startedAt = new Date().toISOString();
+  const results: SwingScanResult[] = [];
+  let exitSweep: SwingExitSweepResult = {
+    source: "ENTRY_SCAN_PREFLIGHT",
+    checked: 0,
+    closed: 0,
+    trailed: 0,
+    skipped: 0,
+    errors: 0,
+    timestamp: startedAt,
+  };
+
   try {
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
-    
-    if (!portfolio.openPositions) {
-      portfolio.openPositions = {};
-    }
-    if (!portfolio.balances) {
-      portfolio.balances = {};
-    }
+    ensurePortfolioShape(portfolio);
 
-    const activeKeys = Object.keys(portfolio.openPositions);
-    const supportedAssets = Object.keys(SUPPORTED_ASSETS);
+    exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT" });
 
-    // ══════════════════════════════════════════════════════════════
-    // Phase 1: Sweep Active Swings for Exits
-    // ══════════════════════════════════════════════════════════════
-    for (const asset of activeKeys) {
-      const pos = portfolio.openPositions[asset];
-      if (!pos) continue;
+    for (const asset of Object.keys(SUPPORTED_ASSETS)) {
+      const timestamp = new Date().toISOString();
 
-      try {
-        let currentLivePrice = 0;
-        const livePriceStr = await redis.get<string>(`market:live:${asset}`);
-        if (livePriceStr) {
-          currentLivePrice = parseFloat(livePriceStr);
-        } else {
-          currentLivePrice = await MarketService.getCurrentPrice(asset);
-        }
-        if (isNaN(currentLivePrice) || currentLivePrice <= 0) continue;
-
-        // Check SL/TP and Trail Triggers
-        const sltp = RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice);
-
-        if (sltp.triggered) {
-          const isShort = pos.direction === "SHORT";
-          
-          const grossPnl = calculatePnlUsd(asset, pos.entryPrice, sltp.exitPrice, pos.amount, pos.direction);
-          
-          const entryFee = pos.entryFeePaid !== undefined 
-            ? pos.entryFeePaid 
-            : estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-          
-          const exitFee = estimateFeeUsd(asset, pos.amount, sltp.exitPrice);
-          const totalFees = entryFee + exitFee;
-          
-          const netPnl = grossPnl - totalFees;
-          const pnlPercent = (netPnl / pos.usdInvested) * 100;
-
-          portfolio.usd += pos.usdInvested + entryFee + netPnl;
-          portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
-          
-          if (portfolio.balances && !isShort) {
-            portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
-          }
-
-          portfolio.totalPnl += netPnl;
-          portfolio.totalTrades++;
-          portfolio.returns.push(pnlPercent);
-          if (portfolio.returns.length > 2000) {
-            portfolio.returns.shift();
-          }
-
-          if (netPnl >= 0) {
-            portfolio.winningTrades++;
-            portfolio.grossProfit += netPnl;
-            portfolio.consecutiveWins++;
-            portfolio.consecutiveLosses = 0;
-            portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
-          } else {
-            portfolio.losingTrades++;
-            portfolio.grossLoss += Math.abs(netPnl);
-            portfolio.consecutiveLosses++;
-            portfolio.consecutiveWins = 0;
-            portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
-          }
-
-          delete portfolio.openPositions[asset];
-          
-          await redis.set(`swing:cooldown:${asset}`, "1", { ex: 3600 }); // 1 hour cooldown after swing trade
-
-          const closeTrade: Trade = {
-            id: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-            asset,
-            action: isShort ? "COVER" : "SELL",
-            direction: isShort ? "SHORT" : "LONG",
-            amount: pos.amount,
-            btcAmount: pos.amount,
-            price: sltp.exitPrice,
-            usdValue: pos.usdInvested + netPnl,
-            stopLoss: pos.stopLoss,
-            takeProfit: pos.takeProfit,
-            signalScore: pos.signalScore,
-            reasoning: `Swing exit triggered: ${sltp.reason} | Net PnL: $${netPnl.toFixed(2)}`,
-            pnl: netPnl,
-            pnlPercent,
-            entryPrice: pos.entryPrice,
-            entryTime: pos.entryTime,
-            exitPrice: sltp.exitPrice,
-            exitTime: new Date().toISOString(),
-            exitReason: sltp.reason === "TAKE_PROFIT" ? "TAKE_PROFIT" : "STOP_LOSS",
-          };
-
-          await updateAIPortfolio(portfolio);
-          await logAITrade(closeTrade);
-
-          await Logger.info(`⚡ [SWING EXIT] ${asset} ${isShort ? 'SHORT COVER' : 'LONG SELL'} via ${sltp.reason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`);
-        } else if (sltp.trailed) {
-          if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
-          if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
-          await updateAIPortfolio(portfolio);
-          console.log(`[SWING ENGINE] Trailed levels for ${asset} | SL: $${pos.stopLoss.toFixed(2)}`);
-        }
-
-      } catch (sweepErr) {
-        console.error(`[SWING ENGINE] Sweep error on ${asset}:`, sweepErr);
+      if (portfolio.openPositions?.[asset]) {
+        results.push({
+          asset,
+          action: "SKIPPED",
+          reason: "Active position already open for this asset.",
+          timestamp,
+        });
+        continue;
       }
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    // Phase 2: Scan for New HTF Swing Setups
-    // ══════════════════════════════════════════════════════════════
-    for (const asset of supportedAssets) {
-      const hasPosition = portfolio.openPositions && portfolio.openPositions[asset];
-      if (hasPosition) continue;
 
       const onCooldown = await redis.get(`swing:cooldown:${asset}`);
-      if (onCooldown) continue;
+      if (onCooldown) {
+        results.push({
+          asset,
+          action: "SKIPPED",
+          reason: "Asset is cooling down after a recent swing exit.",
+          timestamp,
+        });
+        continue;
+      }
 
       try {
         const swingSignal = await SwingEngine.analyze(asset);
 
-        if (swingSignal.action === "HOLD") continue;
+        if (swingSignal.action === "HOLD") {
+          results.push({
+            asset,
+            action: "HOLD",
+            reason: swingSignal.reasoning,
+            score: swingSignal.score,
+            price: swingSignal.entryPrice,
+            timestamp,
+          });
+          continue;
+        }
 
-        const currentLivePrice = swingSignal.entryPrice;
         const isShort = swingSignal.action === "SWING_SHORT";
-
         const admission = TradeAdmissionController.evaluate({
           portfolio,
           asset,
           direction: isShort ? "SHORT" : "LONG",
-          entryPrice: currentLivePrice,
+          entryPrice: swingSignal.entryPrice,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
@@ -178,11 +170,19 @@ async function runSwingTick() {
         });
 
         if (!admission.approved) {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason: admission.reason,
+            score: swingSignal.score,
+            price: swingSignal.entryPrice,
+            timestamp,
+          });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
           continue;
         }
 
-        portfolio.usd -= (admission.requiredMarginUsd + admission.entryFeeUsd);
+        portfolio.usd -= admission.requiredMarginUsd + admission.entryFeeUsd;
         portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + admission.entryFeeUsd;
 
         if (!isShort) {
@@ -191,9 +191,9 @@ async function runSwingTick() {
 
         const newPos: OpenPosition = {
           asset,
-          entryPrice: currentLivePrice,
+          entryPrice: swingSignal.entryPrice,
           amount: admission.amount,
-          btcAmount: admission.amount, 
+          btcAmount: admission.amount,
           usdInvested: admission.requiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
@@ -208,7 +208,7 @@ async function runSwingTick() {
           riskAmountUsd: admission.riskAmountUsd,
           maxLossUsd: admission.maxLossUsd,
           admissionScore: admission.admissionScore,
-          strategyType: "swing"
+          strategyType: "swing",
         };
 
         portfolio.openPositions[asset] = newPos;
@@ -221,49 +221,75 @@ async function runSwingTick() {
           direction: isShort ? "SHORT" : "LONG",
           amount: admission.amount,
           btcAmount: admission.amount,
-          price: currentLivePrice,
+          price: swingSignal.entryPrice,
           usdValue: admission.requiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
-          reasoning: newPos.reasoning
+          reasoning: newPos.reasoning,
         };
 
         await updateAIPortfolio(portfolio);
         await logAITrade(entryTrade);
 
-        await Logger.info(`[SWING ENTRY] ${asset} ${isShort ? 'SHORT' : 'LONG'} @ $${currentLivePrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Max Loss: $${admission.maxLossUsd.toFixed(2)} | Margin: $${admission.requiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x | SL: $${swingSignal.stopLoss.toFixed(2)}`);
+        results.push({
+          asset,
+          action: "ENTRY",
+          reason: newPos.reasoning,
+          score: swingSignal.score,
+          price: swingSignal.entryPrice,
+          margin: admission.requiredMarginUsd,
+          leverage: admission.leverage,
+          timestamp,
+        });
 
-      } catch (scanErr) {
-        console.error(`[SWING ENGINE] Scan error on ${asset}:`, scanErr);
+        await Logger.info(
+          `[SWING ENTRY] ${asset} ${isShort ? "SHORT" : "LONG"} @ $${swingSignal.entryPrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Max Loss: $${admission.maxLossUsd.toFixed(2)} | Margin: $${admission.requiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x`
+        );
+      } catch (error) {
+        results.push({
+          asset,
+          action: "ERROR",
+          reason: error instanceof Error ? error.message : String(error),
+          timestamp,
+        });
+        await Logger.error(`[SWING SCAN] Scan error on ${asset}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
-    if (Date.now() - lastSummaryLogTime > 300000) {
+    await saveScanSnapshot(results, exitSweep, startedAt);
+
+    if (Date.now() - lastSummaryLogTime > 300_000) {
       lastSummaryLogTime = Date.now();
       const activeCount = Object.keys(portfolio.openPositions || {}).length;
-      await Logger.info(`[SWING DAEMON] Scanning HTF. Active Positions: ${activeCount}`);
+      const summary = summarizeResults(results);
+      await Logger.info(
+        `[SWING SCAN] Active: ${activeCount} | Entries: ${summary.ENTRY} | Holds: ${summary.HOLD} | Blocks: ${summary.BLOCKED} | Skips: ${summary.SKIPPED} | Errors: ${summary.ERROR}`
+      );
     }
-
-  } catch (err) {
-    console.error("[SWING ENGINE] Core Loop Crash:", err);
+  } catch (error) {
+    await Logger.error(`[SWING SCAN] Core loop failed: ${error instanceof Error ? error.message : String(error)}`);
+    await saveScanSnapshot(results, exitSweep, startedAt);
   } finally {
-    isTicking = false;
+    isEntryScanning = false;
   }
 }
 
-console.log("🚀 Starting V6 Institutional HTF Swing Daemon...");
-runSwingTick();
-const intervalId = setInterval(runSwingTick, TICK_INTERVAL_MS);
+console.log("Starting V6 Institutional HTF Swing Daemon...");
+runEntryScan();
+
+const entryIntervalId = setInterval(runEntryScan, ENTRY_SCAN_INTERVAL_MS);
+const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
 
 const shutdown = async (signal: string) => {
-  console.log(`\n🛑 Received ${signal}. Shutting down swingDaemon gracefully...`);
-  clearInterval(intervalId);
+  console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
+  clearInterval(entryIntervalId);
+  clearInterval(exitWatchdogIntervalId);
   try {
     wsMesh.stop();
-  } catch (err) {}
+  } catch {}
   process.exit(0);
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

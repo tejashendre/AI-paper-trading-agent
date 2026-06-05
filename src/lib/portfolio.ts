@@ -45,10 +45,14 @@ export class PortfolioManager {
                 ETH: 0,
                 SOL: 0,
                 EURUSD: 0,
+                GBPUSD: 0,
                 GOLD: 0,
                 OIL: 0,
                 SILVER: 0
             };
+        }
+        for (const asset of ["BTC", "ETH", "SOL", "EURUSD", "GBPUSD", "USDJPY", "GOLD", "OIL", "SILVER"]) {
+            if (data.balances[asset] === undefined) data.balances[asset] = 0;
         }
         if (data.totalFeesPaid === undefined) {
             data.totalFeesPaid = 0;
@@ -77,6 +81,8 @@ export class PortfolioManager {
                 ETH: 0,
                 SOL: 0,
                 EURUSD: 0,
+                GBPUSD: 0,
+                USDJPY: 0,
                 GOLD: 0,
                 OIL: 0,
                 SILVER: 0

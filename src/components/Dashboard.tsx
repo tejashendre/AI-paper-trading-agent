@@ -36,6 +36,13 @@ function estimateDisplayNotional(assetKey: string, amount: number, price: number
   return assetKey === "USDJPY" ? amount : amount * price;
 }
 
+function formatCountdown(ms: number) {
+  const safeMs = Math.max(0, ms);
+  const minutes = Math.floor((safeMs / 1000 / 60) % 60);
+  const seconds = Math.floor((safeMs / 1000) % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
 export function Dashboard() {
   return (
     <AuthGate>
@@ -164,18 +171,16 @@ function DashboardContent({ secret }: { secret: string }) {
   // Next Scan Countdown Timer Effect
   useEffect(() => {
     const updateTimer = () => {
-      const now = new Date();
-      const nextRun = new Date();
-      nextRun.setHours(now.getHours() + 1, 0, 0, 0);
-      const diffMs = nextRun.getTime() - now.getTime();
-      const minutes = Math.floor((diffMs / 1000 / 60) % 60);
-      const seconds = Math.floor((diffMs / 1000) % 60);
-      setTimeLeft(`${minutes}m ${seconds}s`);
+      const intervalMs = data?.swingScan?.entryScanIntervalMs || 60000;
+      const nextScanTime = data?.swingScan?.nextScanAt
+        ? new Date(data.swingScan.nextScanAt).getTime()
+        : Math.ceil(Date.now() / intervalMs) * intervalMs;
+      setTimeLeft(formatCountdown(nextScanTime - Date.now()));
     };
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [data?.swingScan?.entryScanIntervalMs, data?.swingScan?.nextScanAt]);
 
   // Load Web Worker for zero-timeout simulations
   useEffect(() => {
@@ -229,22 +234,23 @@ function DashboardContent({ secret }: { secret: string }) {
     }
   };
 
-  const handleManualTrade = async (action: string) => {
+  const handleManualTrade = async (action: string, assetOverride?: string) => {
     if (isSpectator) {
       alert("🔒 Spectator Mode: Live execution locked. Manual trading is disabled for guest spectating sessions.");
       return;
     }
     if (viewMode !== "user") return alert("Manual trading only available on your personal portfolio.");
+    const tradeAsset = assetOverride || activeAsset;
     setManualTrading(true);
     try {
       const res = await fetcher('/api/trade/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asset: activeAsset, action, amount: manualAmount || undefined })
+        body: JSON.stringify({ asset: tradeAsset, action, amount: manualAmount || undefined })
       });
       const json = await res.json();
       if (json.success) {
-        alert(`Manual ${action} executed on ${activeAsset}!`);
+        alert(`Manual ${action} executed on ${tradeAsset}!`);
       } else {
         alert(`Trade failed: ${json.error}`);
       }
@@ -390,7 +396,7 @@ function DashboardContent({ secret }: { secret: string }) {
               </div>
               <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
                 <span className="w-1 h-1 rounded-full bg-indigo-500 animate-ping"></span>
-                <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Next Sync:</span>
+                <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Next Scan:</span>
                 <span className="text-[10px] font-mono font-bold text-indigo-500">{timeLeft || "calculating..."}</span>
               </div>
             </div>
@@ -664,17 +670,17 @@ function DashboardContent({ secret }: { secret: string }) {
                               </span>
                             ) : (() => {
                               const isShort = t.direction === "SHORT" || t.action === "SHORT" || t.action === "SCALP_SHORT";
-                              const isLong = !isShort;
                               const hasPotential = t.takeProfit > 0 && t.stopLoss > 0 && t.amount > 0 && t.price > 0;
                               if (!hasPotential) {
                                 return <span className="text-slate-400 font-mono italic">Position Opened</span>;
                               }
-                              const tpPnl = isLong 
-                                ? (t.takeProfit - t.price) * t.amount 
-                                : (t.price - t.takeProfit) * t.amount;
-                              const slPnl = isLong 
-                                ? (t.stopLoss - t.price) * t.amount 
-                                : (t.price - t.stopLoss) * t.amount;
+                              const tradeLikePosition = {
+                                direction: isShort ? "SHORT" : "LONG",
+                                entryPrice: t.price,
+                                amount: t.amount
+                              };
+                              const tpPnl = calculateDisplayPnl(t.asset, tradeLikePosition, t.takeProfit);
+                              const slPnl = calculateDisplayPnl(t.asset, tradeLikePosition, t.stopLoss);
                               return (
                                 <div className="flex items-center gap-1.5 font-mono text-[9px]">
                                   <span className="text-green-500 font-bold">TP: +${tpPnl.toFixed(2)}</span>
@@ -835,6 +841,50 @@ function DashboardContent({ secret }: { secret: string }) {
                       <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
                         <span className="font-bold text-blue-500 uppercase">{signals.composite.action}</span> - {signals.composite.reasoning}
                       </p>
+                    </div>
+                  </div>
+                )}
+
+                {viewMode === "ai" && data?.swingScan && (
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Autonomous Swing Scan</div>
+                        <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                          Last scan: {new Date(data.swingScan.completedAt || data.swingScan.startedAt).toLocaleTimeString()} | Next: {timeLeft}
+                        </p>
+                      </div>
+                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
+                        isDark ? "bg-emerald-950/30 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      }`}>
+                        WATCHDOG {Math.round((data.swingScan.exitWatchdogIntervalMs || 5000) / 1000)}S
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-5 gap-2 mt-3">
+                      {(["ENTRY", "HOLD", "BLOCKED", "SKIPPED", "ERROR"] as const).map((key) => (
+                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
+                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{key}</div>
+                          <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.swingScan.summary?.[key] || 0}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-3 space-y-1.5 max-h-32 overflow-y-auto">
+                      {(data.swingScan.results || []).slice(0, 9).map((result: any) => (
+                        <div key={`${result.asset}-${result.timestamp}`} className={`flex items-start justify-between gap-2 text-[9px] font-mono border-b ${borderCol} pb-1.5`}>
+                          <span className={`font-bold ${textPrimary}`}>{result.asset}</span>
+                          <span className={`shrink-0 font-bold ${
+                            result.action === "ENTRY" ? "text-emerald-400" :
+                            result.action === "BLOCKED" || result.action === "ERROR" ? "text-red-400" :
+                            result.action === "SKIPPED" ? "text-amber-400" :
+                            textMuted
+                          }`}>
+                            {result.action}{typeof result.score === "number" ? ` ${result.score}` : ""}
+                          </span>
+                          <span className={`${textMuted} flex-1 text-right line-clamp-2`}>{result.reason}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -1249,7 +1299,7 @@ function DashboardContent({ secret }: { secret: string }) {
               {data?.aiDetailedStats && viewMode === "ai" && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
-                    <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>HFT Scalp Engine</span>
+                    <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>Scalp Ledger</span>
                     <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.scalp.trades > 0 ? ((data.aiDetailedStats.scalp.wins / data.aiDetailedStats.scalp.trades) * 100).toFixed(1) : 0}%</span>
                     <span className={`text-[10px] font-mono ${data.aiDetailedStats.scalp.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       PnL: ${data.aiDetailedStats.scalp.pnl.toFixed(2)}
@@ -1323,7 +1373,7 @@ function DashboardContent({ secret }: { secret: string }) {
                                   return;
                                 }
                                 setManualAmount("");
-                                await handleManualTrade(isShort ? "COVER" : "SELL");
+                                await handleManualTrade(isShort ? "COVER" : "SELL", assetKey);
                               }}
                               disabled={manualTrading || isSpectator}
                               className={`w-full mt-1.5 py-1 text-[10px] font-mono font-bold rounded-lg transition-all ${btnCloseStyle}`}
