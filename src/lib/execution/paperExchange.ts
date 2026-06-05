@@ -31,8 +31,9 @@ export class PaperExchange {
 
     const env = getEnv();
     const hasLiveKeys = !!(env.BINANCE_API_KEY || env.BYBIT_API_KEY);
+    const liveTradingEnabled = env.LIVE_TRADING_ENABLED === true;
 
-    if (hasLiveKeys) {
+    if (hasLiveKeys && liveTradingEnabled) {
       // ── LIVE TESTNET EXECUTION ─────────────────────────────────────
       const amount = approvedSizeUsd / currentPrice; // approximate size
       const targetExchange = env.BINANCE_API_KEY ? 'BINANCE' : 'BYBIT';
@@ -281,7 +282,7 @@ export class PaperExchange {
 
     return {
       success: true,
-      message: `Order filled via ${hasLiveKeys ? 'LiveExchange' : 'PaperExchange'}: ${action} $${actualUsdInvested.toFixed(2)}.`,
+      message: `Order filled via ${hasLiveKeys && liveTradingEnabled ? 'LiveExchange' : 'PaperExchange'}: ${action} $${actualUsdInvested.toFixed(2)}.`,
       updatedPortfolio: portfolio,
       trade
     };

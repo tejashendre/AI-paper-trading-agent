@@ -4,6 +4,7 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
+import { calculatePnlUsd } from "@/lib/trading/assetSpecs";
 
 export const dynamic = "force-dynamic";
 
@@ -37,13 +38,7 @@ export async function GET(request: Request) {
                     
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
-                        const isShort = pos.direction === 'SHORT';
-                        let pnl = isShort
-                            ? (pos.entryPrice - currentPrice) * pos.amount
-                            : (currentPrice - pos.entryPrice) * pos.amount;
-                        if (asset.startsWith("USD") && asset !== "USD") {
-                            pnl = pnl / currentPrice;
-                        }
+                        const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
                         return pos.usdInvested + pnl;
                     };
 
@@ -127,14 +122,7 @@ export async function GET(request: Request) {
                 const calculateUnrealized = (pos: any) => {
                     if (!pos) return 0;
                     const currentPrice = prices[asset] || pos.entryPrice;
-                    const isShort = pos.direction === 'SHORT';
-                    let pnl = isShort
-                        ? (pos.entryPrice - currentPrice) * pos.amount
-                        : (currentPrice - pos.entryPrice) * pos.amount;
-                    if (asset.startsWith("USD") && asset !== "USD") {
-                        pnl = pnl / currentPrice;
-                    }
-                    return pnl;
+                    return calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
                 };
 
                 const openUnrealized = calculateUnrealized(portfolio.openPositions?.[asset]);

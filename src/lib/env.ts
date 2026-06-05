@@ -24,6 +24,7 @@
     BYBIT_API_KEY?: string;
     BYBIT_API_SECRET?: string;
     MARGIN_MODE?: string;
+    LIVE_TRADING_ENABLED?: boolean;
   }
   
   let cached: Env | null = null;
@@ -32,9 +33,6 @@
     if (cached) return cached;
   
     const required = [
-      "GEMINI_API_KEY",
-      "TELEGRAM_BOT_TOKEN",
-      "TELEGRAM_CHAT_ID",
       "DASHBOARD_SECRET",
       "ADMIN_SECRET",
     ] as const;
@@ -51,9 +49,9 @@
     }
   
     cached = {
-      GEMINI_API_KEY: process.env.GEMINI_API_KEY!,
-      TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN!,
-      TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID!,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
+      TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || "",
+      TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || "",
       DASHBOARD_SECRET: process.env.DASHBOARD_SECRET!,
       QSTASH_CURRENT_SIGNING_KEY: process.env.QSTASH_CURRENT_SIGNING_KEY || "",
       QSTASH_NEXT_SIGNING_KEY: process.env.QSTASH_NEXT_SIGNING_KEY || "",
@@ -71,6 +69,7 @@
       BYBIT_API_KEY: process.env.BYBIT_API_KEY || "",
       BYBIT_API_SECRET: process.env.BYBIT_API_SECRET || "",
       MARGIN_MODE: process.env.MARGIN_MODE || "CROSS",
+      LIVE_TRADING_ENABLED: process.env.LIVE_TRADING_ENABLED === "true",
     };
 
   return cached;

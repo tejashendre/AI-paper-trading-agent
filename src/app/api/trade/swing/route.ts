@@ -4,11 +4,8 @@ import { Logger } from "@/lib/logger";
 import { SwingEngine } from "@/lib/swingEngine";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { PortfolioManager as OriginalPortfolioManager } from "@/lib/portfolio";
-import { TelegramService } from "@/lib/telegram";
-import { getEnv } from "@/lib/env";
-import { Trade, OpenPosition, Portfolio } from "@/lib/types";
-import { TradeLedger } from "@/lib/memory/tradeLedger";
-import { getRedis } from "@/lib/redis";
+import { Trade, OpenPosition } from "@/lib/types";
+import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 
 // Proxy PortfolioManager calls to the 'ai' portfolio context for parallel execution
 const PortfolioManager = {
@@ -60,45 +57,46 @@ async function handleSwingTrade(request: Request) {
         if (swingSignal.action === 'SWING_BUY' || swingSignal.action === 'SWING_SHORT') {
           const isShort = swingSignal.action === 'SWING_SHORT';
 
-          // Institutional Position Sizing: Risk exactly 1.5% of Equity
-          const RISK_PER_TRADE_PERCENT = 0.015;
-          const MAX_LEVERAGE = 5.0;
-          const TRANSACTION_FEE_RATE = 0.0005;
+          const admission = TradeAdmissionController.evaluate({
+            portfolio,
+            asset,
+            direction: isShort ? "SHORT" : "LONG",
+            entryPrice: currentPrice,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
+            signalScore: swingSignal.score,
+            reasoning: swingSignal.reasoning,
+            strategyType: "swing",
+          });
 
-          const riskAmountUsd = portfolio.usd * RISK_PER_TRADE_PERCENT;
-          const priceDistance = Math.abs(currentPrice - swingSignal.stopLoss);
-          
-          if (priceDistance <= 0) continue;
-
-          const amount = riskAmountUsd / priceDistance;
-          const notionalPositionSizeUsd = amount * currentPrice;
-          const requiredMarginUsd = notionalPositionSizeUsd / MAX_LEVERAGE;
-          
-          if (requiredMarginUsd > portfolio.usd) {
-             continue;
+          if (!admission.approved) {
+            scanResults.push({ asset, action: "BLOCKED", reason: admission.reason, score: swingSignal.score });
+            continue;
           }
 
-          const entryFee = notionalPositionSizeUsd * TRANSACTION_FEE_RATE;
-
-          if (requiredMarginUsd + entryFee > portfolio.usd) continue;
-
-          portfolio.usd -= (requiredMarginUsd + entryFee);
-          portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
+          portfolio.usd -= (admission.requiredMarginUsd + admission.entryFeeUsd);
+          portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + admission.entryFeeUsd;
 
           const newPos: OpenPosition = {
             asset: asset,
             entryPrice: currentPrice,
-            amount: amount,
-            btcAmount: amount,
-            usdInvested: requiredMarginUsd,
-            entryFeePaid: entryFee,
+            amount: admission.amount,
+            btcAmount: admission.amount,
+            usdInvested: admission.requiredMarginUsd,
+            entryFeePaid: admission.entryFeeUsd,
             stopLoss: swingSignal.stopLoss,
             takeProfit: swingSignal.takeProfit,
             entryTime: new Date().toISOString(),
             signalScore: swingSignal.score,
-            reasoning: swingSignal.reasoning,
+            reasoning: `${swingSignal.reasoning} | ${admission.reason}`,
             direction: isShort ? 'SHORT' : 'LONG',
-            isScalp: false
+            isScalp: false,
+            notionalUsd: admission.notionalUsd,
+            leverageUsed: admission.leverage,
+            riskAmountUsd: admission.riskAmountUsd,
+            maxLossUsd: admission.maxLossUsd,
+            admissionScore: admission.admissionScore,
+            strategyType: "swing"
           };
 
           portfolio.openPositions[asset] = newPos;
@@ -110,18 +108,18 @@ async function handleSwingTrade(request: Request) {
             asset: asset,
             action: isShort ? "SHORT" : "BUY",
             direction: isShort ? 'SHORT' : 'LONG',
-            amount: amount,
-            btcAmount: amount,
+            amount: admission.amount,
+            btcAmount: admission.amount,
             price: currentPrice,
-            usdValue: requiredMarginUsd,
+            usdValue: admission.requiredMarginUsd,
             stopLoss: swingSignal.stopLoss,
             takeProfit: swingSignal.takeProfit,
             signalScore: swingSignal.score,
-            reasoning: swingSignal.reasoning
+            reasoning: newPos.reasoning
           };
 
           await PortfolioManager.logTrade(trade);
-          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, price: currentPrice });
+          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, price: currentPrice, margin: admission.requiredMarginUsd, leverage: admission.leverage });
         } else {
           scanResults.push({ asset, action: "HOLD", reason: swingSignal.reasoning });
         }
