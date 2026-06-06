@@ -8,6 +8,7 @@ import { Trade, OpenPosition } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
 import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
+import { getMarketSessionState } from "../lib/trading/marketSession";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -136,6 +137,17 @@ async function runEntryScan() {
           asset,
           action: "SKIPPED",
           reason: "Asset is cooling down after a recent swing exit.",
+          timestamp,
+        });
+        continue;
+      }
+
+      const session = getMarketSessionState(asset);
+      if (!session.isOpen) {
+        results.push({
+          asset,
+          action: "SKIPPED",
+          reason: session.reason,
           timestamp,
         });
         continue;

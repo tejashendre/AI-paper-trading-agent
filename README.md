@@ -106,6 +106,7 @@ The current daemon entry scan interval is one minute. That is deliberate for thi
 - The system blocks duplicate active positions in the same asset.
 - The system caps total portfolio margin exposure.
 - Leverage is score-based, not fixed.
+- Forex and commodity entries are blocked outside weekday market sessions to avoid stale weekend prices.
 
 ---
 

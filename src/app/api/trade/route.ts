@@ -6,6 +6,7 @@ import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { PortfolioManager as OriginalPortfolioManager } from "@/lib/portfolio";
 import { Trade, OpenPosition } from "@/lib/types";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
+import { getMarketSessionState } from "@/lib/trading/marketSession";
 
 // Proxy PortfolioManager calls to the 'ai' portfolio context for parallel execution
 const PortfolioManager = {
@@ -49,6 +50,12 @@ async function handleSwingTrade(request: Request) {
         
         // Skip if a position is already active for this asset
         if (portfolio.openPositions[asset]) {
+          continue;
+        }
+
+        const session = getMarketSessionState(asset);
+        if (!session.isOpen) {
+          scanResults.push({ asset, action: "SKIPPED", reason: session.reason });
           continue;
         }
 
