@@ -43,6 +43,20 @@ function formatCountdown(ms: number) {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatAge(iso?: string) {
+  if (!iso) return "unknown";
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (ageSeconds < 60) return `${ageSeconds}s ago`;
+  const minutes = Math.floor(ageSeconds / 60);
+  const seconds = ageSeconds % 60;
+  return `${minutes}m ${seconds}s ago`;
+}
+
+function formatClock(iso?: string) {
+  if (!iso) return "--:--:--";
+  return new Date(iso).toLocaleTimeString();
+}
+
 export function Dashboard() {
   return (
     <AuthGate>
@@ -851,7 +865,11 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div>
                         <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Autonomous Swing Scan</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-                          Last scan: {new Date(data.swingScan.completedAt || data.swingScan.startedAt).toLocaleTimeString()} | Next: {timeLeft}
+                          Last scan: {formatClock(data.swingScan.completedAt || data.swingScan.startedAt)} | Next: {timeLeft}
+                        </p>
+                        <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                          Scan #{data.swingScan.scanId ?? "-"} | Updated {formatAge(data.swingScan.completedAt || data.swingScan.startedAt)}
+                          {typeof data.swingScan.durationMs === "number" ? ` | Runtime ${(data.swingScan.durationMs / 1000).toFixed(1)}s` : ""}
                         </p>
                       </div>
                       <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
@@ -873,7 +891,10 @@ function DashboardContent({ secret }: { secret: string }) {
                     <div className="mt-3 space-y-1.5 max-h-32 overflow-y-auto">
                       {(data.swingScan.results || []).slice(0, 9).map((result: any) => (
                         <div key={`${result.asset}-${result.timestamp}`} className={`flex items-start justify-between gap-2 text-[9px] font-mono border-b ${borderCol} pb-1.5`}>
-                          <span className={`font-bold ${textPrimary}`}>{result.asset}</span>
+                          <span className={`font-bold ${textPrimary}`}>
+                            {result.asset}
+                            <span className={`block text-[7px] font-normal ${textMuted}`}>{formatClock(result.timestamp)}</span>
+                          </span>
                           <span className={`shrink-0 font-bold ${
                             result.action === "ENTRY" ? "text-emerald-400" :
                             result.action === "BLOCKED" || result.action === "ERROR" ? "text-red-400" :
