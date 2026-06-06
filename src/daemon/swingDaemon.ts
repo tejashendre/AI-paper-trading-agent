@@ -37,6 +37,7 @@ wsMesh.start();
 let isEntryScanning = false;
 let isExitWatching = false;
 let lastSummaryLogTime = 0;
+let scanSequence = 0;
 
 function ensurePortfolioShape(portfolio: any) {
   portfolio.openPositions = portfolio.openPositions || {};
@@ -62,16 +63,19 @@ async function saveScanSnapshot(
 ) {
   const redis = getRedis();
   const now = Date.now();
+  const startedTime = new Date(startedAt).getTime();
   const summary = summarizeResults(results);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
     {
+      scanId: scanSequence,
       startedAt,
       completedAt: new Date().toISOString(),
       nextScanAt: new Date(now + ENTRY_SCAN_INTERVAL_MS).toISOString(),
       entryScanIntervalMs: ENTRY_SCAN_INTERVAL_MS,
       exitWatchdogIntervalMs: EXIT_WATCHDOG_INTERVAL_MS,
+      durationMs: Number.isFinite(startedTime) ? now - startedTime : null,
       summary,
       exitSweep,
       results,
@@ -98,6 +102,7 @@ async function runExitWatchdog() {
 async function runEntryScan() {
   if (isEntryScanning) return;
   isEntryScanning = true;
+  scanSequence += 1;
 
   const startedAt = new Date().toISOString();
   const results: SwingScanResult[] = [];
