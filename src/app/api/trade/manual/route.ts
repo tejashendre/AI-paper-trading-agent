@@ -5,6 +5,7 @@ import { MarketService, SUPPORTED_ASSETS } from '@/lib/market';
 import { PortfolioManager } from '@/lib/portfolio';
 import { Trade, OpenPosition } from '@/lib/types';
 import { amountFromNotionalUsd, calculatePnlUsd } from '@/lib/trading/assetSpecs';
+import { getMarketSessionState } from '@/lib/trading/marketSession';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +29,13 @@ export async function POST(request: Request) {
     const portfolio = await PortfolioManager.getPortfolio();
     const currentPrice = await MarketService.getCurrentPrice(asset);
     const currentPosition = portfolio.openPositions?.[asset] || null;
+
+    if ((action === 'BUY' || action === 'SHORT') && !currentPosition) {
+      const session = getMarketSessionState(asset);
+      if (!session.isOpen) {
+        return NextResponse.json({ success: false, error: session.reason }, { status: 400 });
+      }
+    }
 
     if (action === 'BUY') {
       if (currentPosition) {
