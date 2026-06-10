@@ -2,6 +2,7 @@ import { Candle } from "@/lib/types";
 import { MarketService } from "./market";
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
+import { LocalLearningMemory } from "./trading/localLearning";
 
 export type SwingDecisionState =
   | "NO_BIAS"
@@ -33,6 +34,9 @@ export interface SwingSignal {
   riskMode: "Normal" | "Protected" | "Watch Only";
   assetMode: "REALTIME_FAST" | "SLOW_SWING" | "CONDITIONAL_FAST";
   setupTags: string[];
+  directionBias: "LONG" | "SHORT" | "NEUTRAL";
+  learningAdjustment: number;
+  learningRules: string[];
   livePrice: number;
   signalPrice: number;
   slippagePercent: number;
@@ -61,6 +65,9 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     riskMode: "Watch Only",
     assetMode: "SLOW_SWING",
     setupTags: [],
+    directionBias: "NEUTRAL",
+    learningAdjustment: 0,
+    learningRules: [],
     livePrice: 0,
     signalPrice: 0,
     slippagePercent: 0,
@@ -262,15 +269,17 @@ export class SwingEngine {
       const bestDirection: "LONG" | "SHORT" | "NEUTRAL" = buyScore > shortScore ? "LONG" : shortScore > buyScore ? "SHORT" : "NEUTRAL";
       const htfScore = Math.max(buyScore, shortScore);
       const trigger = scoreExecutionTrigger(bestDirection, assetMode, livePrice, candles1mResult, candles5mResult, snap15m.vwap);
+      const setupTags = [...details, ...trigger.tags];
+      const learning = await LocalLearningMemory.getAdjustment(assetKey, setupTags);
       const triggerScore = trigger.score;
       const dataScore = Math.round(dataQuality / 5);
       const riskRewardScore = 10;
-      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + dataScore + riskRewardScore)));
+      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + dataScore + riskRewardScore + learning.adjustment)));
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
       const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.15;
       const slippageOk = slippagePercent <= allowedSlippage;
-      const normalEntry = htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
-      const exceptionEntry = htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const normalEntry = !learning.watchOnly && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
+      const exceptionEntry = !learning.watchOnly && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
 
       // Require strong HTF alignment (score >= 14)
       if ((normalEntry || exceptionEntry) && bestDirection === "LONG") {
@@ -295,7 +304,7 @@ export class SwingEngine {
           entryPrice: livePrice,
           stopLoss: 0,
           takeProfit: 0,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, data quality ${dataQuality}. ${trigger.reason}`,
+          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, data quality ${dataQuality}. ${trigger.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
           htfScore,
           triggerScore,
@@ -316,7 +325,10 @@ export class SwingEngine {
           paperSize: paperSizeFromConviction(finalConviction),
           riskMode: dataQuality < 70 ? "Protected" : "Normal",
           assetMode,
-          setupTags: [...details, ...trigger.tags],
+          setupTags,
+          directionBias: bestDirection,
+          learningAdjustment: learning.adjustment,
+          learningRules: learning.rules.map((rule) => rule.message),
           livePrice,
           signalPrice,
           slippagePercent,
@@ -342,7 +354,7 @@ export class SwingEngine {
         entryPrice: currentPrice,
         stopLoss,
         takeProfit,
-        reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. Expected spread ${expectedMovePercent.toFixed(2)}%`,
+          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
         score: finalScore,
         expectedMove: expectedMovePercent,
         htfScore,
@@ -358,7 +370,10 @@ export class SwingEngine {
         paperSize: paperSizeFromConviction(finalConviction),
         riskMode: dataQuality < 70 ? "Protected" : "Normal",
         assetMode,
-        setupTags: [...details, ...trigger.tags],
+        setupTags,
+        directionBias: bestDirection,
+        learningAdjustment: learning.adjustment,
+        learningRules: learning.rules.map((rule) => rule.message),
         livePrice,
         signalPrice,
         slippagePercent,

@@ -9,6 +9,8 @@ import { WebsocketDataMesh } from "./websocketDataMesh";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
 import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
 import { getMarketSessionState } from "../lib/trading/marketSession";
+import { OpportunityJournal } from "../lib/trading/opportunityJournal";
+import { LocalLearningMemory } from "../lib/trading/localLearning";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -38,6 +40,9 @@ interface SwingScanResult {
   riskMode?: string;
   assetMode?: string;
   setupTags?: string[];
+  directionBias?: string;
+  learningAdjustment?: number;
+  learningRules?: string[];
   timestamp: string;
 }
 
@@ -73,7 +78,8 @@ function summarizeResults(results: SwingScanResult[]) {
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
-  startedAt: string
+  startedAt: string,
+  opportunitySweep?: { evaluated: number; pending: number }
 ) {
   const redis = getRedis();
   const now = Date.now();
@@ -92,6 +98,7 @@ async function saveScanSnapshot(
       durationMs: Number.isFinite(startedTime) ? now - startedTime : null,
       summary,
       exitSweep,
+      opportunitySweep,
       results,
     },
     { ex: 600 }
@@ -196,6 +203,9 @@ async function runEntryScan() {
             riskMode: swingSignal.riskMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            directionBias: swingSignal.directionBias,
+            learningAdjustment: swingSignal.learningAdjustment,
+            learningRules: swingSignal.learningRules,
             timestamp,
           });
           continue;
@@ -236,6 +246,9 @@ async function runEntryScan() {
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            directionBias: swingSignal.directionBias,
+            learningAdjustment: swingSignal.learningAdjustment,
+            learningRules: swingSignal.learningRules,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
@@ -326,6 +339,9 @@ async function runEntryScan() {
           riskMode: swingSignal.riskMode,
           assetMode: swingSignal.assetMode,
           setupTags: swingSignal.setupTags,
+          directionBias: swingSignal.directionBias,
+          learningAdjustment: swingSignal.learningAdjustment,
+          learningRules: swingSignal.learningRules,
           timestamp,
         });
 
@@ -343,7 +359,13 @@ async function runEntryScan() {
       }
     }
 
-    await saveScanSnapshot(results, exitSweep, startedAt);
+    await OpportunityJournal.recordMany(results);
+    const opportunitySweep = await OpportunityJournal.evaluateDue();
+    if ((opportunitySweep?.evaluated || 0) > 0) {
+      await LocalLearningMemory.rebuildRules();
+    }
+
+    await saveScanSnapshot(results, exitSweep, startedAt, opportunitySweep);
 
     if (Date.now() - lastSummaryLogTime > 300_000) {
       lastSummaryLogTime = Date.now();

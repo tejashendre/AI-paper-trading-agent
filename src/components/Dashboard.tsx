@@ -962,6 +962,65 @@ function DashboardContent({ secret }: { secret: string }) {
                     </div>
                   </div>
                 )}
+
+                {viewMode === "ai" && (
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Opportunity Radar</div>
+                        <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                          The bot now records watched setups and checks later whether they would have worked.
+                        </p>
+                      </div>
+                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-blue-900/30 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"}`}>
+                        LEARNING
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Checked Later</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data?.opportunitySummary?.totalEvaluated || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Helpful Moves</div>
+                        <div className={`text-sm font-bold font-mono ${(data?.opportunitySummary?.favorableRate || 0) >= 0.5 ? "text-emerald-400" : "text-amber-400"}`}>
+                          {(((data?.opportunitySummary?.favorableRate || 0) * 100)).toFixed(0)}%
+                        </div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Rules Learned</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{(data?.localLearningRules || []).length}</div>
+                      </div>
+                    </div>
+
+                    {data?.opportunitySummary?.bestMissed ? (
+                      <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Best missed move so far</div>
+                        <p className={`text-[10px] mt-1 ${textSub}`}>
+                          {data.opportunitySummary.bestMissed.asset} moved {data.opportunitySummary.bestMissed.movePercent?.toFixed?.(2)}% after the bot watched or skipped it.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className={`text-[10px] mt-3 ${textMuted}`}>No missed setups have matured yet. The bot needs time to evaluate watched opportunities.</p>
+                    )}
+
+                    {(data?.localLearningRules || []).length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {(data.localLearningRules || []).slice(0, 3).map((rule: any) => (
+                          <div key={rule.id} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                            <div className={`text-[8px] font-mono uppercase font-bold ${
+                              rule.action === "BOOST" ? "text-emerald-400" : rule.action === "REDUCE" ? "text-red-400" : textMuted
+                            }`}>
+                              {rule.action === "BOOST" ? "Trust slightly more" : rule.action === "REDUCE" ? "Be more careful" : "Watch only"} - {rule.key}
+                            </div>
+                            <p className={`text-[10px] mt-1 ${textSub}`}>{rule.message}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           

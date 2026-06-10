@@ -46,7 +46,7 @@ function buildCloseTrade(
   asset: string,
   pos: OpenPosition,
   exitPrice: number,
-  reason: "STOP_LOSS" | "TAKE_PROFIT",
+  reason: NonNullable<Trade["exitReason"]>,
   netPnl: number,
   pnlPercent: number,
   entryFee: number
@@ -66,7 +66,7 @@ function buildCloseTrade(
     stopLoss: pos.stopLoss,
     takeProfit: pos.takeProfit,
     signalScore: pos.signalScore,
-    reasoning: `Swing exit triggered: ${reason} | Net PnL: $${netPnl.toFixed(2)}`,
+    reasoning: `Swing exit triggered: ${reason.replaceAll("_", " ")} | Net PnL: $${netPnl.toFixed(2)}`,
     pnl: netPnl,
     pnlPercent,
     entryPrice: pos.entryPrice,
@@ -75,6 +75,13 @@ function buildCloseTrade(
     exitTime: new Date().toISOString(),
     exitReason: reason,
   };
+}
+
+function classifyExitReason(pos: OpenPosition, reason: "STOP_LOSS" | "TAKE_PROFIT", netPnl: number): NonNullable<Trade["exitReason"]> {
+  if (reason === "TAKE_PROFIT") return "TAKE_PROFIT";
+  if (netPnl >= 0 && pos.isTrailing) return "TRAILING_STOP_PROFIT";
+  if (netPnl >= 0) return "BREAKEVEN_STOP";
+  return "STOP_LOSS";
 }
 
 export async function sweepSwingExits(
@@ -154,11 +161,12 @@ export async function sweepSwingExits(
         delete portfolio.openPositions[asset];
         await redis.set(`swing:cooldown:${asset}`, "1", { ex: 3600 });
 
+        const exitReason = classifyExitReason(pos, sltp.reason, netPnl);
         const closeTrade = buildCloseTrade(
           asset,
           pos,
           sltp.exitPrice,
-          sltp.reason,
+          exitReason,
           netPnl,
           pnlPercent,
           entryFee
@@ -167,7 +175,7 @@ export async function sweepSwingExits(
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
         await PortfolioManager.logTrade(closeTrade, portfolioType);
         await Logger.info(
-          `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${sltp.reason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
+          `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
         );
 
         result.closed++;
