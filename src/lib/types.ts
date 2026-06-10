@@ -174,6 +174,12 @@ export interface OpenPosition {
   riskAmountUsd?: number;
   maxLossUsd?: number;
   admissionScore?: number;
+  finalConviction?: number;
+  decisionState?: string;
+  setupTags?: string[];
+  dataQuality?: number;
+  triggerScore?: number;
+  paperSize?: string;
   strategyType?: 'swing' | 'manual' | 'scalp';
   highestPriceReached?: number;
   lowestPriceReached?: number;
@@ -219,6 +225,12 @@ export interface Trade {
   stopLoss: number;
   takeProfit: number;
   signalScore: number;
+  finalConviction?: number;
+  decisionState?: string;
+  setupTags?: string[];
+  dataQuality?: number;
+  triggerScore?: number;
+  paperSize?: string;
   reasoning: string;
   // Filled when position is closed:
   pnl?: number;

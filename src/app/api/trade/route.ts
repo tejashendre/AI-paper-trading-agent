@@ -72,6 +72,7 @@ async function handleSwingTrade(request: Request) {
             stopLoss: swingSignal.stopLoss,
             takeProfit: swingSignal.takeProfit,
             signalScore: swingSignal.score,
+            finalConviction: swingSignal.finalConviction,
             reasoning: swingSignal.reasoning,
             strategyType: "swing",
           });
@@ -95,7 +96,13 @@ async function handleSwingTrade(request: Request) {
             takeProfit: swingSignal.takeProfit,
             entryTime: new Date().toISOString(),
             signalScore: swingSignal.score,
-            reasoning: `${swingSignal.reasoning} | ${admission.reason}`,
+            finalConviction: swingSignal.finalConviction,
+            decisionState: swingSignal.decisionState,
+            setupTags: swingSignal.setupTags,
+            dataQuality: swingSignal.dataQuality,
+            triggerScore: swingSignal.triggerScore,
+            paperSize: swingSignal.paperSize,
+            reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
             direction: isShort ? 'SHORT' : 'LONG',
             isScalp: false,
             notionalUsd: admission.notionalUsd,
@@ -122,13 +129,19 @@ async function handleSwingTrade(request: Request) {
             stopLoss: swingSignal.stopLoss,
             takeProfit: swingSignal.takeProfit,
             signalScore: swingSignal.score,
+            finalConviction: swingSignal.finalConviction,
+            decisionState: swingSignal.decisionState,
+            setupTags: swingSignal.setupTags,
+            dataQuality: swingSignal.dataQuality,
+            triggerScore: swingSignal.triggerScore,
+            paperSize: swingSignal.paperSize,
             reasoning: newPos.reasoning
           };
 
           await PortfolioManager.logTrade(trade);
-          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, price: currentPrice, margin: admission.requiredMarginUsd, leverage: admission.leverage });
+          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, finalConviction: swingSignal.finalConviction, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, triggerScore: swingSignal.triggerScore, dataQuality: swingSignal.dataQuality, price: currentPrice, margin: admission.requiredMarginUsd, leverage: admission.leverage, paperSize: swingSignal.paperSize });
         } else {
-          scanResults.push({ asset, action: "HOLD", reason: swingSignal.reasoning });
+          scanResults.push({ asset, action: "HOLD", reason: swingSignal.reasoning, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, nextStep: swingSignal.nextStep, score: swingSignal.score, triggerScore: swingSignal.triggerScore, dataQuality: swingSignal.dataQuality, finalConviction: swingSignal.finalConviction, paperSize: swingSignal.paperSize });
         }
       } catch (assetErr) {
         console.error(`Error scanning swing setup for ${asset}:`, assetErr);

@@ -17,6 +17,7 @@ export interface TradeAdmissionInput {
   reasoning: string;
   strategyType: "swing" | "manual" | "scalp";
   requestedMarginUsd?: number;
+  finalConviction?: number;
 }
 
 export interface TradeAdmissionResult {
@@ -35,7 +36,7 @@ export interface TradeAdmissionResult {
 }
 
 const BASE_RISK_PERCENT = 0.015;
-const MAX_TOTAL_MARGIN_PERCENT = 0.25;
+const MAX_TOTAL_MARGIN_PERCENT = 0.40;
 
 function activeMarginUsd(portfolio: Portfolio): number {
   const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
@@ -64,14 +65,14 @@ function drawdownAdjustedRiskPercent(portfolio: Portfolio): number {
   return BASE_RISK_PERCENT;
 }
 
-function leverageFromScore(signalScore: number, maxLeverage: number): { leverage: number; admissionScore: number } {
-  const admissionScore = Math.max(0, Math.min(100, signalScore * 4));
+function leverageFromConviction(signalScore: number, maxLeverage: number, finalConviction?: number): { leverage: number; admissionScore: number } {
+  const admissionScore = Math.max(0, Math.min(100, finalConviction ?? signalScore * 4));
 
   let leverage = 1;
-  if (signalScore >= 22) leverage = 5;
-  else if (signalScore >= 19) leverage = 3;
-  else if (signalScore >= 16) leverage = 2;
-  else if (signalScore >= 14) leverage = 1.5;
+  if (admissionScore >= 90) leverage = 5;
+  else if (admissionScore >= 80) leverage = 3;
+  else if (admissionScore >= 70) leverage = 2;
+  else if (admissionScore >= 60) leverage = 1.5;
 
   return {
     leverage: Math.min(leverage, maxLeverage),
@@ -79,12 +80,33 @@ function leverageFromScore(signalScore: number, maxLeverage: number): { leverage
   };
 }
 
+function marginPercentFromConviction(specMaxMarginPercent: number, finalConviction?: number): number {
+  const conviction = finalConviction ?? 0;
+  let target = specMaxMarginPercent;
+  if (conviction >= 90) target = 0.25;
+  else if (conviction >= 80) target = 0.20;
+  else if (conviction >= 70) target = 0.15;
+  else if (conviction >= 60) target = 0.10;
+  else target = Math.min(0.05, specMaxMarginPercent);
+
+  return Math.max(specMaxMarginPercent, Math.min(0.25, target));
+}
+
+function riskMultiplierFromConviction(finalConviction?: number): number {
+  const conviction = finalConviction ?? 0;
+  if (conviction >= 90) return 2.0;
+  if (conviction >= 80) return 1.6;
+  if (conviction >= 70) return 1.25;
+  if (conviction >= 60) return 1.0;
+  return 0.5;
+}
+
 export class TradeAdmissionController {
   static evaluate(input: TradeAdmissionInput): TradeAdmissionResult {
     const spec = getAssetSpec(input.asset);
     const equity = estimateEquity(input.portfolio);
     const currentActiveMargin = activeMarginUsd(input.portfolio);
-    const maxTradeMarginUsd = equity * spec.maxMarginPercent;
+    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction);
     const maxTotalMarginUsd = equity * MAX_TOTAL_MARGIN_PERCENT;
     const remainingTotalMarginRoom = Math.max(0, maxTotalMarginUsd - currentActiveMargin);
 
@@ -131,7 +153,7 @@ export class TradeAdmissionController {
       return emptyResult("Total portfolio margin cap reached.");
     }
 
-    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio);
+    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction);
     const riskAmountUsd = equity * riskPercent;
     const usdMovePerUnit = getUsdMovePerUnit(input.asset, input.entryPrice, input.stopLoss);
 
@@ -139,7 +161,7 @@ export class TradeAdmissionController {
       return emptyResult("Invalid stop distance for asset contract.");
     }
 
-    const { leverage, admissionScore } = leverageFromScore(input.signalScore, spec.maxLeverage);
+    const { leverage, admissionScore } = leverageFromConviction(input.signalScore, spec.maxLeverage, input.finalConviction);
     const rawAmount = riskAmountUsd / usdMovePerUnit;
     const rawNotionalUsd = estimateNotionalUsd(input.asset, rawAmount, input.entryPrice);
     const requestedMarginCap = input.requestedMarginUsd && input.requestedMarginUsd > 0
@@ -185,8 +207,8 @@ export class TradeAdmissionController {
     return {
       approved: true,
       reason: rawNotionalUsd > notionalUsd
-        ? `Approved with capped margin. Requested risk size exceeded ${spec.assetClass} margin limits.`
-        : "Approved by trade admission controller.",
+        ? `Approved with conviction-based capped margin. Requested risk size exceeded ${spec.assetClass} risk limits.`
+        : "Approved by conviction and risk controller.",
       amount,
       notionalUsd,
       requiredMarginUsd,
@@ -200,4 +222,3 @@ export class TradeAdmissionController {
     };
   }
 }
-

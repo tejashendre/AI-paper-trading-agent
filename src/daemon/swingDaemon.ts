@@ -20,10 +20,24 @@ interface SwingScanResult {
   asset: string;
   action: SwingScanAction;
   reason: string;
+  simpleStatus?: string;
+  simpleReason?: string;
+  nextStep?: string;
+  decisionState?: string;
   score?: number;
+  htfScore?: number;
+  triggerScore?: number;
+  dataQuality?: number;
+  finalConviction?: number;
   price?: number;
+  signalPrice?: number;
+  slippagePercent?: number;
   margin?: number;
   leverage?: number;
+  paperSize?: string;
+  riskMode?: string;
+  assetMode?: string;
+  setupTags?: string[];
   timestamp: string;
 }
 
@@ -166,8 +180,22 @@ async function runEntryScan() {
             asset,
             action: "HOLD",
             reason: swingSignal.reasoning,
+            simpleStatus: swingSignal.simpleStatus,
+            simpleReason: swingSignal.simpleReason,
+            nextStep: swingSignal.nextStep,
+            decisionState: swingSignal.decisionState,
             score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
             price: swingSignal.entryPrice,
+            signalPrice: swingSignal.signalPrice,
+            slippagePercent: swingSignal.slippagePercent,
+            paperSize: swingSignal.paperSize,
+            riskMode: swingSignal.riskMode,
+            assetMode: swingSignal.assetMode,
+            setupTags: swingSignal.setupTags,
             timestamp,
           });
           continue;
@@ -182,6 +210,7 @@ async function runEntryScan() {
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
+          finalConviction: swingSignal.finalConviction,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
         });
@@ -191,8 +220,22 @@ async function runEntryScan() {
             asset,
             action: "BLOCKED",
             reason: admission.reason,
+            simpleStatus: "Trade blocked for safety",
+            simpleReason: admission.reason,
+            nextStep: "The bot will wait for a safer position size or cleaner setup.",
+            decisionState: "BLOCKED_RISK",
             score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
             price: swingSignal.entryPrice,
+            signalPrice: swingSignal.signalPrice,
+            slippagePercent: swingSignal.slippagePercent,
+            paperSize: swingSignal.paperSize,
+            riskMode: "Protected",
+            assetMode: swingSignal.assetMode,
+            setupTags: swingSignal.setupTags,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
@@ -216,7 +259,13 @@ async function runEntryScan() {
           takeProfit: swingSignal.takeProfit,
           entryTime: new Date().toISOString(),
           signalScore: swingSignal.score,
-          reasoning: `${swingSignal.reasoning} | ${admission.reason}`,
+          finalConviction: swingSignal.finalConviction,
+          decisionState: swingSignal.decisionState,
+          setupTags: swingSignal.setupTags,
+          dataQuality: swingSignal.dataQuality,
+          triggerScore: swingSignal.triggerScore,
+          paperSize: swingSignal.paperSize,
+          reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
           isScalp: false,
           entryFeePaid: admission.entryFeeUsd,
@@ -243,6 +292,12 @@ async function runEntryScan() {
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
+          finalConviction: swingSignal.finalConviction,
+          decisionState: swingSignal.decisionState,
+          setupTags: swingSignal.setupTags,
+          dataQuality: swingSignal.dataQuality,
+          triggerScore: swingSignal.triggerScore,
+          paperSize: swingSignal.paperSize,
           reasoning: newPos.reasoning,
         };
 
@@ -253,10 +308,24 @@ async function runEntryScan() {
           asset,
           action: "ENTRY",
           reason: newPos.reasoning,
+          simpleStatus: swingSignal.simpleStatus,
+          simpleReason: swingSignal.simpleReason,
+          nextStep: swingSignal.nextStep,
+          decisionState: swingSignal.decisionState,
           score: swingSignal.score,
+          htfScore: swingSignal.htfScore,
+          triggerScore: swingSignal.triggerScore,
+          dataQuality: swingSignal.dataQuality,
+          finalConviction: swingSignal.finalConviction,
           price: swingSignal.entryPrice,
+          signalPrice: swingSignal.signalPrice,
+          slippagePercent: swingSignal.slippagePercent,
           margin: admission.requiredMarginUsd,
           leverage: admission.leverage,
+          paperSize: swingSignal.paperSize,
+          riskMode: swingSignal.riskMode,
+          assetMode: swingSignal.assetMode,
+          setupTags: swingSignal.setupTags,
           timestamp,
         });
 
