@@ -89,7 +89,7 @@ function marginPercentFromConviction(specMaxMarginPercent: number, finalConvicti
   else if (conviction >= 60) target = 0.10;
   else target = Math.min(0.05, specMaxMarginPercent);
 
-  return Math.max(specMaxMarginPercent, Math.min(0.25, target));
+  return Math.max(0.01, Math.min(0.25, target));
 }
 
 function riskMultiplierFromConviction(finalConviction?: number): number {

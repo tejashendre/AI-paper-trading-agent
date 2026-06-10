@@ -238,6 +238,15 @@ Before shipping changes:
 npm run lint
 npx tsc --noEmit
 npm run build
+npm run audit:strategy
+```
+
+The strategy audit is a free local evaluation check. It validates asset specs, conviction-based paper sizing, total margin caps, and duplicate-position blocking.
+
+To audit the live VPS dashboard API as part of the same command:
+
+```bash
+STATUS_URL=https://ai-quant-trader.duckdns.org/api/user/status STATUS_AUTH_TOKEN=SPECTATOR npm run audit:strategy
 ```
 
 For Docker:
