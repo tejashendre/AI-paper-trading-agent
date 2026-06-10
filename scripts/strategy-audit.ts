@@ -296,7 +296,8 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     unclearRows.length === 0 ? "All HOLD rows include plain-language status." : `${unclearRows.length} HOLD rows are missing plain-language status.`
   ));
 
-  const riskyRows = results.filter((row) => row.action !== "HOLD" && (Number(row.finalConviction || 0) < 60 || Number(row.dataQuality || 0) < 60));
+  const entryRows = results.filter((row) => row.action === "ENTRY" || row.action === "SWING_BUY" || row.action === "SWING_SHORT");
+  const riskyRows = entryRows.filter((row) => Number(row.finalConviction || 0) < 60 || Number(row.dataQuality || 0) < 60);
   checks.push(result(
     riskyRows.length === 0 ? "PASS" : "FAIL",
     "entry conviction guard",
