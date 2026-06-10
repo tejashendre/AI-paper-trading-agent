@@ -57,6 +57,31 @@ function formatClock(iso?: string) {
   return new Date(iso).toLocaleTimeString();
 }
 
+function confidenceLabel(value?: number) {
+  const score = Number(value || 0);
+  if (score >= 90) return "Very High";
+  if (score >= 80) return "High";
+  if (score >= 70) return "Good";
+  if (score >= 60) return "Building";
+  if (score >= 40) return "Low";
+  return "Very Low";
+}
+
+function plainScanStatus(result: any) {
+  if (result?.simpleStatus) return result.simpleStatus;
+  if (result?.action === "ENTRY") return "Trade setup confirmed";
+  if (result?.action === "BLOCKED") return "Trade blocked for safety";
+  if (result?.action === "SKIPPED") return "Not available right now";
+  if (result?.action === "ERROR") return "System needs attention";
+  return "No clear opportunity yet";
+}
+
+function plainScanReason(result: any) {
+  if (result?.simpleReason) return result.simpleReason;
+  if (result?.reason?.includes("Score < 14")) return "The bot does not see enough proof for a safe entry yet.";
+  return result?.reason || "The bot is still evaluating this market.";
+}
+
 export function Dashboard() {
   return (
     <AuthGate>
@@ -828,7 +853,7 @@ function DashboardContent({ secret }: { secret: string }) {
                             ${totalExposure?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </h3>
                           <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
-                            Margin Used: {marginUtilization.toFixed(1)}% (Max 25% Cap)
+                            Paper Margin Used: {marginUtilization.toFixed(1)}% (Max 40% Guard)
                           </p>
                         </>
                       );
@@ -880,32 +905,60 @@ function DashboardContent({ secret }: { secret: string }) {
                     </div>
 
                     <div className="grid grid-cols-5 gap-2 mt-3">
-                      {(["ENTRY", "HOLD", "BLOCKED", "SKIPPED", "ERROR"] as const).map((key) => (
+                      {[
+                        ["ENTRY", "Ready"],
+                        ["HOLD", "Watching"],
+                        ["BLOCKED", "Protected"],
+                        ["SKIPPED", "Paused"],
+                        ["ERROR", "Issue"],
+                      ].map(([key, label]) => (
                         <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
-                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{key}</div>
+                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
                           <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.swingScan.summary?.[key] || 0}</div>
                         </div>
                       ))}
                     </div>
 
-                    <div className="mt-3 space-y-1.5 max-h-32 overflow-y-auto">
-                      {(data.swingScan.results || []).slice(0, 9).map((result: any) => (
-                        <div key={`${result.asset}-${result.timestamp}`} className={`flex items-start justify-between gap-2 text-[9px] font-mono border-b ${borderCol} pb-1.5`}>
-                          <span className={`font-bold ${textPrimary}`}>
-                            {result.asset}
-                            <span className={`block text-[7px] font-normal ${textMuted}`}>{formatClock(result.timestamp)}</span>
-                          </span>
-                          <span className={`shrink-0 font-bold ${
-                            result.action === "ENTRY" ? "text-emerald-400" :
-                            result.action === "BLOCKED" || result.action === "ERROR" ? "text-red-400" :
-                            result.action === "SKIPPED" ? "text-amber-400" :
-                            textMuted
-                          }`}>
-                            {result.action}{typeof result.score === "number" ? ` ${result.score}` : ""}
-                          </span>
-                          <span className={`${textMuted} flex-1 text-right line-clamp-2`}>{result.reason}</span>
+                    <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
+                      {(data.swingScan.results || []).slice(0, 9).map((result: any) => {
+                        const confidence = confidenceLabel(result.finalConviction);
+                        const status = plainScanStatus(result);
+                        const reason = plainScanReason(result);
+                        const isReady = result.action === "ENTRY" || result.decisionState === "ENTRY_READY" || result.decisionState === "HIGH_ACCURACY_EXCEPTION";
+                        const isBlocked = result.action === "BLOCKED" || result.action === "ERROR" || result.decisionState === "BLOCKED_DATA";
+                        return (
+                        <div key={`${result.asset}-${result.timestamp}`} className={`rounded-lg border p-2.5 ${bgSubCard}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={`font-bold text-xs font-mono ${textPrimary}`}>{result.asset}</div>
+                              <div className={`text-[7px] font-mono ${textMuted}`}>{formatClock(result.timestamp)}</div>
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-1.5">
+                              <span className={`shrink-0 font-mono text-[8px] font-bold px-2 py-0.5 rounded border ${
+                                isReady ? "text-emerald-400 border-emerald-800 bg-emerald-950/20" :
+                                isBlocked ? "text-red-400 border-red-900/40 bg-red-950/20" :
+                                result.action === "SKIPPED" ? "text-amber-400 border-amber-900/40 bg-amber-950/20" :
+                                isDark ? "text-blue-300 border-blue-900/30 bg-blue-950/20" : "text-blue-700 border-blue-200 bg-blue-50"
+                              }`}>
+                                {status}
+                              </span>
+                              <span className={`shrink-0 font-mono text-[8px] font-bold px-2 py-0.5 rounded border ${isDark ? "border-[#374151] text-slate-300" : "border-[#e2e8f0] text-[#334155]"}`}>
+                                {confidence}
+                              </span>
+                            </div>
+                          </div>
+                          <p className={`text-[10px] leading-relaxed mt-2 ${textSub}`}>{reason}</p>
+                          {result.nextStep && (
+                            <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>Next: {result.nextStep}</p>
+                          )}
+                          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-2 text-[8px] font-mono ${textMuted}`}>
+                            <span>Confidence: <b className={textPrimary}>{Math.round(result.finalConviction || 0)}</b></span>
+                            <span>Trigger: <b className={textPrimary}>{Math.round(result.triggerScore || 0)}</b></span>
+                            <span>Data: <b className={textPrimary}>{Math.round(result.dataQuality || 0)}</b></span>
+                            <span>Paper size: <b className={textPrimary}>{result.paperSize || "None"}</b></span>
+                          </div>
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </div>
                 )}
