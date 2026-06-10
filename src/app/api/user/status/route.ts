@@ -6,6 +6,8 @@ import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
 import { calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { getRedis } from "@/lib/redis";
+import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
+import { LocalLearningMemory } from "@/lib/trading/localLearning";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +22,7 @@ export async function GET(request: Request) {
 
         const redis = getRedis();
 
-        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep] = await Promise.all([
+        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules] = await Promise.all([
             PortfolioManager.getPortfolio("user"),
             PortfolioManager.getTrades("user"),
             PortfolioManager.getPortfolio("ai"),
@@ -28,6 +30,9 @@ export async function GET(request: Request) {
             Logger.getLogs(),
             redis.get("swing:lastScan:ai"),
             redis.get("swing:lastExitSweep:ai"),
+            OpportunityJournal.getSummary(),
+            OpportunityJournal.getRecent(12),
+            LocalLearningMemory.getRules(),
         ]);
 
         const calculateTrueValue = async (portfolio: any, type: "user" | "ai") => {
@@ -214,6 +219,9 @@ export async function GET(request: Request) {
             profitByAsset: userProfitByAsset,
             swingScan,
             lastExitSweep,
+            opportunitySummary,
+            recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
+            localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
             logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators
         });
     } catch (error) {

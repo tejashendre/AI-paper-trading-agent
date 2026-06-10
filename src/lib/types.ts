@@ -239,7 +239,7 @@ export interface Trade {
   entryTime?: string;
   exitPrice?: number;
   exitTime?: string;
-  exitReason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'SIGNAL_REVERSAL' | 'MANUAL' | 'SCALP_TARGET' | 'SCALP_STOP' | 'SCALP_REVERSAL';
+  exitReason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'TRAILING_STOP_PROFIT' | 'BREAKEVEN_STOP' | 'SIGNAL_INVALIDATION' | 'TIME_STOP' | 'DATA_SAFETY_EXIT' | 'SIGNAL_REVERSAL' | 'MANUAL' | 'SCALP_TARGET' | 'SCALP_STOP' | 'SCALP_REVERSAL';
 }
 
 // ===================== Performance ==============================
