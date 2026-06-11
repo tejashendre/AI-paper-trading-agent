@@ -132,6 +132,7 @@ async function runEntryScan() {
     checked: 0,
     closed: 0,
     trailed: 0,
+    signalReversals: 0,
     skipped: 0,
     errors: 0,
     timestamp: startedAt,
@@ -142,7 +143,7 @@ async function runEntryScan() {
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
 
-    exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT" });
+    exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();

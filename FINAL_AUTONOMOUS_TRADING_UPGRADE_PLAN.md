@@ -456,6 +456,29 @@ For slower swing trades:
 - Use wider time stop: 6-24 hours depending on asset/session.
 - Do not use scalp-style tight trailing unless asset is in fast mode.
 
+### 9.5 Crypto signal reversal and minute trigger sprint
+
+The bot must not stay trapped in a short or long thesis when the market clearly flips. The current fix adds a crypto-only signal reversal path:
+
+- During the one-minute entry scan preflight, active BTC, ETH, and SOL positions are rechecked against the swing brain.
+- Hard stop loss and take profit still take priority.
+- If an active short is invalidated by a strong long setup, the bot can close the short with `SIGNAL_REVERSAL`.
+- If an active long is invalidated by a strong short setup, the bot can close the long with `SIGNAL_REVERSAL`.
+- Reversal checks are not run every 5 seconds because they fetch 1m, 5m, 15m, 1h, and 4h context.
+- After a reversal close, no one-hour cooldown is applied, so the normal entry loop can evaluate the opposite setup immediately.
+
+Reversal requires all of these:
+
+- asset is BTC, ETH, or SOL,
+- opposite signal is entry-grade (`SWING_BUY` against a short or `SWING_SHORT` against a long),
+- data quality is at least 80,
+- trigger score is at least 14,
+- final conviction is at least 70,
+- higher-timeframe score is at least 8,
+- live price slippage from the signal candle is no more than 0.25%.
+
+This is not a guarantee that reversals will win. It is a protection layer that lets the bot admit the original thesis is invalidated and, if the new setup remains valid, take the opposite direction through the same risk controller.
+
 ## 10. Phase 6 - Missed Opportunity Learning
 
 ### 10.1 Objective
