@@ -26,18 +26,24 @@ function writeJsonBackup(filename: string, value: unknown) {
   } catch {}
 }
 
-function classifyRule(scope: LocalLearningRule["scope"], key: string, stats: { total: number; favorable: number; avgMove: number }): LocalLearningRule | null {
+function classifyRule(
+  scope: LocalLearningRule["scope"],
+  key: string,
+  stats: { total: number; favorable: number; avgMove: number; avgMfe?: number; avgMae?: number; takeProfitHits?: number; stopLossHits?: number }
+): LocalLearningRule | null {
   if (stats.total < 4) return null;
   const favorableRate = stats.favorable / stats.total;
+  const takeProfitRate = (stats.takeProfitHits || 0) / stats.total;
+  const stopLossRate = (stats.stopLossHits || 0) / stats.total;
   let action: LocalLearningRule["action"] = "WATCH_ONLY";
   let confidenceAdjustment = 0;
   let message = `${key} does not have enough edge yet.`;
 
-  if (favorableRate >= 0.65 && stats.avgMove > 0.05) {
+  if ((favorableRate >= 0.65 && stats.avgMove > 0.05) || takeProfitRate >= 0.45) {
     action = "BOOST";
     confidenceAdjustment = 5;
     message = `${key} has recently produced favorable follow-through. The bot may slightly trust this pattern more.`;
-  } else if (favorableRate <= 0.35 || stats.avgMove < -0.05) {
+  } else if (favorableRate <= 0.35 || stats.avgMove < -0.05 || stopLossRate >= 0.45) {
     action = "REDUCE";
     confidenceAdjustment = -8;
     message = `${key} has recently failed too often. The bot should be more selective here.`;

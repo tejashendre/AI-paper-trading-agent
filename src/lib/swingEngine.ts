@@ -280,6 +280,21 @@ export class SwingEngine {
       const slippageOk = slippagePercent <= allowedSlippage;
       const normalEntry = !learning.watchOnly && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
       const exceptionEntry = !learning.watchOnly && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const htfAtr = snap1h.atr;
+      const currentPrice = livePrice;
+      const expectedMovePercent = currentPrice > 0 ? (htfAtr / currentPrice) * 100 : 0;
+      const stopDistance = htfAtr * 1.5;
+      const takeProfitDistance = htfAtr * 3.0;
+      const plannedStopLoss = bestDirection === "LONG"
+        ? currentPrice - stopDistance
+        : bestDirection === "SHORT"
+          ? currentPrice + stopDistance
+          : 0;
+      const plannedTakeProfit = bestDirection === "LONG"
+        ? currentPrice + takeProfitDistance
+        : bestDirection === "SHORT"
+          ? currentPrice - takeProfitDistance
+          : 0;
 
       // Require strong HTF alignment (score >= 14)
       if ((normalEntry || exceptionEntry) && bestDirection === "LONG") {
@@ -302,10 +317,11 @@ export class SwingEngine {
           asset: assetKey,
           action: "HOLD",
           entryPrice: livePrice,
-          stopLoss: 0,
-          takeProfit: 0,
+          stopLoss: plannedStopLoss,
+          takeProfit: plannedTakeProfit,
           reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, data quality ${dataQuality}. ${trigger.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
+          expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
           htfScore,
           triggerScore,
           dataQuality,
@@ -338,15 +354,8 @@ export class SwingEngine {
 
       // 5. Dynamic Wide HTF Stops
       // In swing trading, ATR is larger, and we use a 1.5x / 3.0x multiplier.
-      const htfAtr = snap1h.atr;
-      const currentPrice = livePrice;
-      const expectedMovePercent = (htfAtr / currentPrice) * 100;
-
-      const stopDistance = htfAtr * 1.5;
-      const takeProfitDistance = htfAtr * 3.0;
-
-      const stopLoss = action === 'SWING_BUY' ? currentPrice - stopDistance : currentPrice + stopDistance;
-      const takeProfit = action === 'SWING_BUY' ? currentPrice + takeProfitDistance : currentPrice - takeProfitDistance;
+      const stopLoss = plannedStopLoss;
+      const takeProfit = plannedTakeProfit;
 
       return {
         asset: assetKey,

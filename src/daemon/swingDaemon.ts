@@ -34,6 +34,8 @@ interface SwingScanResult {
   price?: number;
   signalPrice?: number;
   slippagePercent?: number;
+  stopLoss?: number;
+  takeProfit?: number;
   margin?: number;
   leverage?: number;
   paperSize?: string;
@@ -200,6 +202,8 @@ async function runEntryScan() {
             price: swingSignal.entryPrice,
             signalPrice: swingSignal.signalPrice,
             slippagePercent: swingSignal.slippagePercent,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
             paperSize: swingSignal.paperSize,
             riskMode: swingSignal.riskMode,
             assetMode: swingSignal.assetMode,
@@ -243,6 +247,8 @@ async function runEntryScan() {
             price: swingSignal.entryPrice,
             signalPrice: swingSignal.signalPrice,
             slippagePercent: swingSignal.slippagePercent,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
             paperSize: swingSignal.paperSize,
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
@@ -334,6 +340,8 @@ async function runEntryScan() {
           price: swingSignal.entryPrice,
           signalPrice: swingSignal.signalPrice,
           slippagePercent: swingSignal.slippagePercent,
+          stopLoss: swingSignal.stopLoss,
+          takeProfit: swingSignal.takeProfit,
           margin: admission.requiredMarginUsd,
           leverage: admission.leverage,
           paperSize: swingSignal.paperSize,

@@ -540,6 +540,55 @@ After 15m, 1h, 4h, and 24h, evaluate each missed setup:
 
 This gives the bot a learning loop without paid ML.
 
+### 10.5 Path-aware opportunity evaluation sprint
+
+The opportunity learning loop must evaluate the path of a missed setup, not only the final price at the review time.
+
+The current sprint upgrades each watched, blocked, skipped, or entered directional setup so it can carry:
+
+- planned entry price,
+- planned stop loss,
+- planned take profit,
+- direction,
+- setup tags,
+- final conviction,
+- data quality,
+- trigger score.
+
+When a delayed evaluation becomes due, the evaluator now checks the price path using the most practical free candle resolution:
+
+- 15m review: 1m candles,
+- 1h review: 5m candles,
+- 4h review: 15m candles,
+- 24h review: 1h candles.
+
+For every reviewed opportunity, store:
+
+- final move percent,
+- maximum favorable excursion,
+- maximum adverse excursion,
+- whether the hypothetical take profit was touched,
+- whether the hypothetical stop loss was touched,
+- which one was touched first,
+- conservative outcome label.
+
+If a stop and target are both touched inside the same candle, treat stop loss as first for learning purposes. This is conservative, but it prevents the bot from learning over-optimistic results from candle data that cannot prove the true intrabar order.
+
+This solves an important user-facing problem: when a BTC short loses but a BTC long setup later appears visually obvious, the bot should be able to later answer:
+
+```text
+Did the missed long setup actually follow through?
+Would it have hit target before stop?
+Was the bot too strict, or was the visual setup only temporary noise?
+```
+
+The local learning memory should use these path-aware results:
+
+- repeated target-heavy patterns can slightly boost future confidence,
+- repeated stop-heavy patterns can reduce confidence,
+- repeated bad patterns can push the bot into watch-only behavior,
+- setup performance can become evidence-based instead of opinion-based.
+
 ## 11. Phase 7 - Local Self-Learning Memory
 
 ### 11.1 Objective
