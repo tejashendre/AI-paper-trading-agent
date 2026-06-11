@@ -8,6 +8,7 @@ import { calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { SetupPerformance } from "@/lib/trading/setupPerformance";
 
 export const dynamic = "force-dynamic";
 
@@ -151,6 +152,7 @@ export async function GET(request: Request) {
 
         const userProfitByAsset = calculateProfitByAsset(userTrades, userPortfolio, userSync.prices);
         const aiProfitByAsset = calculateProfitByAsset(aiTrades, aiPortfolio, aiSync.prices);
+        const setupPerformance = SetupPerformance.build(aiTrades, opportunitySummary);
 
         // Fetch AI Brain Intelligence Data (non-blocking, failures return nulls)
         let aiReflection = null;
@@ -220,6 +222,7 @@ export async function GET(request: Request) {
             swingScan,
             lastExitSweep,
             opportunitySummary,
+            setupPerformance,
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
             logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators

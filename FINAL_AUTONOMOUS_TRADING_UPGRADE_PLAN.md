@@ -827,6 +827,56 @@ Do not deploy new strategy unless:
 - score 14 does not create normal-sized trades
 - setup category stats are recorded
 
+## 14A. Priority Maintenance - Docker and Dependency Hardening
+
+### 14A.1 Why this is a priority
+
+The VPS is running on a free/low-cost Oracle instance, so operational clutter matters. The current Docker runtime is healthy, but the latest deployment revealed two maintenance concerns that should be handled before the project is considered fully polished:
+
+- Docker Compose can recreate dashboard/daemon containers with prefixed names after repeated rebuilds, even though the services still run correctly.
+- Docker build output reports npm dependency vulnerabilities from the installed package tree.
+- Docker build cache can grow over time and should be pruned intentionally, not randomly, because Redis volumes and project data must be preserved.
+
+This is not currently blocking trading, but it is a deployment hygiene issue and should be treated as a priority maintenance sprint.
+
+### 14A.2 Required fixes
+
+1. Add a safe VPS maintenance script that:
+   - shows disk usage before cleanup,
+   - shows Docker image/container/build-cache usage,
+   - prunes only unused Docker build cache and unused images,
+   - never deletes Redis volumes,
+   - never deletes `/home/ubuntu/version-6/data`,
+   - restarts the current Compose stack only if requested.
+
+2. Normalize Docker Compose service control:
+   - rely on `docker compose ps` and service names, not raw container names,
+   - avoid scripts that assume the dashboard container must literally be named `quant-dashboard`,
+   - document that prefixed container names are acceptable if Compose service health is correct.
+
+3. Audit dependencies:
+   - run `npm audit` locally,
+   - separate direct dependency issues from transitive dependency issues,
+   - avoid `npm audit fix --force` unless the breaking changes are manually reviewed,
+   - upgrade low-risk packages first,
+   - rerun `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `npm run audit:strategy`.
+
+4. Add deployment checks:
+   - deployed commit SHA matches GitHub `main`,
+   - `docker compose ps` shows dashboard, daemon, and Redis healthy,
+   - live strategy audit passes,
+   - scan ID advances after restart,
+   - Docker disk usage is below a safe threshold.
+
+### 14A.3 Acceptance criteria
+
+- No required runtime state is deleted.
+- Redis volume survives cleanup.
+- Dashboard/API remains live after cleanup.
+- Swing daemon reconnects Binance and Bybit WebSockets.
+- `npm audit` risks are documented with clear decisions.
+- Docker build cache is bounded and not allowed to grow silently.
+
 ## 15. Phase 11 - VPS Deployment Plan
 
 ### 15.1 Local implementation order
