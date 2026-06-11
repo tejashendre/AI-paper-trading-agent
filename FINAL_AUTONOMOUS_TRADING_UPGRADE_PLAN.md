@@ -979,6 +979,24 @@ This is important because it prevents the system from becoming a black box. If t
 
 The goal is not to force trades. The goal is to make every non-trade explainable.
 
+### 13.11 Compact scan display sprint
+
+The autonomous scan panel should not show every technical counter by default. Too much visible detail can make the system feel more confusing, even when the diagnostics are useful.
+
+Default scan display should show only:
+
+- last scan time and next scan time,
+- watching count,
+- almost-ready count,
+- ready-now count,
+- protected/paused/error count,
+- top reasons why no trade has happened yet,
+- a small buy-watch / short-watch / data-unsafe line.
+
+Detailed per-asset scan rows should move behind a `VIEW SCAN DETAILS` button.
+
+This keeps the dashboard readable while preserving full transparency when the user wants to inspect the bot's reasoning.
+
 ## 14. Phase 10 - Backtesting and Replay
 
 ### 14.1 Objective

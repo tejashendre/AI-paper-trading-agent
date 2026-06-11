@@ -132,6 +132,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [simulatingMC, setSimulatingMC] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showDataHealth, setShowDataHealth] = useState(false);
+  const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fetcher = useCallback(async (url: string, init?: RequestInit) => {
@@ -935,70 +936,27 @@ function DashboardContent({ secret }: { secret: string }) {
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-2 mt-3">
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Exit Checks</div>
-                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.swingScan.exitSweep?.checked || 0}</div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                      <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Watching</div>
+                        <div className={`text-lg font-bold font-mono ${textPrimary}`}>{data.swingScan.summary?.HOLD || 0}</div>
                       </div>
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Closed</div>
-                        <div className={`text-sm font-bold font-mono ${(data.swingScan.exitSweep?.closed || 0) > 0 ? "text-emerald-400" : textPrimary}`}>
-                          {data.swingScan.exitSweep?.closed || 0}
-                        </div>
+                      <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Almost Ready</div>
+                        <div className="text-lg font-bold font-mono text-blue-400">{data.swingScan.decisionSummary?.TRIGGER_PENDING || 0}</div>
                       </div>
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Reversals</div>
-                        <div className={`text-sm font-bold font-mono ${(data.swingScan.exitSweep?.signalReversals || 0) > 0 ? "text-blue-400" : textPrimary}`}>
-                          {data.swingScan.exitSweep?.signalReversals || 0}
+                      <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Ready Now</div>
+                        <div className="text-lg font-bold font-mono text-emerald-400">
+                          {(data.swingScan.summary?.ENTRY || 0) + (data.swingScan.decisionSummary?.ENTRY_READY || 0) + (data.swingScan.decisionSummary?.HIGH_ACCURACY_EXCEPTION || 0)}
                         </div>
                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-5 gap-2 mt-2">
-                      {[
-                        ["ENTRY", "Ready"],
-                        ["HOLD", "Watching"],
-                        ["BLOCKED", "Protected"],
-                        ["SKIPPED", "Paused"],
-                        ["ERROR", "Issue"],
-                      ].map(([key, label]) => (
-                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
-                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
-                          <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.swingScan.summary?.[key] || 0}</div>
+                      <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Protected</div>
+                        <div className={`text-lg font-bold font-mono ${(data.swingScan.summary?.ERROR || 0) > 0 ? "text-red-400" : textPrimary}`}>
+                          {(data.swingScan.summary?.BLOCKED || 0) + (data.swingScan.summary?.SKIPPED || 0) + (data.swingScan.summary?.ERROR || 0)}
                         </div>
-                      ))}
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
-                      {[
-                        ["WATCH_LONG", "Watching buy", "text-emerald-400"],
-                        ["WATCH_SHORT", "Watching short", "text-red-400"],
-                        ["TRIGGER_PENDING", "Almost ready", "text-blue-400"],
-                        ["NO_BIAS", "No clear setup", textPrimary],
-                      ].map(([key, label, valueClass]) => (
-                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
-                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
-                          <div className={`text-sm font-bold font-mono ${valueClass}`}>
-                            {data.swingScan.decisionSummary?.[key] || 0}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
-                      {[
-                        ["ENTRY_READY", "Ready now", "text-emerald-400"],
-                        ["HIGH_ACCURACY_EXCEPTION", "Special setup", "text-violet-400"],
-                        ["BLOCKED_DATA", "Data unsafe", "text-amber-400"],
-                        ["ACTIVE_POSITION", "Already open", textPrimary],
-                      ].map(([key, label, valueClass]) => (
-                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
-                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
-                          <div className={`text-sm font-bold font-mono ${valueClass}`}>
-                            {data.swingScan.decisionSummary?.[key] || 0}
-                          </div>
-                        </div>
-                      ))}
+                      </div>
                     </div>
 
                     {(data.swingScan.blockerSummary || []).length > 0 && (
@@ -1014,6 +972,19 @@ function DashboardContent({ secret }: { secret: string }) {
                       </div>
                     )}
 
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <p className={`text-[9px] font-mono ${textMuted}`}>
+                        Buy watch: <b className="text-emerald-400">{data.swingScan.decisionSummary?.WATCH_LONG || 0}</b> | Short watch: <b className="text-red-400">{data.swingScan.decisionSummary?.WATCH_SHORT || 0}</b> | Data unsafe: <b className="text-amber-400">{data.swingScan.decisionSummary?.BLOCKED_DATA || 0}</b>
+                      </p>
+                      <button
+                        onClick={() => setShowSwingScanDetails((value) => !value)}
+                        className={`px-3 py-1.5 border text-[10px] font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                      >
+                        {showSwingScanDetails ? "HIDE SCAN DETAILS" : "VIEW SCAN DETAILS"}
+                      </button>
+                    </div>
+
+                    {showSwingScanDetails && (
                     <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
                       {(data.swingScan.results || []).slice(0, 9).map((result: any) => {
                         const confidence = confidenceLabel(result.finalConviction);
@@ -1062,6 +1033,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         </div>
                       )})}
                     </div>
+                    )}
                   </div>
                 )}
 
