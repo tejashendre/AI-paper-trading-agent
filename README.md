@@ -166,6 +166,20 @@ docker logs quant-dashboard --tail=100
 docker system df
 ```
 
+Safe VPS maintenance is dry-run first:
+
+```bash
+sh scripts/vps-maintenance.sh --dry-run
+```
+
+Apply safe Docker cleanup only after reviewing the dry-run output:
+
+```bash
+sh scripts/vps-maintenance.sh --apply
+```
+
+This script does not prune Docker volumes and does not delete `data/`, so Redis and local portfolio/trade backups are protected.
+
 ---
 
 ## Environment
