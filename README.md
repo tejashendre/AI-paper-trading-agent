@@ -180,6 +180,16 @@ sh scripts/vps-maintenance.sh --apply
 
 This script does not prune Docker volumes and does not delete `data/`, so Redis and local portfolio/trade backups are protected.
 
+After deployment, run the read-only VPS verifier:
+
+```bash
+STATUS_URL=https://ai-quant-trader.duckdns.org/api/user/status \
+STATUS_AUTH_TOKEN=SPECTATOR \
+sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
+```
+
+This checks the current commit, free disk space, Docker storage, Compose service health, live strategy audit, scan advancement, and recent daemon logs.
+
 ---
 
 ## Environment
@@ -253,9 +263,12 @@ npm run lint
 npx tsc --noEmit
 npm run build
 npm run audit:strategy
+npm run replay:strategy -- --assets=BTC,ETH,SOL --timeframe=15m --limit=300
 ```
 
-The strategy audit is a free local evaluation check. It validates asset specs, conviction-based paper sizing, total margin caps, and duplicate-position blocking.
+The strategy audit is a free local evaluation check. It validates asset specs, conviction-based paper sizing, total margin caps, duplicate-position blocking, and deterministic replay acceptance gates.
+
+The replay command is a free market-candle validation pass. It reports win rate, profit factor, drawdown, score distribution, missed-opportunity rate, false-positive rate, and setup-level performance. It is read-only and does not mutate live Redis state.
 
 To audit the live VPS dashboard API as part of the same command:
 

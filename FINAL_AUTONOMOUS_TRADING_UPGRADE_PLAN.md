@@ -1038,6 +1038,35 @@ Do not deploy new strategy unless:
 - score 14 does not create normal-sized trades
 - setup category stats are recorded
 
+### 14.4 Replay validation sprint implementation notes
+
+- Added `src/lib/backtest/replayEngine.ts` as a server-side replay validator.
+- Added `scripts/replay-strategy.ts` and `npm run replay:strategy`.
+- The replay CLI loads candles from free public Yahoo chart data so it can run locally without requiring Redis or Docker.
+- The replay engine itself is data-source agnostic, so VPS or future scripts can feed it cached candles from the normal market-data path.
+- The replay simulates:
+  - higher-timeframe directional scoring,
+  - short-term trigger confirmation,
+  - risk admission and conviction-based sizing,
+  - stop loss, take profit, signal reversal, time stop, and end-of-replay exits,
+  - setup bucket statistics,
+  - score distribution,
+  - missed-opportunity rate,
+  - stale-window skipping.
+- The replay report includes:
+  - total trades,
+  - win rate,
+  - profit factor,
+  - max drawdown,
+  - average return,
+  - average hold time,
+  - best and worst asset,
+  - false-positive rate,
+  - missed-opportunity rate,
+  - setup-level performance.
+- The existing `npm run audit:strategy` command now runs a deterministic replay-engine acceptance check with synthetic candles, so replay validation cannot silently disappear in future edits.
+- The replay is intentionally read-only. It does not change live Redis portfolio state, live daemon entry rules, or dashboard positions.
+
 ## 14A. Priority Maintenance - Docker and Dependency Hardening
 
 ### 14A.1 Why this is a priority
@@ -1095,6 +1124,11 @@ This is not currently blocking trading, but it is a deployment hygiene issue and
 - The maintenance helper protects Docker volumes and `/home/ubuntu/version-6/data`.
 - Cleanup is opt-in with `--apply`; dry run is the default.
 - The script relies on `docker compose ps` service health instead of fragile raw container-name assumptions.
+- Added `scripts/vps-deploy-check.sh` as a read-only post-deployment verifier.
+- The deploy verifier checks commit SHA, free disk space, Docker storage, Compose service health, live strategy audit, scan ID advancement, and recent swing-daemon logs.
+- The deploy verifier does not restart services, prune Docker, delete files, mutate Redis, or change portfolio state.
+- Ran non-forced `npm audit fix`, reducing the audit report from 10 issues to 5.
+- Remaining dependency audit items require `npm audit fix --force`, which would jump Next/eslint tooling to a breaking major version. Do not force this without a separate migration sprint.
 
 ### 14A.5 Feed-health visibility sprint
 
