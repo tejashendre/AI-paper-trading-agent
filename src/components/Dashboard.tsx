@@ -1100,7 +1100,16 @@ function DashboardContent({ secret }: { secret: string }) {
                         <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Best missed move so far</div>
                         <p className={`text-[10px] mt-1 ${textSub}`}>
                           {data.opportunitySummary.bestMissed.asset} moved {data.opportunitySummary.bestMissed.movePercent?.toFixed?.(2)}% after the bot watched or skipped it.
+                          {data.opportunitySummary.bestMissed.hypotheticalOutcome
+                            ? ` Outcome check: ${String(data.opportunitySummary.bestMissed.hypotheticalOutcome).replaceAll("_", " ").toLowerCase()}.`
+                            : ""}
                         </p>
+                        {typeof data.opportunitySummary.bestMissed.maxFavorableExcursion === "number" && (
+                          <div className={`mt-2 grid grid-cols-2 gap-2 text-[9px] font-mono ${textMuted}`}>
+                            <span>Best path: <b className="text-emerald-400">{data.opportunitySummary.bestMissed.maxFavorableExcursion.toFixed(2)}%</b></span>
+                            <span>Worst path: <b className="text-red-400">{data.opportunitySummary.bestMissed.maxAdverseExcursion?.toFixed?.(2)}%</b></span>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <p className={`text-[10px] mt-3 ${textMuted}`}>No missed setups have matured yet. The bot needs time to evaluate watched opportunities.</p>

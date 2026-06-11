@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { getRedis } from "@/lib/redis";
 import { MarketService } from "@/lib/market";
+import { Candle, Timeframe } from "@/lib/types";
 
 const HISTORY_KEY = "opportunity:history";
 const PENDING_KEY = "opportunity:pending";
@@ -13,6 +14,7 @@ const MAX_EVALUATIONS = 1000;
 type OpportunityDirection = "LONG" | "SHORT" | "NEUTRAL";
 type OpportunityDecision = "ENTRY" | "WATCH" | "BLOCKED" | "SKIPPED" | "ERROR";
 type EvaluationHorizon = "15m" | "1h" | "4h" | "24h";
+type HypotheticalOutcome = "TAKE_PROFIT" | "STOP_LOSS" | "FAVORABLE" | "ADVERSE" | "FLAT" | "UNKNOWN";
 
 export interface OpportunityRecord {
   id: string;
@@ -24,6 +26,8 @@ export interface OpportunityRecord {
   simpleStatus?: string;
   simpleReason?: string;
   entryPrice: number;
+  stopLoss?: number;
+  takeProfit?: number;
   score: number;
   triggerScore: number;
   dataQuality: number;
@@ -40,14 +44,36 @@ export interface OpportunityEvaluation {
   horizon: EvaluationHorizon;
   direction: OpportunityDirection;
   entryPrice: number;
+  stopLoss?: number;
+  takeProfit?: number;
   currentPrice: number;
   movePercent: number;
+  maxFavorableExcursion: number;
+  maxAdverseExcursion: number;
+  hitTakeProfit: boolean;
+  hitStopLoss: boolean;
+  firstHit: "TAKE_PROFIT" | "STOP_LOSS" | "NONE";
+  hypotheticalOutcome: HypotheticalOutcome;
   favorable: boolean;
   decision: OpportunityDecision;
   decisionState?: string;
   setupTags: string[];
   finalConviction: number;
   evaluatedAt: string;
+}
+
+const HORIZON_MS: Record<EvaluationHorizon, number> = {
+  "15m": 15 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "24h": 24 * 60 * 60_000,
+};
+
+function timeframeForHorizon(horizon: EvaluationHorizon): Timeframe {
+  if (horizon === "15m") return "1m";
+  if (horizon === "1h") return "5m";
+  if (horizon === "4h") return "15m";
+  return "1h";
 }
 
 function dataPath(filename: string) {
@@ -125,6 +151,87 @@ function shouldRecord(result: any) {
   return false;
 }
 
+function signedMovePercent(direction: OpportunityDirection, entryPrice: number, exitPrice: number) {
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(exitPrice) || exitPrice <= 0) return 0;
+  if (direction === "SHORT") return ((entryPrice - exitPrice) / entryPrice) * 100;
+  if (direction === "LONG") return ((exitPrice - entryPrice) / entryPrice) * 100;
+  return 0;
+}
+
+function evaluateCandles(record: OpportunityRecord, candles: Candle[], currentPrice: number) {
+  const entryPrice = record.entryPrice;
+  let maxFavorableExcursion = Math.max(0, signedMovePercent(record.direction, entryPrice, currentPrice));
+  let maxAdverseExcursion = Math.min(0, signedMovePercent(record.direction, entryPrice, currentPrice));
+  let hitTakeProfit = false;
+  let hitStopLoss = false;
+  let firstHit: OpportunityEvaluation["firstHit"] = "NONE";
+
+  for (const candle of candles) {
+    if (record.direction === "LONG") {
+      maxFavorableExcursion = Math.max(maxFavorableExcursion, signedMovePercent("LONG", entryPrice, candle.high));
+      maxAdverseExcursion = Math.min(maxAdverseExcursion, signedMovePercent("LONG", entryPrice, candle.low));
+
+      const touchedStop = Number(record.stopLoss || 0) > 0 && candle.low <= Number(record.stopLoss);
+      const touchedTarget = Number(record.takeProfit || 0) > 0 && candle.high >= Number(record.takeProfit);
+      hitStopLoss = hitStopLoss || touchedStop;
+      hitTakeProfit = hitTakeProfit || touchedTarget;
+      if (firstHit === "NONE" && touchedStop && touchedTarget) firstHit = "STOP_LOSS";
+      else if (firstHit === "NONE" && touchedStop) firstHit = "STOP_LOSS";
+      else if (firstHit === "NONE" && touchedTarget) firstHit = "TAKE_PROFIT";
+    } else if (record.direction === "SHORT") {
+      maxFavorableExcursion = Math.max(maxFavorableExcursion, signedMovePercent("SHORT", entryPrice, candle.low));
+      maxAdverseExcursion = Math.min(maxAdverseExcursion, signedMovePercent("SHORT", entryPrice, candle.high));
+
+      const touchedStop = Number(record.stopLoss || 0) > 0 && candle.high >= Number(record.stopLoss);
+      const touchedTarget = Number(record.takeProfit || 0) > 0 && candle.low <= Number(record.takeProfit);
+      hitStopLoss = hitStopLoss || touchedStop;
+      hitTakeProfit = hitTakeProfit || touchedTarget;
+      if (firstHit === "NONE" && touchedStop && touchedTarget) firstHit = "STOP_LOSS";
+      else if (firstHit === "NONE" && touchedStop) firstHit = "STOP_LOSS";
+      else if (firstHit === "NONE" && touchedTarget) firstHit = "TAKE_PROFIT";
+    }
+  }
+
+  const movePercent = signedMovePercent(record.direction, entryPrice, currentPrice);
+  let hypotheticalOutcome: HypotheticalOutcome = "UNKNOWN";
+  if (firstHit === "TAKE_PROFIT") hypotheticalOutcome = "TAKE_PROFIT";
+  else if (firstHit === "STOP_LOSS") hypotheticalOutcome = "STOP_LOSS";
+  else if (movePercent > 0.03 || maxFavorableExcursion > 0.08) hypotheticalOutcome = "FAVORABLE";
+  else if (movePercent < -0.03 || maxAdverseExcursion < -0.08) hypotheticalOutcome = "ADVERSE";
+  else if (record.direction !== "NEUTRAL") hypotheticalOutcome = "FLAT";
+
+  return {
+    movePercent,
+    maxFavorableExcursion,
+    maxAdverseExcursion,
+    hitTakeProfit,
+    hitStopLoss,
+    firstHit,
+    hypotheticalOutcome,
+    favorable: hypotheticalOutcome === "TAKE_PROFIT" || (hypotheticalOutcome !== "STOP_LOSS" && maxFavorableExcursion > Math.abs(maxAdverseExcursion)),
+  };
+}
+
+async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizon, currentPrice: number) {
+  if (record.direction === "NEUTRAL") {
+    return evaluateCandles(record, [], currentPrice);
+  }
+
+  try {
+    const startMs = new Date(record.timestamp).getTime();
+    const endMs = startMs + HORIZON_MS[horizon];
+    const timeframe = timeframeForHorizon(horizon);
+    const candles = await MarketService.getCandles(timeframe, 120, record.asset);
+    const pathCandles = candles.filter((candle) => {
+      const candleMs = candle.time * 1000;
+      return candleMs >= startMs && candleMs <= endMs + 5 * 60_000;
+    });
+    return evaluateCandles(record, pathCandles, currentPrice);
+  } catch {
+    return evaluateCandles(record, [], currentPrice);
+  }
+}
+
 export class OpportunityJournal {
   static buildFromScanResult(result: any): OpportunityRecord | null {
     if (!shouldRecord(result)) return null;
@@ -141,6 +248,8 @@ export class OpportunityJournal {
       simpleStatus: result.simpleStatus,
       simpleReason: result.simpleReason || result.reason,
       entryPrice,
+      stopLoss: Number(result.stopLoss || 0) > 0 ? Number(result.stopLoss) : undefined,
+      takeProfit: Number(result.takeProfit || 0) > 0 ? Number(result.takeProfit) : undefined,
       score: Number(result.score || 0),
       triggerScore: Number(result.triggerScore || 0),
       dataQuality: Number(result.dataQuality || 0),
@@ -187,9 +296,7 @@ export class OpportunityJournal {
       }
 
       for (const horizon of due) {
-        const signedMove = record.direction === "SHORT"
-          ? (record.entryPrice - currentPrice) / record.entryPrice
-          : (currentPrice - record.entryPrice) / record.entryPrice;
+        const path = await evaluatePath(record, horizon, currentPrice);
         evaluations.push({
           id: `${record.id}-${horizon}`,
           opportunityId: record.id,
@@ -197,9 +304,17 @@ export class OpportunityJournal {
           horizon,
           direction: record.direction,
           entryPrice: record.entryPrice,
+          stopLoss: record.stopLoss,
+          takeProfit: record.takeProfit,
           currentPrice,
-          movePercent: signedMove * 100,
-          favorable: signedMove > 0,
+          movePercent: path.movePercent,
+          maxFavorableExcursion: path.maxFavorableExcursion,
+          maxAdverseExcursion: path.maxAdverseExcursion,
+          hitTakeProfit: path.hitTakeProfit,
+          hitStopLoss: path.hitStopLoss,
+          firstHit: path.firstHit,
+          hypotheticalOutcome: path.hypotheticalOutcome,
+          favorable: path.favorable,
           decision: record.decision,
           decisionState: record.decisionState,
           setupTags: record.setupTags,
@@ -253,7 +368,7 @@ export class OpportunityJournal {
     const rows = await redis.lrange(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1);
     const evaluations = rows.map(parseEvaluation).filter(Boolean) as OpportunityEvaluation[];
     const byAsset: Record<string, { total: number; favorable: number; avgMove: number }> = {};
-    const bySetup: Record<string, { total: number; favorable: number; avgMove: number }> = {};
+    const bySetup: Record<string, { total: number; favorable: number; avgMove: number; avgMfe: number; avgMae: number; takeProfitHits: number; stopLossHits: number }> = {};
     let bestMissed: OpportunityEvaluation | null = null;
 
     for (const evaluation of evaluations) {
@@ -264,10 +379,14 @@ export class OpportunityJournal {
       byAsset[evaluation.asset] = asset;
 
       for (const tag of evaluation.setupTags.length ? evaluation.setupTags : ["UNTAGGED"]) {
-        const setup = bySetup[tag] || { total: 0, favorable: 0, avgMove: 0 };
+        const setup = bySetup[tag] || { total: 0, favorable: 0, avgMove: 0, avgMfe: 0, avgMae: 0, takeProfitHits: 0, stopLossHits: 0 };
         setup.total++;
         setup.favorable += evaluation.favorable ? 1 : 0;
         setup.avgMove += evaluation.movePercent;
+        setup.avgMfe += evaluation.maxFavorableExcursion || 0;
+        setup.avgMae += evaluation.maxAdverseExcursion || 0;
+        setup.takeProfitHits += evaluation.hitTakeProfit ? 1 : 0;
+        setup.stopLossHits += evaluation.hitStopLoss ? 1 : 0;
         bySetup[tag] = setup;
       }
 
@@ -277,7 +396,11 @@ export class OpportunityJournal {
     }
 
     for (const value of Object.values(byAsset)) value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
-    for (const value of Object.values(bySetup)) value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
+    for (const value of Object.values(bySetup)) {
+      value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
+      value.avgMfe = value.total > 0 ? value.avgMfe / value.total : 0;
+      value.avgMae = value.total > 0 ? value.avgMae / value.total : 0;
+    }
 
     const totalEvaluated = evaluations.length;
     const favorable = evaluations.filter((evaluation) => evaluation.favorable).length;
