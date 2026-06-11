@@ -58,6 +58,7 @@ interface SwingScanResult {
   directionBias?: string;
   learningAdjustment?: number;
   learningRules?: string[];
+  entryGate?: unknown;
   timestamp: string;
 }
 
@@ -143,6 +144,20 @@ function summarizeDecisionStates(results: SwingScanResult[]) {
   return summary;
 }
 
+function summarizeEntryBlockers(results: SwingScanResult[]) {
+  const summary: Record<string, number> = {};
+  for (const result of results) {
+    const blocker = (result.entryGate as any)?.primaryBlocker;
+    if (!blocker || blocker === "all entry gates passed") continue;
+    summary[blocker] = (summary[blocker] || 0) + 1;
+  }
+
+  return Object.entries(summary)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([reason, count]) => ({ reason, count }));
+}
+
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
@@ -154,6 +169,7 @@ async function saveScanSnapshot(
   const startedTime = new Date(startedAt).getTime();
   const summary = summarizeResults(results);
   const decisionSummary = summarizeDecisionStates(results);
+  const blockerSummary = summarizeEntryBlockers(results);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
@@ -167,6 +183,7 @@ async function saveScanSnapshot(
       durationMs: Number.isFinite(startedTime) ? now - startedTime : null,
       summary,
       decisionSummary,
+      blockerSummary,
       exitSweep,
       opportunitySweep,
       results,
@@ -279,6 +296,7 @@ async function runEntryScan() {
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
+            entryGate: swingSignal.entryGate,
             timestamp,
           });
           continue;
@@ -324,6 +342,7 @@ async function runEntryScan() {
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
+            entryGate: swingSignal.entryGate,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
@@ -419,6 +438,7 @@ async function runEntryScan() {
           directionBias: swingSignal.directionBias,
           learningAdjustment: swingSignal.learningAdjustment,
           learningRules: swingSignal.learningRules,
+          entryGate: swingSignal.entryGate,
           timestamp,
         });
 

@@ -13,6 +13,19 @@ export type SwingDecisionState =
   | "HIGH_ACCURACY_EXCEPTION"
   | "BLOCKED_DATA";
 
+export interface EntryGateDiagnostics {
+  htfPassed: boolean;
+  triggerPassed: boolean;
+  convictionPassed: boolean;
+  dataPassed: boolean;
+  slippagePassed: boolean;
+  learningPassed: boolean;
+  normalEntry: boolean;
+  exceptionEntry: boolean;
+  primaryBlocker: string;
+  missing: string[];
+}
+
 export interface SwingSignal {
   asset: string;
   action: 'SWING_BUY' | 'SWING_SHORT' | 'HOLD';
@@ -41,6 +54,7 @@ export interface SwingSignal {
   signalPrice: number;
   slippagePercent: number;
   oldScoreOverride: boolean;
+  entryGate: EntryGateDiagnostics;
 }
 
 function emptySignal(assetKey: string, reason: string): SwingSignal {
@@ -72,6 +86,18 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     signalPrice: 0,
     slippagePercent: 0,
     oldScoreOverride: false,
+    entryGate: {
+      htfPassed: false,
+      triggerPassed: false,
+      convictionPassed: false,
+      dataPassed: false,
+      slippagePassed: false,
+      learningPassed: false,
+      normalEntry: false,
+      exceptionEntry: false,
+      primaryBlocker: reason,
+      missing: [reason],
+    },
   };
 }
 
@@ -167,6 +193,47 @@ function simpleStateText(state: SwingDecisionState, direction: "LONG" | "SHORT" 
   if (state === "TRIGGER_PENDING") return "Almost ready, waiting for final confirmation";
   if (state === "BLOCKED_DATA") return "Waiting because market data is not reliable enough";
   return direction === "SHORT" ? "No clear short opportunity yet" : direction === "LONG" ? "No clear buy opportunity yet" : "No clear opportunity yet";
+}
+
+function buildEntryGateDiagnostics(input: {
+  assetMode: SwingSignal["assetMode"];
+  htfScore: number;
+  triggerScore: number;
+  finalConviction: number;
+  dataQuality: number;
+  slippageOk: boolean;
+  learningWatchOnly: boolean;
+  normalEntry: boolean;
+  exceptionEntry: boolean;
+}): EntryGateDiagnostics {
+  const triggerThreshold = input.assetMode === "REALTIME_FAST" ? 14 : 8;
+  const htfPassed = input.htfScore >= 14;
+  const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < 14;
+  const triggerPassed = input.triggerScore >= triggerThreshold;
+  const convictionPassed = input.finalConviction >= 60;
+  const dataPassed = input.dataQuality >= 60;
+  const learningPassed = !input.learningWatchOnly;
+  const missing: string[] = [];
+
+  if (!learningPassed) missing.push("local learning has this pattern in watch-only mode");
+  if (!dataPassed) missing.push("market data quality is below the live-trading minimum");
+  if (!input.slippageOk) missing.push("live price moved too far from the signal candle");
+  if (!htfPassed && !exceptionHtfPassed) missing.push("higher-timeframe evidence is still too weak");
+  if (!triggerPassed) missing.push("short-term trigger is not confirmed yet");
+  if (!convictionPassed) missing.push("final conviction is below the entry minimum");
+
+  return {
+    htfPassed,
+    triggerPassed,
+    convictionPassed,
+    dataPassed,
+    slippagePassed: input.slippageOk,
+    learningPassed,
+    normalEntry: input.normalEntry,
+    exceptionEntry: input.exceptionEntry,
+    primaryBlocker: missing[0] || "all entry gates passed",
+    missing,
+  };
 }
 
 export class SwingEngine {
@@ -280,6 +347,17 @@ export class SwingEngine {
       const slippageOk = slippagePercent <= allowedSlippage;
       const normalEntry = !learning.watchOnly && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
       const exceptionEntry = !learning.watchOnly && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const entryGate = buildEntryGateDiagnostics({
+        assetMode,
+        htfScore,
+        triggerScore,
+        finalConviction,
+        dataQuality,
+        slippageOk,
+        learningWatchOnly: learning.watchOnly,
+        normalEntry,
+        exceptionEntry,
+      });
       const htfAtr = snap1h.atr;
       const currentPrice = livePrice;
       const expectedMovePercent = currentPrice > 0 ? (htfAtr / currentPrice) * 100 : 0;
@@ -349,6 +427,7 @@ export class SwingEngine {
           signalPrice,
           slippagePercent,
           oldScoreOverride: false,
+          entryGate,
         };
       }
 
@@ -387,6 +466,7 @@ export class SwingEngine {
         signalPrice,
         slippagePercent,
         oldScoreOverride: exceptionEntry,
+        entryGate,
       };
     } catch (err) {
       return emptySignal(assetKey, `Swing scan failed: ${err instanceof Error ? err.message : String(err)}`);

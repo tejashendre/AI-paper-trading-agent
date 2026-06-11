@@ -24,6 +24,10 @@ interface LiveStatus {
     completedAt?: string;
     summary?: Record<string, number>;
     decisionSummary?: Record<string, number>;
+    blockerSummary?: Array<{
+      reason?: string;
+      count?: number;
+    }>;
     exitSweep?: {
       checked?: number;
       closed?: number;
@@ -45,6 +49,9 @@ interface LiveStatus {
       dataQuality?: number;
       finalConviction?: number;
       paperSize?: string;
+      entryGate?: {
+        primaryBlocker?: string;
+      };
     }>;
   };
   opportunitySummary?: {
@@ -309,6 +316,7 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   const activeUser = Object.keys(status.userPortfolio?.openPositions || {});
   const opportunitySweep = scan?.opportunitySweep;
   const decisionSummary = scan?.decisionSummary || {};
+  const blockerSummary = scan?.blockerSummary || [];
 
   checks.push(result(
     scan?.scanId && scan.scanId > 0 ? "PASS" : "FAIL",
@@ -345,6 +353,23 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     unclearRows.length === 0 ? "PASS" : "WARN",
     "spectator wording coverage",
     unclearRows.length === 0 ? "All HOLD rows include plain-language status." : `${unclearRows.length} HOLD rows are missing plain-language status.`
+  ));
+
+  const rowsWithoutGateDiagnostics = results.filter((row) => row.action === "HOLD" && !row.entryGate?.primaryBlocker);
+  checks.push(result(
+    rowsWithoutGateDiagnostics.length === 0 ? "PASS" : "WARN",
+    "entry gate diagnostics",
+    rowsWithoutGateDiagnostics.length === 0
+      ? "Every HOLD row explains the main entry blocker."
+      : `${rowsWithoutGateDiagnostics.length} HOLD row(s) are missing main blocker diagnostics.`
+  ));
+
+  checks.push(result(
+    Array.isArray(blockerSummary) ? "PASS" : "WARN",
+    "entry blocker summary",
+    Array.isArray(blockerSummary)
+      ? `${blockerSummary.length} top blocker reason(s) exposed for scan-level dormancy explanation.`
+      : "Swing scan does not expose a top-level blocker summary."
   ));
 
   const entryRows = results.filter((row) => row.action === "ENTRY" || row.action === "SWING_BUY" || row.action === "SWING_SHORT");
