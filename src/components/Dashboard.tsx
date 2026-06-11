@@ -67,11 +67,15 @@ function confidenceLabel(value?: number) {
   return "Very Low";
 }
 
+function percentLabel(value?: number) {
+  return `${((Number(value || 0)) * 100).toFixed(0)}%`;
+}
+
 function plainScanStatus(result: any) {
+  if (result?.action === "SKIPPED") return "Paused for now";
   if (result?.simpleStatus) return result.simpleStatus;
   if (result?.action === "ENTRY") return "Trade setup confirmed";
   if (result?.action === "BLOCKED") return "Trade blocked for safety";
-  if (result?.action === "SKIPPED") return "Not available right now";
   if (result?.action === "ERROR") return "System needs attention";
   return "No clear opportunity yet";
 }
@@ -926,6 +930,13 @@ function DashboardContent({ secret }: { secret: string }) {
                         const reason = plainScanReason(result);
                         const isReady = result.action === "ENTRY" || result.decisionState === "ENTRY_READY" || result.decisionState === "HIGH_ACCURACY_EXCEPTION";
                         const isBlocked = result.action === "BLOCKED" || result.action === "ERROR" || result.decisionState === "BLOCKED_DATA";
+                        const statusBadgeClass = isReady
+                          ? (isDark ? "text-emerald-300 border-emerald-800 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50")
+                          : isBlocked
+                            ? (isDark ? "text-red-300 border-red-900/50 bg-red-950/25" : "text-red-700 border-red-200 bg-red-50")
+                            : result.action === "SKIPPED"
+                              ? (isDark ? "text-amber-300 border-amber-900/50 bg-amber-950/25" : "text-slate-700 border-slate-300 bg-slate-100")
+                              : (isDark ? "text-blue-300 border-blue-900/40 bg-blue-950/25" : "text-blue-700 border-blue-200 bg-blue-50");
                         return (
                         <div key={`${result.asset}-${result.timestamp}`} className={`rounded-lg border p-2.5 ${bgSubCard}`}>
                           <div className="flex items-start justify-between gap-3">
@@ -934,12 +945,7 @@ function DashboardContent({ secret }: { secret: string }) {
                               <div className={`text-[7px] font-mono ${textMuted}`}>{formatClock(result.timestamp)}</div>
                             </div>
                             <div className="flex flex-wrap justify-end gap-1.5">
-                              <span className={`shrink-0 font-mono text-[8px] font-bold px-2 py-0.5 rounded border ${
-                                isReady ? "text-emerald-400 border-emerald-800 bg-emerald-950/20" :
-                                isBlocked ? "text-red-400 border-red-900/40 bg-red-950/20" :
-                                result.action === "SKIPPED" ? "text-amber-400 border-amber-900/40 bg-amber-950/20" :
-                                isDark ? "text-blue-300 border-blue-900/30 bg-blue-950/20" : "text-blue-700 border-blue-200 bg-blue-50"
-                              }`}>
+                              <span className={`shrink-0 font-mono text-[8px] font-bold px-2 py-0.5 rounded border ${statusBadgeClass}`}>
                                 {status}
                               </span>
                               <span className={`shrink-0 font-mono text-[8px] font-bold px-2 py-0.5 rounded border ${isDark ? "border-[#374151] text-slate-300" : "border-[#e2e8f0] text-[#334155]"}`}>
@@ -1017,6 +1023,42 @@ function DashboardContent({ secret }: { secret: string }) {
                             <p className={`text-[10px] mt-1 ${textSub}`}>{rule.message}</p>
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {data?.setupPerformance && (
+                      <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Setup Performance</div>
+                        {data.setupPerformance.bestSetup ? (
+                          <div className="mt-2 space-y-2">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className={`text-xs font-bold font-mono ${textPrimary}`}>{data.setupPerformance.bestSetup.label}</div>
+                                <p className={`text-[10px] mt-1 ${textSub}`}>
+                                  Best observed pattern so far based on closed trades and watched opportunities.
+                                </p>
+                              </div>
+                              <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
+                                data.setupPerformance.bestSetup.confidenceAdjustment >= 0
+                                  ? "text-emerald-400 border-emerald-900/40 bg-emerald-950/20"
+                                  : "text-amber-400 border-amber-900/40 bg-amber-950/20"
+                              }`}>
+                                {data.setupPerformance.bestSetup.confidenceAdjustment >= 0 ? "HELPING" : "CAUTION"}
+                              </span>
+                            </div>
+                            <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[8px] font-mono ${textMuted}`}>
+                              <span>Closed: <b className={textPrimary}>{data.setupPerformance.bestSetup.tradeCount}</b></span>
+                              <span>Wins: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.winRate)}</b></span>
+                              <span>Watched: <b className={textPrimary}>{data.setupPerformance.bestSetup.opportunityCount}</b></span>
+                              <span>Follow-through: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.opportunityFavorableRate)}</b></span>
+                            </div>
+                            {(data.setupPerformance.plainFindings || []).slice(0, 2).map((finding: string) => (
+                              <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className={`text-[10px] mt-1 ${textMuted}`}>Setup performance will appear after opportunities mature or AI trades close.</p>
+                        )}
                       </div>
                     )}
                   </div>

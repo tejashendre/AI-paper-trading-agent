@@ -46,6 +46,13 @@ interface LiveStatus {
   };
   recentOpportunities?: unknown[];
   localLearningRules?: unknown[];
+  setupPerformance?: {
+    closedTradeCount?: number;
+    setupCount?: number;
+    bySetup?: unknown[];
+    bestSetup?: unknown;
+    plainFindings?: string[];
+  };
 }
 
 const REQUIRED_ASSETS = ["BTC", "ETH", "SOL", "EURUSD", "GBPUSD", "USDJPY", "GOLD", "OIL", "SILVER"];
@@ -322,6 +329,16 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     activeAi.length <= 3 ? "PASS" : "WARN",
     "active AI exposure count",
     `${activeAi.length} active AI position(s): ${activeAi.length ? activeAi.join(", ") : "none"}.`
+  ));
+
+  const setupPerformance = status.setupPerformance;
+  const setupRows = Array.isArray(setupPerformance?.bySetup) ? setupPerformance.bySetup.length : 0;
+  checks.push(result(
+    setupPerformance && setupRows > 0 ? "PASS" : "WARN",
+    "setup performance summary",
+    setupPerformance
+      ? `${setupRows} setup bucket(s), ${setupPerformance.closedTradeCount || 0} closed AI trade sample(s), ${setupPerformance.plainFindings?.length || 0} plain finding(s).`
+      : "No setup performance object found in live status."
   ));
 
   return checks;
