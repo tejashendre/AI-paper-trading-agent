@@ -877,6 +877,14 @@ This is not currently blocking trading, but it is a deployment hygiene issue and
 - `npm audit` risks are documented with clear decisions.
 - Docker build cache is bounded and not allowed to grow silently.
 
+### 14A.4 Sprint implementation notes
+
+- Added `scripts/vps-maintenance.sh` as a dry-run-first VPS cleanup helper.
+- Added `.gitattributes` so shell scripts keep Linux-safe LF endings when pushed from Windows.
+- The maintenance helper protects Docker volumes and `/home/ubuntu/version-6/data`.
+- Cleanup is opt-in with `--apply`; dry run is the default.
+- The script relies on `docker compose ps` service health instead of fragile raw container-name assumptions.
+
 ## 15. Phase 11 - VPS Deployment Plan
 
 ### 15.1 Local implementation order
