@@ -885,6 +885,14 @@ This is not currently blocking trading, but it is a deployment hygiene issue and
 - Cleanup is opt-in with `--apply`; dry run is the default.
 - The script relies on `docker compose ps` service health instead of fragile raw container-name assumptions.
 
+### 14A.5 Feed-health visibility sprint
+
+- Added a cached `feedHealthMatrix` for all supported assets using the existing Free Data Mesh and Feed Health scorer.
+- The status API now reports each asset's data score, source, stale state, mode, and fast/swing eligibility.
+- The dashboard shows a spectator-friendly Data Health Matrix in AI mode.
+- The strategy audit now checks that live feed-health coverage exists for every supported asset.
+- The matrix is Redis-cached for 60 seconds to avoid hammering free market-data providers.
+
 ## 15. Phase 11 - VPS Deployment Plan
 
 ### 15.1 Local implementation order

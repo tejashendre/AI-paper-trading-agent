@@ -53,6 +53,23 @@ interface LiveStatus {
     bestSetup?: unknown;
     plainFindings?: string[];
   };
+  feedHealthMatrix?: {
+    assets?: Array<{
+      asset?: string;
+      status?: string;
+      score?: number;
+      mode?: string;
+      safeForFastExecution?: boolean;
+      safeForSwingExecution?: boolean;
+    }>;
+    summary?: {
+      good?: number;
+      degraded?: number;
+      bad?: number;
+      fastEligible?: number;
+      swingEligible?: number;
+    };
+  };
 }
 
 const REQUIRED_ASSETS = ["BTC", "ETH", "SOL", "EURUSD", "GBPUSD", "USDJPY", "GOLD", "OIL", "SILVER"];
@@ -339,6 +356,23 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     setupPerformance
       ? `${setupRows} setup bucket(s), ${setupPerformance.closedTradeCount || 0} closed AI trade sample(s), ${setupPerformance.plainFindings?.length || 0} plain finding(s).`
       : "No setup performance object found in live status."
+  ));
+
+  const feedHealth = status.feedHealthMatrix;
+  const feedRows = Array.isArray(feedHealth?.assets) ? feedHealth.assets.length : 0;
+  const badFeeds = (feedHealth?.assets || []).filter((asset) => asset.status === "BAD");
+  checks.push(result(
+    feedHealth && feedRows >= REQUIRED_ASSETS.length ? "PASS" : "FAIL",
+    "feed health matrix",
+    feedHealth
+      ? `${feedRows} feed row(s), ${feedHealth.summary?.good || 0} good, ${feedHealth.summary?.degraded || 0} degraded, ${feedHealth.summary?.bad || 0} bad.`
+      : "No feed health matrix found in live status."
+  ));
+
+  checks.push(result(
+    badFeeds.length === 0 ? "PASS" : "WARN",
+    "bad feed protection",
+    badFeeds.length === 0 ? "No feed is currently marked BAD." : `${badFeeds.map((asset) => asset.asset).join(", ")} marked BAD; autonomous entries should stay blocked for those assets.`
   ));
 
   return checks;
