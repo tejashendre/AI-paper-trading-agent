@@ -1,6 +1,7 @@
 import { ASSET_CONTRACT_SPECS, getAssetSpec } from "../src/lib/trading/assetSpecs";
+import { runReplay } from "../src/lib/backtest/replayEngine";
 import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
-import { Portfolio } from "../src/lib/types";
+import { Candle, Portfolio } from "../src/lib/types";
 
 type AuditLevel = "PASS" | "WARN" | "FAIL";
 
@@ -288,6 +289,64 @@ function auditAdmissionSizing(): AuditResult[] {
   return checks;
 }
 
+function syntheticCandles(startPrice: number, drift: number, count = 260): Candle[] {
+  const candles: Candle[] = [];
+  let price = startPrice;
+  const startTime = 1_725_000_000;
+
+  for (let i = 0; i < count; i++) {
+    const wave = Math.sin(i / 8) * startPrice * 0.0015;
+    const impulse = i % 34 === 0 ? startPrice * 0.004 * Math.sign(drift || 1) : 0;
+    const open = price;
+    const close = Math.max(0.0001, open * (1 + drift) + wave + impulse);
+    const high = Math.max(open, close) * (1 + 0.003 + (i % 10 === 0 ? 0.004 : 0));
+    const low = Math.min(open, close) * (1 - 0.003 - (i % 13 === 0 ? 0.003 : 0));
+    const volume = 1000 + (i % 21 === 0 ? 900 : 0) + Math.abs(wave) * 10;
+
+    candles.push({
+      time: startTime + i * 900,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
+    price = close;
+  }
+
+  return candles;
+}
+
+function auditReplayEngine(): AuditResult[] {
+  const report = runReplay({
+    assets: {
+      BTC: syntheticCandles(60_000, 0.0012),
+      ETH: syntheticCandles(3_000, -0.0009),
+      SOL: syntheticCandles(150, 0.0006),
+    },
+    minCandles: 180,
+  });
+
+  const checks: AuditResult[] = [];
+  checks.push(result(
+    report.acceptance.passed ? "PASS" : "FAIL",
+    "replay acceptance gates",
+    report.acceptance.messages.join(" ")
+  ));
+  checks.push(result(
+    report.totalTrades >= 0 && Object.keys(report.scoreDistribution).length >= 5 ? "PASS" : "FAIL",
+    "replay metrics coverage",
+    `${report.totalTrades} replay trade(s), ${report.watchedSetups} watched setup(s), ${(report.missedOpportunityRate * 100).toFixed(1)}% missed-opportunity rate.`
+  ));
+  checks.push(result(
+    report.setupStats.length > 0 ? "PASS" : "FAIL",
+    "replay setup buckets",
+    `${report.setupStats.length} setup bucket(s) recorded; top setup: ${report.setupStats[0]?.setup || "none"}.`
+  ));
+
+  return checks;
+}
+
 async function fetchLiveStatus(): Promise<LiveStatus | null> {
   const statusUrl = process.env.STATUS_URL;
   if (!statusUrl) return null;
@@ -452,6 +511,7 @@ async function main() {
   const results: AuditResult[] = [
     ...auditAssetSpecs(),
     ...auditAdmissionSizing(),
+    ...auditReplayEngine(),
   ];
 
   try {

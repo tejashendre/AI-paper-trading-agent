@@ -8,7 +8,8 @@
         "start": "next start",
         "lint": "next lint",
         "daemon:swing": "npx tsx src/daemon/swingDaemon.ts",
-        "audit:strategy": "npx tsx scripts/strategy-audit.ts"
+        "audit:strategy": "npx tsx scripts/strategy-audit.ts",
+        "replay:strategy": "npx tsx scripts/replay-strategy.ts"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.106.2",
