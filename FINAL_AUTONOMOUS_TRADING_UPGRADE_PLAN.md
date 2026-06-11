@@ -858,6 +858,56 @@ Technical View should show:
 
 Default should be `Simple View`, because spectators and LinkedIn viewers should understand the system immediately.
 
+### 13.8 Decision-state visibility sprint
+
+The dashboard must not make a live autonomous system look stuck by only showing old action counters such as:
+
+```text
+HOLD 9
+ENTRY 0
+BLOCKED 0
+```
+
+Those counters are technically true, but they are too blunt. A `HOLD` row can mean very different things:
+
+- no market bias exists,
+- the bot is watching for a buy setup,
+- the bot is watching for a short setup,
+- the setup is almost ready but needs a final trigger,
+- the bot does not trust the data,
+- the asset is skipped because a position is already open,
+- the market session is closed.
+
+The scan snapshot should therefore expose a top-level `decisionSummary` next to the old action `summary`.
+
+Required decision counters:
+
+- `WATCH_LONG`,
+- `WATCH_SHORT`,
+- `TRIGGER_PENDING`,
+- `ENTRY_READY`,
+- `HIGH_ACCURACY_EXCEPTION`,
+- `NO_BIAS`,
+- `BLOCKED_DATA`,
+- `BLOCKED_RISK`,
+- `BLOCKED_SESSION`,
+- `COOLDOWN`,
+- `ACTIVE_POSITION`,
+- `ERROR`.
+
+The dashboard should show this in plain language:
+
+```text
+Watching buy: 2
+Watching short: 1
+Almost ready: 0
+No clear setup: 6
+Data unsafe: 0
+Already open: 0
+```
+
+This solves the exact spectator confusion where the bot appears frozen because entries remain at zero. The correct interpretation may be that the bot is alive, scanning, and choosing not to trade because it lacks confirmation.
+
 ## 14. Phase 10 - Backtesting and Replay
 
 ### 14.1 Objective

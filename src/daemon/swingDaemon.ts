@@ -17,6 +17,19 @@ const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 
 type SwingScanAction = "HOLD" | "BLOCKED" | "ENTRY" | "SKIPPED" | "ERROR";
+type SwingDecisionSummaryKey =
+  | "NO_BIAS"
+  | "WATCH_LONG"
+  | "WATCH_SHORT"
+  | "TRIGGER_PENDING"
+  | "ENTRY_READY"
+  | "HIGH_ACCURACY_EXCEPTION"
+  | "BLOCKED_DATA"
+  | "BLOCKED_RISK"
+  | "BLOCKED_SESSION"
+  | "COOLDOWN"
+  | "ACTIVE_POSITION"
+  | "ERROR";
 
 interface SwingScanResult {
   asset: string;
@@ -77,6 +90,59 @@ function summarizeResults(results: SwingScanResult[]) {
   );
 }
 
+function decisionKeyForResult(result: SwingScanResult): SwingDecisionSummaryKey {
+  if (result.action === "ERROR") return "ERROR";
+  if (result.action === "ENTRY") {
+    return result.decisionState === "HIGH_ACCURACY_EXCEPTION" ? "HIGH_ACCURACY_EXCEPTION" : "ENTRY_READY";
+  }
+  if (result.action === "BLOCKED") return "BLOCKED_RISK";
+  if (result.action === "SKIPPED") {
+    const reason = result.reason.toLowerCase();
+    if (reason.includes("active position")) return "ACTIVE_POSITION";
+    if (reason.includes("cooling down")) return "COOLDOWN";
+    if (reason.includes("market is closed") || reason.includes("session")) return "BLOCKED_SESSION";
+    return "BLOCKED_SESSION";
+  }
+
+  const state = result.decisionState as SwingDecisionSummaryKey | undefined;
+  if (
+    state === "NO_BIAS" ||
+    state === "WATCH_LONG" ||
+    state === "WATCH_SHORT" ||
+    state === "TRIGGER_PENDING" ||
+    state === "ENTRY_READY" ||
+    state === "HIGH_ACCURACY_EXCEPTION" ||
+    state === "BLOCKED_DATA"
+  ) {
+    return state;
+  }
+
+  return "NO_BIAS";
+}
+
+function summarizeDecisionStates(results: SwingScanResult[]) {
+  const summary: Record<SwingDecisionSummaryKey, number> = {
+    NO_BIAS: 0,
+    WATCH_LONG: 0,
+    WATCH_SHORT: 0,
+    TRIGGER_PENDING: 0,
+    ENTRY_READY: 0,
+    HIGH_ACCURACY_EXCEPTION: 0,
+    BLOCKED_DATA: 0,
+    BLOCKED_RISK: 0,
+    BLOCKED_SESSION: 0,
+    COOLDOWN: 0,
+    ACTIVE_POSITION: 0,
+    ERROR: 0,
+  };
+
+  for (const result of results) {
+    summary[decisionKeyForResult(result)] += 1;
+  }
+
+  return summary;
+}
+
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
@@ -87,6 +153,7 @@ async function saveScanSnapshot(
   const now = Date.now();
   const startedTime = new Date(startedAt).getTime();
   const summary = summarizeResults(results);
+  const decisionSummary = summarizeDecisionStates(results);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
@@ -99,6 +166,7 @@ async function saveScanSnapshot(
       exitWatchdogIntervalMs: EXIT_WATCHDOG_INTERVAL_MS,
       durationMs: Number.isFinite(startedTime) ? now - startedTime : null,
       summary,
+      decisionSummary,
       exitSweep,
       opportunitySweep,
       results,
