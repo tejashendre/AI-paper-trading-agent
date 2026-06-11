@@ -9,6 +9,7 @@ import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { SetupPerformance } from "@/lib/trading/setupPerformance";
+import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
 
         const redis = getRedis();
 
-        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules] = await Promise.all([
+        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix] = await Promise.all([
             PortfolioManager.getPortfolio("user"),
             PortfolioManager.getTrades("user"),
             PortfolioManager.getPortfolio("ai"),
@@ -34,6 +35,7 @@ export async function GET(request: Request) {
             OpportunityJournal.getSummary(),
             OpportunityJournal.getRecent(12),
             LocalLearningMemory.getRules(),
+            FeedHealthSummary.build(),
         ]);
 
         const calculateTrueValue = async (portfolio: any, type: "user" | "ai") => {
@@ -223,6 +225,7 @@ export async function GET(request: Request) {
             lastExitSweep,
             opportunitySummary,
             setupPerformance,
+            feedHealthMatrix,
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
             logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators

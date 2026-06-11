@@ -71,6 +71,16 @@ function percentLabel(value?: number) {
   return `${((Number(value || 0)) * 100).toFixed(0)}%`;
 }
 
+function dataHealthBadgeClass(status?: string, isDark?: boolean) {
+  if (status === "GOOD") {
+    return isDark ? "text-emerald-300 border-emerald-900/50 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50";
+  }
+  if (status === "DEGRADED") {
+    return isDark ? "text-amber-300 border-amber-900/50 bg-amber-950/25" : "text-amber-700 border-amber-200 bg-amber-50";
+  }
+  return isDark ? "text-red-300 border-red-900/50 bg-red-950/25" : "text-red-700 border-red-200 bg-red-50";
+}
+
 function plainScanStatus(result: any) {
   if (result?.action === "SKIPPED") return "Paused for now";
   if (result?.simpleStatus) return result.simpleStatus;
@@ -966,6 +976,72 @@ function DashboardContent({ secret }: { secret: string }) {
                         </div>
                       )})}
                     </div>
+                  </div>
+                )}
+
+                {viewMode === "ai" && data?.feedHealthMatrix && (
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Data Health Matrix</div>
+                        <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                          Shows whether each market feed is safe enough for fast or swing decisions.
+                        </p>
+                        <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                          Updated {formatAge(data.feedHealthMatrix.generatedAt)} | 15m feed check
+                        </p>
+                      </div>
+                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-slate-700 text-slate-300 bg-slate-900/40" : "border-slate-300 text-slate-700 bg-slate-100"}`}>
+                        {data.feedHealthMatrix.summary?.good || 0} GOOD
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Fast Ready</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.fastEligible || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Swing Ready</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.swingEligible || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Needs Care</div>
+                        <div className={`text-sm font-bold font-mono ${(data.feedHealthMatrix.summary?.bad || 0) > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                          {(data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {(data.feedHealthMatrix.assets || []).slice(0, 9).map((feed: any) => (
+                        <div key={feed.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className={`text-xs font-bold font-mono ${textPrimary}`}>{feed.asset}</div>
+                            <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${dataHealthBadgeClass(feed.status, isDark)}`}>
+                              {feed.status}
+                            </span>
+                          </div>
+                          <div className={`grid grid-cols-2 gap-1 mt-2 text-[8px] font-mono ${textMuted}`}>
+                            <span>Score: <b className={textPrimary}>{feed.score}</b></span>
+                            <span>Source: <b className={textPrimary}>{feed.source}</b></span>
+                            <span>Mode: <b className={textPrimary}>{feed.mode === "REALTIME_FAST" ? "Fast" : feed.mode === "SLOW_SWING" ? "Swing" : "Disabled"}</b></span>
+                            <span>Age: <b className={textPrimary}>{Math.round((feed.cacheAgeSeconds || 0) / 60)}m</b></span>
+                          </div>
+                          {feed.warnings?.[0] && (
+                            <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>{feed.warnings[0]}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {(data.feedHealthMatrix.plainFindings || []).length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        {(data.feedHealthMatrix.plainFindings || []).slice(0, 2).map((finding: string) => (
+                          <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
