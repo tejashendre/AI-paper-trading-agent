@@ -6,12 +6,14 @@ import { getRedis } from "@/lib/redis";
 import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 
 export interface SwingExitSweepResult {
   source: string;
   checked: number;
   closed: number;
   trailed: number;
+  signalReversals: number;
   skipped: number;
   errors: number;
   timestamp: string;
@@ -83,19 +85,118 @@ function buildCloseTrade(
   };
 }
 
-function classifyExitReason(pos: OpenPosition, reason: "STOP_LOSS" | "TAKE_PROFIT", netPnl: number): NonNullable<Trade["exitReason"]> {
+function classifyExitReason(pos: OpenPosition, reason: "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL", netPnl: number): NonNullable<Trade["exitReason"]> {
+  if (reason === "SIGNAL_REVERSAL") return "SIGNAL_REVERSAL";
   if (reason === "TAKE_PROFIT") return "TAKE_PROFIT";
   if (netPnl >= 0 && pos.isTrailing) return "TRAILING_STOP_PROFIT";
   if (netPnl >= 0) return "BREAKEVEN_STOP";
   return "STOP_LOSS";
 }
 
+function isCryptoFastAsset(asset: string) {
+  return asset === "BTC" || asset === "ETH" || asset === "SOL";
+}
+
+function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
+  const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
+  const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
+  if (!oppositeLong && !oppositeShort) return false;
+
+  return (
+    signal.assetMode === "REALTIME_FAST" &&
+    signal.dataQuality >= 80 &&
+    signal.triggerScore >= 14 &&
+    signal.finalConviction >= 70 &&
+    signal.htfScore >= 8 &&
+    signal.slippagePercent <= 0.25
+  );
+}
+
+async function closePosition(
+  portfolio: Portfolio,
+  portfolioType: "ai" | "user",
+  source: string,
+  asset: string,
+  pos: OpenPosition,
+  exitPrice: number,
+  reason: "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL",
+  result: SwingExitSweepResult,
+  setCooldown = true
+) {
+  const redis = getRedis();
+  const isShort = pos.direction === "SHORT";
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exitPrice, pos.amount, pos.direction);
+  const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+  const exitFee = estimateFeeUsd(asset, pos.amount, exitPrice);
+  const netPnl = grossPnl - entryFee - exitFee;
+  const pnlPercent = pos.usdInvested > 0 ? (netPnl / pos.usdInvested) * 100 : 0;
+
+  portfolio.usd += pos.usdInvested + entryFee + netPnl;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
+
+  if (portfolio.balances && !isShort) {
+    portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
+  }
+
+  portfolio.totalPnl += netPnl;
+  portfolio.totalTrades++;
+  portfolio.returns.push(pnlPercent);
+  if (portfolio.returns.length > 2000) portfolio.returns.shift();
+
+  if (netPnl >= 0) {
+    portfolio.winningTrades++;
+    portfolio.grossProfit += netPnl;
+    portfolio.consecutiveWins++;
+    portfolio.consecutiveLosses = 0;
+    portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
+  } else {
+    portfolio.losingTrades++;
+    portfolio.grossLoss += Math.abs(netPnl);
+    portfolio.consecutiveLosses++;
+    portfolio.consecutiveWins = 0;
+    portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
+  }
+
+  delete portfolio.openPositions[asset];
+  if (setCooldown) {
+    await redis.set(`swing:cooldown:${asset}`, "1", { ex: 3600 });
+  }
+
+  const exitReason = classifyExitReason(pos, reason, netPnl);
+  const closeTrade = buildCloseTrade(
+    asset,
+    pos,
+    exitPrice,
+    exitReason,
+    netPnl,
+    pnlPercent,
+    entryFee
+  );
+
+  await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+  await PortfolioManager.logTrade(closeTrade, portfolioType);
+  await Logger.info(
+    `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
+  );
+
+  result.closed++;
+  if (reason === "SIGNAL_REVERSAL") result.signalReversals++;
+}
+
+async function getStrongOppositeSignal(asset: string, pos: OpenPosition): Promise<SwingSignal | null> {
+  if (!isCryptoFastAsset(asset)) return null;
+
+  const signal = await SwingEngine.analyze(asset);
+  return isOppositeSignalStrong(pos, signal) ? signal : null;
+}
+
 export async function sweepSwingExits(
   portfolio: Portfolio,
-  options: { portfolioType?: "ai" | "user"; source?: string } = {}
+  options: { portfolioType?: "ai" | "user"; source?: string; checkSignalReversal?: boolean } = {}
 ): Promise<SwingExitSweepResult> {
   const portfolioType = options.portfolioType || "ai";
   const source = options.source || "SWING_EXIT_SWEEP";
+  const checkSignalReversal = options.checkSignalReversal === true;
   const redis = getRedis();
 
   ensurePortfolioStats(portfolio);
@@ -105,6 +206,7 @@ export async function sweepSwingExits(
     checked: 0,
     closed: 0,
     trailed: 0,
+    signalReversals: 0,
     skipped: 0,
     errors: 0,
     timestamp: new Date().toISOString(),
@@ -131,60 +233,21 @@ export async function sweepSwingExits(
       const sltp = RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice);
 
       if (sltp.triggered && sltp.reason) {
-        const isShort = pos.direction === "SHORT";
-        const grossPnl = calculatePnlUsd(asset, pos.entryPrice, sltp.exitPrice, pos.amount, pos.direction);
-        const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-        const exitFee = estimateFeeUsd(asset, pos.amount, sltp.exitPrice);
-        const netPnl = grossPnl - entryFee - exitFee;
-        const pnlPercent = pos.usdInvested > 0 ? (netPnl / pos.usdInvested) * 100 : 0;
-
-        portfolio.usd += pos.usdInvested + entryFee + netPnl;
-        portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
-
-        if (portfolio.balances && !isShort) {
-          portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
+        await closePosition(portfolio, portfolioType, source, asset, pos, sltp.exitPrice, sltp.reason, result);
+      } else if (checkSignalReversal) {
+        const oppositeSignal = await getStrongOppositeSignal(asset, pos);
+        if (oppositeSignal) {
+          await Logger.info(
+            `[${source}] ${asset} signal reversal detected. Current ${pos.direction} thesis invalidated by ${oppositeSignal.directionBias} setup at ${oppositeSignal.finalConviction} conviction.`
+          );
+          await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_REVERSAL", result, false);
+        } else if (sltp.trailed) {
+          if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
+          if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
+          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+          await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
+          result.trailed++;
         }
-
-        portfolio.totalPnl += netPnl;
-        portfolio.totalTrades++;
-        portfolio.returns.push(pnlPercent);
-        if (portfolio.returns.length > 2000) portfolio.returns.shift();
-
-        if (netPnl >= 0) {
-          portfolio.winningTrades++;
-          portfolio.grossProfit += netPnl;
-          portfolio.consecutiveWins++;
-          portfolio.consecutiveLosses = 0;
-          portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
-        } else {
-          portfolio.losingTrades++;
-          portfolio.grossLoss += Math.abs(netPnl);
-          portfolio.consecutiveLosses++;
-          portfolio.consecutiveWins = 0;
-          portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
-        }
-
-        delete portfolio.openPositions[asset];
-        await redis.set(`swing:cooldown:${asset}`, "1", { ex: 3600 });
-
-        const exitReason = classifyExitReason(pos, sltp.reason, netPnl);
-        const closeTrade = buildCloseTrade(
-          asset,
-          pos,
-          sltp.exitPrice,
-          exitReason,
-          netPnl,
-          pnlPercent,
-          entryFee
-        );
-
-        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-        await PortfolioManager.logTrade(closeTrade, portfolioType);
-        await Logger.info(
-          `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
-        );
-
-        result.closed++;
       } else if (sltp.trailed) {
         if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
         if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;

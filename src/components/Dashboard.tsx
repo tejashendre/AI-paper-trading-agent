@@ -918,7 +918,26 @@ function DashboardContent({ secret }: { secret: string }) {
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-5 gap-2 mt-3">
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Exit Checks</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.swingScan.exitSweep?.checked || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Closed</div>
+                        <div className={`text-sm font-bold font-mono ${(data.swingScan.exitSweep?.closed || 0) > 0 ? "text-emerald-400" : textPrimary}`}>
+                          {data.swingScan.exitSweep?.closed || 0}
+                        </div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Reversals</div>
+                        <div className={`text-sm font-bold font-mono ${(data.swingScan.exitSweep?.signalReversals || 0) > 0 ? "text-blue-400" : textPrimary}`}>
+                          {data.swingScan.exitSweep?.signalReversals || 0}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-5 gap-2 mt-2">
                       {[
                         ["ENTRY", "Ready"],
                         ["HOLD", "Watching"],

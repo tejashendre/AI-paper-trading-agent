@@ -23,6 +23,13 @@ interface LiveStatus {
     scanId?: number;
     completedAt?: string;
     summary?: Record<string, number>;
+    exitSweep?: {
+      checked?: number;
+      closed?: number;
+      trailed?: number;
+      signalReversals?: number;
+      errors?: number;
+    };
     opportunitySweep?: {
       evaluated?: number;
       pending?: number;
@@ -311,6 +318,14 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     results.length >= REQUIRED_ASSETS.length ? "PASS" : "WARN",
     "per-asset scan coverage",
     `${results.length} scan rows returned for ${REQUIRED_ASSETS.length} expected assets.`
+  ));
+
+  checks.push(result(
+    typeof scan?.exitSweep?.signalReversals === "number" ? "PASS" : "WARN",
+    "signal reversal telemetry",
+    typeof scan?.exitSweep?.signalReversals === "number"
+      ? `Reversal counter available: ${scan.exitSweep.signalReversals}.`
+      : "Swing scan does not expose signal reversal telemetry yet."
   ));
 
   const unclearRows = results.filter((row) => row.action === "HOLD" && !row.simpleStatus);
