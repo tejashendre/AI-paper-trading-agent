@@ -130,6 +130,8 @@ function DashboardContent({ secret }: { secret: string }) {
   const [backtesting, setBacktesting] = useState(false);
   const [monteCarloResult, setMonteCarloResult] = useState<any>(null);
   const [simulatingMC, setSimulatingMC] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showDataHealth, setShowDataHealth] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fetcher = useCallback(async (url: string, init?: RequestInit) => {
@@ -782,27 +784,42 @@ function DashboardContent({ secret }: { secret: string }) {
               </div>
             </div>
 
-            {/* Strategy Backtester Panel */}
-            <div className={`border rounded-2xl p-5 ${bgCard}`}>
-              <div className="flex justify-between items-center mb-4">
-                <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Dynamic Strategy Backtester</h2>
-                <button 
-                  onClick={runWorkerBacktest} 
-                  disabled={backtesting} 
+            {/* Optional Strategy Diagnostics */}
+            <div className={`border rounded-2xl p-4 ${bgCard}`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Strategy Diagnostics</h2>
+                  <p className={`text-[10px] mt-1 ${textMuted}`}>Optional candle replay test for the selected chart. Hidden by default to keep the live dashboard clean.</p>
+                </div>
+                <button
+                  onClick={() => setShowDiagnostics((value) => !value)}
                   className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
                 >
-                  {backtesting ? "RUNNING..." : "RUN STRATEGY TEST"}
+                  {showDiagnostics ? "HIDE DIAGNOSTICS" : "VIEW DIAGNOSTICS"}
                 </button>
               </div>
-              {backtestResult ? (
-                <div className={`grid grid-cols-4 gap-4 text-xs font-mono p-3 rounded-xl ${bgSubCard}`}>
-                  <div>Win Rate: <span className="font-bold text-white bg-green-950 px-2 py-0.5 rounded border border-green-900">{backtestResult.winRate.toFixed(1)}%</span></div>
-                  <div>Sharpe: <span className="font-bold text-white bg-blue-950 px-2 py-0.5 rounded border border-blue-900">{backtestResult.sharpeRatio.toFixed(2)}</span></div>
-                  <div>Total Trades: <span className={`font-bold ${textPrimary}`}>{backtestResult.totalTrades}</span></div>
-                  <div>Profit Factor: <span className="font-bold text-orange-400">{backtestResult.profitFactor?.toFixed(2) || "1.45"}</span></div>
+
+              {showDiagnostics && (
+                <div className={`mt-4 p-3 rounded-xl border ${bgSubCard}`}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <p className={`text-xs ${textMuted}`}>Runs a local replay over recent candles. It is a diagnostic check, not live proof of future performance.</p>
+                    <button
+                      onClick={runWorkerBacktest}
+                      disabled={backtesting}
+                      className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                    >
+                      {backtesting ? "RUNNING..." : "RUN TEST"}
+                    </button>
+                  </div>
+                  {backtestResult && (
+                    <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono mt-3`}>
+                      <div>Win Rate: <span className={`font-bold ${textPrimary}`}>{backtestResult.winRate.toFixed(1)}%</span></div>
+                      <div>Sharpe: <span className={`font-bold ${textPrimary}`}>{backtestResult.sharpeRatio.toFixed(2)}</span></div>
+                      <div>Total Trades: <span className={`font-bold ${textPrimary}`}>{backtestResult.totalTrades}</span></div>
+                      <div>Profit Factor: <span className={`font-bold ${textPrimary}`}>{backtestResult.profitFactor?.toFixed(2) || "1.45"}</span></div>
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <p className={`text-xs ${textMuted} italic`}>Execute precision backtest over last 600 candle intervals.</p>
               )}
             </div>
 
@@ -984,6 +1001,19 @@ function DashboardContent({ secret }: { secret: string }) {
                       ))}
                     </div>
 
+                    {(data.swingScan.blockerSummary || []).length > 0 && (
+                      <div className={`mt-2 p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Why no trade yet</div>
+                        <div className="mt-1 space-y-1">
+                          {(data.swingScan.blockerSummary || []).slice(0, 3).map((blocker: any) => (
+                            <p key={blocker.reason} className={`text-[9px] leading-relaxed ${textMuted}`}>
+                              <b className={textPrimary}>{blocker.count}</b> asset{blocker.count === 1 ? "" : "s"}: {blocker.reason}.
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
                       {(data.swingScan.results || []).slice(0, 9).map((result: any) => {
                         const confidence = confidenceLabel(result.finalConviction);
@@ -1018,6 +1048,11 @@ function DashboardContent({ secret }: { secret: string }) {
                           {result.nextStep && (
                             <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>Next: {result.nextStep}</p>
                           )}
+                          {result.entryGate?.primaryBlocker && result.entryGate.primaryBlocker !== "all entry gates passed" && (
+                            <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>
+                              Main blocker: {result.entryGate.primaryBlocker}.
+                            </p>
+                          )}
                           <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-2 text-[8px] font-mono ${textMuted}`}>
                             <span>Confidence: <b className={textPrimary}>{Math.round(result.finalConviction || 0)}</b></span>
                             <span>Trigger: <b className={textPrimary}>{Math.round(result.triggerScore || 0)}</b></span>
@@ -1032,67 +1067,23 @@ function DashboardContent({ secret }: { secret: string }) {
 
                 {viewMode === "ai" && data?.feedHealthMatrix && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
-                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Data Health Matrix</div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Market Data Health</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-                          Shows whether each market feed is safe enough for fast or swing decisions.
+                          {data.feedHealthMatrix.summary?.good || 0} feeds healthy, {((data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0))} need attention.
                         </p>
                         <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
-                          Updated {formatAge(data.feedHealthMatrix.generatedAt)} | 15m feed check
+                          Updated {formatAge(data.feedHealthMatrix.generatedAt)}
                         </p>
                       </div>
-                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-slate-700 text-slate-300 bg-slate-900/40" : "border-slate-300 text-slate-700 bg-slate-100"}`}>
-                        {data.feedHealthMatrix.summary?.good || 0} GOOD
-                      </span>
+                      <button
+                        onClick={() => setShowDataHealth(true)}
+                        className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                      >
+                        VIEW DATA HEALTH METRICS
+                      </button>
                     </div>
-
-                    <div className="grid grid-cols-3 gap-2 mt-3">
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Fast Ready</div>
-                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.fastEligible || 0}</div>
-                      </div>
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Swing Ready</div>
-                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.swingEligible || 0}</div>
-                      </div>
-                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Needs Care</div>
-                        <div className={`text-sm font-bold font-mono ${(data.feedHealthMatrix.summary?.bad || 0) > 0 ? "text-red-400" : "text-emerald-400"}`}>
-                          {(data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0)}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {(data.feedHealthMatrix.assets || []).slice(0, 9).map((feed: any) => (
-                        <div key={feed.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
-                          <div className="flex items-center justify-between gap-2">
-                            <div className={`text-xs font-bold font-mono ${textPrimary}`}>{feed.asset}</div>
-                            <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${dataHealthBadgeClass(feed.status, isDark)}`}>
-                              {feed.status}
-                            </span>
-                          </div>
-                          <div className={`grid grid-cols-2 gap-1 mt-2 text-[8px] font-mono ${textMuted}`}>
-                            <span>Score: <b className={textPrimary}>{feed.score}</b></span>
-                            <span>Source: <b className={textPrimary}>{feed.source}</b></span>
-                            <span>Mode: <b className={textPrimary}>{feed.mode === "REALTIME_FAST" ? "Fast" : feed.mode === "SLOW_SWING" ? "Swing" : "Disabled"}</b></span>
-                            <span>Age: <b className={textPrimary}>{Math.round((feed.cacheAgeSeconds || 0) / 60)}m</b></span>
-                          </div>
-                          {feed.warnings?.[0] && (
-                            <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>{feed.warnings[0]}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-
-                    {(data.feedHealthMatrix.plainFindings || []).length > 0 && (
-                      <div className="mt-3 space-y-1">
-                        {(data.feedHealthMatrix.plainFindings || []).slice(0, 2).map((finding: string) => (
-                          <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -1177,9 +1168,11 @@ function DashboardContent({ secret }: { secret: string }) {
                               <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
                                 data.setupPerformance.bestSetup.confidenceAdjustment >= 0
                                   ? "text-emerald-400 border-emerald-900/40 bg-emerald-950/20"
-                                  : "text-amber-400 border-amber-900/40 bg-amber-950/20"
+                                  : isDark
+                                    ? "text-slate-300 border-slate-700 bg-slate-900/40"
+                                    : "text-slate-600 border-slate-300 bg-slate-100"
                               }`}>
-                                {data.setupPerformance.bestSetup.confidenceAdjustment >= 0 ? "HELPING" : "CAUTION"}
+                                {data.setupPerformance.bestSetup.confidenceAdjustment >= 0 ? "HELPING" : "NEEDS DATA"}
                               </span>
                             </div>
                             <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[8px] font-mono ${textMuted}`}>
@@ -1205,7 +1198,7 @@ function DashboardContent({ secret }: { secret: string }) {
             {/* Moved Elements Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
               {/* AI Brain Intelligence Panel — Only visible in AI portfolio view */}
-            {viewMode === "ai" && (
+            {viewMode === "ai" && (data?.aiReflection || (data?.aiRecentJournal && data.aiRecentJournal.length > 0)) && (
               <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
                 <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider flex items-center gap-1.5`}>
@@ -1298,6 +1291,7 @@ function DashboardContent({ secret }: { secret: string }) {
             )}
 
             {/* Active Scalps Tracker */}
+            {portfolio?.scalpPositions && Object.keys(portfolio.scalpPositions).length > 0 && (
             <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
               <div className="flex justify-between items-center border-b pb-3 borderCol">
                 <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Active High-Frequency Scalps</h2>
@@ -1313,9 +1307,6 @@ function DashboardContent({ secret }: { secret: string }) {
                 </div>
               </div>
               
-              {(!portfolio?.scalpPositions || Object.keys(portfolio.scalpPositions).length === 0) ? (
-                <p className={`text-xs ${textMuted} font-mono italic`}>No active high-frequency scalps open.</p>
-              ) : (
                 <div className="space-y-3">
                   {Object.keys(portfolio.scalpPositions).map((assetKey) => {
                     const pos = portfolio.scalpPositions![assetKey];
@@ -1353,8 +1344,8 @@ function DashboardContent({ secret }: { secret: string }) {
                     );
                   })}
                 </div>
-              )}
             </div>
+            )}
 
             {/* Manual Trade Input Module with absolute-positioned lock screen */}
             <div className={`border rounded-2xl p-5 space-y-4 relative overflow-hidden ${bgCard}`}>
@@ -1705,6 +1696,78 @@ function DashboardContent({ secret }: { secret: string }) {
         </div>
 
 
+
+        {showDataHealth && data?.feedHealthMatrix && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button
+              aria-label="Close data health metrics"
+              className="absolute inset-0 bg-black/60"
+              onClick={() => setShowDataHealth(false)}
+            />
+            <div className={`relative w-full max-w-4xl max-h-[86vh] overflow-y-auto rounded-2xl border p-5 shadow-2xl ${bgCard}`}>
+              <div className="flex items-start justify-between gap-4 border-b pb-4 border-slate-700/30">
+                <div>
+                  <h2 className={`text-[10px] font-bold font-mono uppercase tracking-wider ${textSub}`}>Data Health Metrics</h2>
+                  <p className={`text-xs font-mono mt-1 ${textPrimary}`}>Detailed feed quality for every market the bot watches.</p>
+                  <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>Updated {formatAge(data.feedHealthMatrix.generatedAt)} | 15m feed check</p>
+                </div>
+                <button
+                  onClick={() => setShowDataHealth(false)}
+                  className={`px-3 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                >
+                  CLOSE
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 mt-4">
+                <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Fast Ready</div>
+                  <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.fastEligible || 0}</div>
+                </div>
+                <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Swing Ready</div>
+                  <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.swingEligible || 0}</div>
+                </div>
+                <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Needs Care</div>
+                  <div className={`text-sm font-bold font-mono ${(data.feedHealthMatrix.summary?.bad || 0) > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                    {(data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {(data.feedHealthMatrix.assets || []).slice(0, 9).map((feed: any) => (
+                  <div key={feed.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className={`text-xs font-bold font-mono ${textPrimary}`}>{feed.asset}</div>
+                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${dataHealthBadgeClass(feed.status, isDark)}`}>
+                        {feed.status}
+                      </span>
+                    </div>
+                    <div className={`grid grid-cols-2 gap-1 mt-2 text-[8px] font-mono ${textMuted}`}>
+                      <span>Score: <b className={textPrimary}>{feed.score}</b></span>
+                      <span>Source: <b className={textPrimary}>{feed.source}</b></span>
+                      <span>Mode: <b className={textPrimary}>{feed.mode === "REALTIME_FAST" ? "Fast" : feed.mode === "SLOW_SWING" ? "Swing" : "Disabled"}</b></span>
+                      <span>Age: <b className={textPrimary}>{Math.round((feed.cacheAgeSeconds || 0) / 60)}m</b></span>
+                    </div>
+                    {feed.warnings?.[0] && (
+                      <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>{feed.warnings[0]}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {(data.feedHealthMatrix.plainFindings || []).length > 0 && (
+                <div className="mt-4 space-y-1">
+                  {(data.feedHealthMatrix.plainFindings || []).slice(0, 3).map((finding: string) => (
+                    <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Subtle Secure Admin Controls Footer */}
         <div className={`mt-12 pt-6 border-t border-dashed ${borderCol} flex flex-col sm:flex-row justify-between items-center text-[10px] font-mono gap-4`}>

@@ -908,6 +908,77 @@ Already open: 0
 
 This solves the exact spectator confusion where the bot appears frozen because entries remain at zero. The correct interpretation may be that the bot is alive, scanning, and choosing not to trade because it lacks confirmation.
 
+### 13.9 Spectator dashboard declutter sprint
+
+The dashboard must avoid becoming a black box by showing too many diagnostics at once. A clean dashboard should show the live trading state first, while deeper diagnostics remain available on demand.
+
+Required presentation rules:
+
+- Do not show full data-health tables by default.
+- Show a compact market data health summary with a `VIEW DATA HEALTH METRICS` button.
+- Put the full feed matrix inside a modal/popup so it can be inspected only when needed.
+- Do not show empty panels that imply inactive systems are live.
+- Hide the AI Brain Intelligence panel unless reflection data or recent AI journal data exists.
+- Hide the high-frequency scalp panel unless active scalp positions exist.
+- Rename the backtester area to `Strategy Diagnostics`.
+- Keep the backtester collapsed by default because it is a diagnostic replay, not the live autonomous engine.
+- Use calm wording such as `NEEDS DATA` instead of loud warning badges when a setup simply lacks enough evidence.
+
+This keeps the spectator experience focused:
+
+```text
+What is the bot doing now?
+Is it watching anything?
+Are there active positions?
+Is capital safe?
+Is data healthy enough?
+```
+
+The deeper details still exist, but they should not dominate the dashboard unless the user asks to inspect them.
+
+### 13.10 Dormancy diagnostics sprint
+
+The bot can look dormant even when it is working correctly. A dormant scan does not always mean the system is broken. It can mean one of the entry gates is refusing weak trades.
+
+Every scan row should expose an `entryGate` object showing:
+
+- higher-timeframe gate passed or failed,
+- short-term trigger gate passed or failed,
+- final conviction gate passed or failed,
+- data quality gate passed or failed,
+- slippage gate passed or failed,
+- local learning watch-only gate passed or failed,
+- whether normal entry passed,
+- whether high-accuracy exception entry passed,
+- the main blocker in plain language.
+
+The dashboard should show a simple line:
+
+```text
+Main blocker: short-term trigger is not confirmed yet.
+```
+
+The scan should also expose a top-level `blockerSummary`, for example:
+
+```text
+3 assets: short-term trigger is not confirmed yet.
+2 assets: higher-timeframe evidence is still too weak.
+1 asset: live price moved too far from the signal candle.
+```
+
+This is important because it prevents the system from becoming a black box. If the bot does not trade, the user should know whether the cause is:
+
+- no real higher-timeframe edge,
+- live trigger not confirmed,
+- final conviction too low,
+- unsafe/stale data,
+- slippage too high,
+- learning memory reducing confidence,
+- risk/admission controller blocking size,
+- cooldown or active-position protection.
+
+The goal is not to force trades. The goal is to make every non-trade explainable.
+
 ## 14. Phase 10 - Backtesting and Replay
 
 ### 14.1 Objective
