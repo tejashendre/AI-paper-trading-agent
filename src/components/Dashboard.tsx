@@ -952,6 +952,38 @@ function DashboardContent({ secret }: { secret: string }) {
                       ))}
                     </div>
 
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                      {[
+                        ["WATCH_LONG", "Watching buy", "text-emerald-400"],
+                        ["WATCH_SHORT", "Watching short", "text-red-400"],
+                        ["TRIGGER_PENDING", "Almost ready", "text-blue-400"],
+                        ["NO_BIAS", "No clear setup", textPrimary],
+                      ].map(([key, label, valueClass]) => (
+                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
+                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
+                          <div className={`text-sm font-bold font-mono ${valueClass}`}>
+                            {data.swingScan.decisionSummary?.[key] || 0}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                      {[
+                        ["ENTRY_READY", "Ready now", "text-emerald-400"],
+                        ["HIGH_ACCURACY_EXCEPTION", "Special setup", "text-violet-400"],
+                        ["BLOCKED_DATA", "Data unsafe", "text-amber-400"],
+                        ["ACTIVE_POSITION", "Already open", textPrimary],
+                      ].map(([key, label, valueClass]) => (
+                        <div key={key} className={`p-2 rounded-lg border ${bgSubCard}`}>
+                          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{label}</div>
+                          <div className={`text-sm font-bold font-mono ${valueClass}`}>
+                            {data.swingScan.decisionSummary?.[key] || 0}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
                     <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
                       {(data.swingScan.results || []).slice(0, 9).map((result: any) => {
                         const confidence = confidenceLabel(result.finalConviction);

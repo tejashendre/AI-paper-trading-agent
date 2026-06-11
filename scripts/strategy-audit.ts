@@ -23,6 +23,7 @@ interface LiveStatus {
     scanId?: number;
     completedAt?: string;
     summary?: Record<string, number>;
+    decisionSummary?: Record<string, number>;
     exitSweep?: {
       checked?: number;
       closed?: number;
@@ -307,6 +308,7 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   const activeAi = Object.keys(status.aiPortfolio?.openPositions || {});
   const activeUser = Object.keys(status.userPortfolio?.openPositions || {});
   const opportunitySweep = scan?.opportunitySweep;
+  const decisionSummary = scan?.decisionSummary || {};
 
   checks.push(result(
     scan?.scanId && scan.scanId > 0 ? "PASS" : "FAIL",
@@ -326,6 +328,16 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     typeof scan?.exitSweep?.signalReversals === "number"
       ? `Reversal counter available: ${scan.exitSweep.signalReversals}.`
       : "Swing scan does not expose signal reversal telemetry yet."
+  ));
+
+  const decisionTotal = Object.values(decisionSummary).reduce((sum, value) => sum + Number(value || 0), 0);
+  const hasIntentKeys = ["WATCH_LONG", "WATCH_SHORT", "TRIGGER_PENDING", "NO_BIAS"].every((key) => typeof decisionSummary[key] === "number");
+  checks.push(result(
+    hasIntentKeys && decisionTotal >= results.length ? "PASS" : "WARN",
+    "decision-state visibility",
+    hasIntentKeys
+      ? `${decisionTotal} decision-state count(s) exposed, including watch/trigger/no-bias states.`
+      : "Swing scan does not expose spectator-friendly decision-state summary yet."
   ));
 
   const unclearRows = results.filter((row) => row.action === "HOLD" && !row.simpleStatus);
