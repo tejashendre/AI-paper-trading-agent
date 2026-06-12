@@ -1604,3 +1604,41 @@ Before considering the VPS version final:
 8. Docker cleanup must be safe and must not prune Redis volumes.
 9. The dashboard must show clear no-trade reasons instead of silent holds.
 10. The README architecture must match the live system.
+
+## 22. Final Completion Status
+
+The core upgrade plan is complete for the free-only autonomous paper-trading system.
+
+The system now has:
+
+- free-data feed health scoring,
+- crypto fast-mode treatment,
+- slower forex/commodity treatment,
+- live execution price checks,
+- 1m/5m trigger confirmation,
+- higher-timeframe confluence,
+- market-structure and liquidity anti-trap gating,
+- conviction-based paper sizing,
+- risk admission and total margin caps,
+- 5-second exit watchdog,
+- earlier swing profit protection,
+- signal reversal telemetry,
+- opportunity journaling,
+- delayed missed-opportunity evaluation,
+- local learning rules,
+- replay validation,
+- deployment verification,
+- safe VPS cleanup,
+- spectator-friendly dashboard explanations.
+
+There are no remaining mandatory sprints required for the current architecture to be considered live-ready.
+
+Optional future upgrades should be treated carefully because they can add complexity:
+
+- true partial-profit execution,
+- deeper order-book imbalance inside the swing score,
+- funding/open-interest weighting inside the non-LLM swing engine,
+- a tiny exploration lane for low-risk probe trades,
+- local ML trained on a larger real paper-trade sample.
+
+These are not blockers. The correct next operational step is observation: let the bot run, collect completed trades and missed-opportunity evidence, then tune only from measured outcomes.

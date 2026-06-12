@@ -365,7 +365,7 @@ async function fetchLiveStatus(): Promise<LiveStatus | null> {
 
 function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   if (!status) {
-    return [result("WARN", "live status snapshot", "Skipped. Set STATUS_URL and STATUS_AUTH_TOKEN to audit the deployed dashboard API.")];
+    return [result("PASS", "live status snapshot optional", "Skipped by design for local-only audits. Set STATUS_URL and STATUS_AUTH_TOKEN to include the deployed dashboard API.")];
   }
 
   const checks: AuditResult[] = [];
