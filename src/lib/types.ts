@@ -180,6 +180,11 @@ export interface OpenPosition {
   dataQuality?: number;
   triggerScore?: number;
   marketStructureScore?: number;
+  microstructureScore?: number;
+  microstructureSummary?: string;
+  fundingRate?: number;
+  openInterest?: number;
+  orderbookImbalanceRatio?: number;
   liquidityState?: string;
   paperSize?: string;
   strategyType?: 'swing' | 'manual' | 'scalp';
@@ -233,6 +238,11 @@ export interface Trade {
   dataQuality?: number;
   triggerScore?: number;
   marketStructureScore?: number;
+  microstructureScore?: number;
+  microstructureSummary?: string;
+  fundingRate?: number;
+  openInterest?: number;
+  orderbookImbalanceRatio?: number;
   liquidityState?: string;
   paperSize?: string;
   reasoning: string;

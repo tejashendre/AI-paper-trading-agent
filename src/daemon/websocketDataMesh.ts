@@ -4,6 +4,7 @@ import { Logger } from '../lib/logger';
 import { SUPPORTED_ASSETS } from '../lib/market';
 
 const REDIS_KEY_PREFIX = 'market:live:';
+const REDIS_META_PREFIX = 'market:liveMeta:';
 
 export class WebsocketDataMesh {
     private binanceWs: WebSocket | null = null;
@@ -14,6 +15,18 @@ export class WebsocketDataMesh {
     // We focus on Crypto assets for websocket feeds
     private getCryptoAssets() {
         return Object.keys(SUPPORTED_ASSETS).filter(key => SUPPORTED_ASSETS[key].category === 'crypto');
+    }
+
+    private async writeLiveTick(symbol: string, price: number, source: string, imbalance?: number) {
+        const redis = getRedis();
+        const updatedAt = new Date().toISOString();
+        await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: 10 });
+        await redis.set(`${REDIS_META_PREFIX}${symbol}`, {
+            source,
+            updatedAt,
+            price,
+            imbalance: Number.isFinite(imbalance) ? imbalance : null,
+        }, { ex: 10 });
     }
 
     public async start() {
@@ -67,15 +80,18 @@ export class WebsocketDataMesh {
                         const price = parseFloat(parsed.c);
                         
                         if (!isNaN(price)) {
-                            const redis = getRedis();
-                            // Store price in redis with 10s TTL. Fast streaming overwrites this constantly.
-                            await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: 10 });
-
                             // Calculate order book imbalance: (Bids - Asks) / (Bids + Asks)
                             const bidQty = parseFloat(parsed.B);
                             const askQty = parseFloat(parsed.A);
+                            let imbalance: number | undefined;
                             if (!isNaN(bidQty) && !isNaN(askQty) && (bidQty + askQty) > 0) {
-                                const imbalance = (bidQty - askQty) / (bidQty + askQty);
+                                imbalance = (bidQty - askQty) / (bidQty + askQty);
+                            }
+
+                            await this.writeLiveTick(symbol, price, 'BINANCE_FUTURES_WS', imbalance);
+
+                            if (imbalance !== undefined) {
+                                const redis = getRedis();
                                 await redis.set(`market:imbalance:${symbol}`, imbalance.toString(), { ex: 10 });
                             }
                         }
@@ -130,15 +146,18 @@ export class WebsocketDataMesh {
                         const price = parseFloat(parsed.data.lastPrice);
                         
                         if (!isNaN(price)) {
-                            // If Binance goes down, Bybit data seamlessly acts as fallback in Redis
-                            const redis = getRedis();
-                            await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: 10 });
-
                             // Calculate Bybit order book imbalance
                             const bidQty = parseFloat(parsed.data.bid1Size);
                             const askQty = parseFloat(parsed.data.ask1Size);
+                            let imbalance: number | undefined;
                             if (!isNaN(bidQty) && !isNaN(askQty) && (bidQty + askQty) > 0) {
-                                const imbalance = (bidQty - askQty) / (bidQty + askQty);
+                                imbalance = (bidQty - askQty) / (bidQty + askQty);
+                            }
+
+                            await this.writeLiveTick(symbol, price, 'BYBIT_LINEAR_WS', imbalance);
+
+                            if (imbalance !== undefined) {
+                                const redis = getRedis();
                                 await redis.set(`market:imbalance:${symbol}`, imbalance.toString(), { ex: 10 });
                             }
                         }

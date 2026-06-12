@@ -17,6 +17,7 @@ export interface EntryGateDiagnostics {
   htfPassed: boolean;
   triggerPassed: boolean;
   structurePassed: boolean;
+  microstructurePassed: boolean;
   convictionPassed: boolean;
   dataPassed: boolean;
   slippagePassed: boolean;
@@ -48,6 +49,11 @@ export interface SwingSignal {
   htfScore: number;
   triggerScore: number;
   marketStructureScore: number;
+  microstructureScore: number;
+  microstructureSummary: string;
+  fundingRate?: number;
+  openInterest?: number;
+  orderbookImbalanceRatio?: number;
   liquidityState: LiquidityState;
   dataQuality: number;
   finalConviction: number;
@@ -82,6 +88,11 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     htfScore: 0,
     triggerScore: 0,
     marketStructureScore: 0,
+    microstructureScore: 0,
+    microstructureSummary: "No live flow signal available.",
+    fundingRate: undefined,
+    openInterest: undefined,
+    orderbookImbalanceRatio: undefined,
     liquidityState: "NEUTRAL",
     dataQuality: 0,
     finalConviction: 0,
@@ -104,6 +115,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
       htfPassed: false,
       triggerPassed: false,
       structurePassed: false,
+      microstructurePassed: false,
       convictionPassed: false,
       dataPassed: false,
       slippagePassed: false,
@@ -190,6 +202,77 @@ function scoreExecutionTrigger(
     : "Live trigger is not confirmed yet.";
 
   return { score: Math.max(0, Math.min(30, score)), tags, reason };
+}
+
+function scoreCryptoMicrostructure(
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  assetMode: SwingSignal["assetMode"],
+  orderbook: Awaited<ReturnType<typeof MarketService.getOrderbookImbalance>> | null,
+  sensors: Awaited<ReturnType<typeof MarketService.getDeepSensors>> | null
+): { score: number; aligned: boolean; tags: string[]; reason: string } {
+  const tags: string[] = [];
+  if (assetMode !== "REALTIME_FAST" || direction === "NEUTRAL") {
+    return {
+      score: 0,
+      aligned: true,
+      tags,
+      reason: "Live flow is neutral because this asset is not in crypto fast mode.",
+    };
+  }
+
+  let score = 0;
+  const ratio = Number(orderbook?.imbalanceRatio || 1);
+  const fundingRate = Number(sensors?.fundingRate);
+  const hasOpenInterest = Number.isFinite(Number(sensors?.openInterest)) && Number(sensors?.openInterest) > 0;
+
+  if (Number.isFinite(ratio)) {
+    if (direction === "LONG") {
+      if (ratio >= 1.25) {
+        score += 5;
+        tags.push("BID_PRESSURE_SUPPORTS_LONG");
+      } else if (ratio <= 0.8) {
+        score -= 6;
+        tags.push("ASK_PRESSURE_AGAINST_LONG");
+      }
+    } else if (direction === "SHORT") {
+      if (ratio <= 0.8) {
+        score += 5;
+        tags.push("ASK_PRESSURE_SUPPORTS_SHORT");
+      } else if (ratio >= 1.25) {
+        score -= 6;
+        tags.push("BID_PRESSURE_AGAINST_SHORT");
+      }
+    }
+  }
+
+  if (Number.isFinite(fundingRate)) {
+    if (direction === "LONG" && fundingRate < -0.0002) {
+      score += 2;
+      tags.push("FUNDING_SUPPORTS_LONG_SQUEEZE");
+    } else if (direction === "LONG" && fundingRate > 0.0008) {
+      score -= 3;
+      tags.push("CROWDED_LONG_FUNDING");
+    } else if (direction === "SHORT" && fundingRate > 0.0002) {
+      score += 2;
+      tags.push("FUNDING_SUPPORTS_SHORT_PRESSURE");
+    } else if (direction === "SHORT" && fundingRate < -0.0008) {
+      score -= 3;
+      tags.push("CROWDED_SHORT_FUNDING");
+    }
+  }
+
+  if (hasOpenInterest) {
+    score += 1;
+    tags.push("OPEN_INTEREST_SENSOR_ONLINE");
+  }
+
+  const boundedScore = Math.max(-10, Math.min(10, Math.round(score)));
+  const aligned = boundedScore > -6;
+  const reason = tags.length > 0
+    ? `Crypto live-flow evidence: ${tags.join(", ")}.`
+    : "Crypto live-flow evidence is neutral.";
+
+  return { score: boundedScore, aligned, tags, reason };
 }
 
 function average(values: number[]): number {
@@ -322,6 +405,7 @@ function buildEntryGateDiagnostics(input: {
   dataQuality: number;
   slippageOk: boolean;
   structureAligned: boolean;
+  microstructureAligned: boolean;
   learningWatchOnly: boolean;
   normalEntry: boolean;
   exceptionEntry: boolean;
@@ -331,6 +415,7 @@ function buildEntryGateDiagnostics(input: {
   const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < 14;
   const triggerPassed = input.triggerScore >= triggerThreshold;
   const structurePassed = input.structureAligned;
+  const microstructurePassed = input.microstructureAligned;
   const convictionPassed = input.finalConviction >= 60;
   const dataPassed = input.dataQuality >= 60;
   const learningPassed = !input.learningWatchOnly;
@@ -340,6 +425,7 @@ function buildEntryGateDiagnostics(input: {
   if (!dataPassed) missing.push("market data quality is below the live-trading minimum");
   if (!input.slippageOk) missing.push("live price moved too far from the signal candle");
   if (!structurePassed) missing.push("market structure and liquidity are not aligned with the trade direction");
+  if (!microstructurePassed) missing.push("live order-book or funding flow is against the setup");
   if (!htfPassed && !exceptionHtfPassed) missing.push("higher-timeframe evidence is still too weak");
   if (!triggerPassed) missing.push("short-term trigger is not confirmed yet");
   if (!convictionPassed) missing.push("final conviction is below the entry minimum");
@@ -348,6 +434,7 @@ function buildEntryGateDiagnostics(input: {
     htfPassed,
     triggerPassed,
     structurePassed,
+    microstructurePassed,
     convictionPassed,
     dataPassed,
     slippagePassed: input.slippageOk,
@@ -368,13 +455,15 @@ export class SwingEngine {
     try {
       const assetMode = getAssetMode(assetKey);
       // 1. Fetch multi-timeframe candles (Higher Timeframes)
-      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, livePriceResult] = await Promise.all([
+      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, livePriceResult, orderbookResult, deepSensors] = await Promise.all([
         MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("15m", 100, assetKey),
         MarketService.getCandles("1h", 100, assetKey),
         MarketService.getCandles("4h", 100, assetKey),
-        MarketService.getCurrentPrice(assetKey).catch(() => 0)
+        MarketService.getCurrentPrice(assetKey).catch(() => 0),
+        assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
+        assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null)
       ]);
 
       if (candles15m.length === 0 || candles1h.length === 0 || candles4h.length === 0) {
@@ -460,17 +549,18 @@ export class SwingEngine {
       const htfScore = Math.max(buyScore, shortScore);
       const trigger = scoreExecutionTrigger(bestDirection, assetMode, livePrice, candles1mResult, candles5mResult, snap15m.vwap);
       const liquidity = scoreMarketStructureLiquidity(bestDirection, livePrice, candles15m, candles1h);
-      const setupTags = [...details, ...trigger.tags, ...liquidity.tags];
+      const microstructure = scoreCryptoMicrostructure(bestDirection, assetMode, orderbookResult, deepSensors);
+      const setupTags = [...details, ...trigger.tags, ...liquidity.tags, ...microstructure.tags];
       const learning = await LocalLearningMemory.getAdjustment(assetKey, setupTags);
       const triggerScore = trigger.score;
       const dataScore = Math.round(dataQuality / 5);
       const riskRewardScore = 10;
-      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + dataScore + riskRewardScore + learning.adjustment)));
+      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + microstructure.score + dataScore + riskRewardScore + learning.adjustment)));
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
       const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.15;
       const slippageOk = slippagePercent <= allowedSlippage;
-      const normalEntry = !learning.watchOnly && liquidity.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
-      const exceptionEntry = !learning.watchOnly && liquidity.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
+      const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
       const entryGate = buildEntryGateDiagnostics({
         assetMode,
         htfScore,
@@ -479,6 +569,7 @@ export class SwingEngine {
         dataQuality,
         slippageOk,
         structureAligned: liquidity.aligned,
+        microstructureAligned: microstructure.aligned,
         learningWatchOnly: learning.watchOnly,
         normalEntry,
         exceptionEntry,
@@ -522,12 +613,17 @@ export class SwingEngine {
           entryPrice: livePrice,
           stopLoss: plannedStopLoss,
           takeProfit: plannedTakeProfit,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
+          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
           expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
           htfScore,
           triggerScore,
           marketStructureScore: liquidity.score,
+          microstructureScore: microstructure.score,
+          microstructureSummary: microstructure.reason,
+          fundingRate: deepSensors?.fundingRate,
+          openInterest: deepSensors?.openInterest,
+          orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
           liquidityState: liquidity.state,
           dataQuality,
           finalConviction,
@@ -537,6 +633,8 @@ export class SwingEngine {
             ? "The bot does not trust the current market data enough to trade."
             : !liquidity.aligned
               ? "The bot sees a possible liquidity trap or a move against the main market structure."
+            : !microstructure.aligned
+              ? "The bot sees live order-book or funding pressure fighting the setup."
             : htfScore < 8
               ? "The market is not showing a strong enough direction yet."
               : "The setup is being watched, but live entry confirmation is not strong enough yet.",
@@ -571,12 +669,17 @@ export class SwingEngine {
         entryPrice: currentPrice,
         stopLoss,
         takeProfit,
-          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
+          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
         score: finalScore,
         expectedMove: expectedMovePercent,
         htfScore,
         triggerScore,
         marketStructureScore: liquidity.score,
+        microstructureScore: microstructure.score,
+        microstructureSummary: microstructure.reason,
+        fundingRate: deepSensors?.fundingRate,
+        openInterest: deepSensors?.openInterest,
+        orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
         liquidityState: liquidity.state,
         dataQuality,
         finalConviction,

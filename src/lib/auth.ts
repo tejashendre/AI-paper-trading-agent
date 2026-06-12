@@ -45,7 +45,7 @@ export function verifyAuth(request: Request): AuthResult {
     if (token === "SPECTATOR" && request.method === "GET") {
       const url = new URL(request.url);
       const path = url.pathname;
-      const allowedPaths = ["/api/user/status", "/api/prices", "/api/chart", "/api/signals", "/api/backtest"];
+      const allowedPaths = ["/api/user/status", "/api/prices", "/api/live-prices", "/api/chart", "/api/signals", "/api/backtest"];
       if (allowedPaths.some(p => path === p || path.startsWith(p + "/"))) {
         return { authorized: true, source: "spectator" };
       }

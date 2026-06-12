@@ -43,6 +43,11 @@ interface SwingScanResult {
   htfScore?: number;
   triggerScore?: number;
   marketStructureScore?: number;
+  microstructureScore?: number;
+  microstructureSummary?: string;
+  fundingRate?: number;
+  openInterest?: number;
+  orderbookImbalanceRatio?: number;
   liquidityState?: string;
   dataQuality?: number;
   finalConviction?: number;
@@ -285,6 +290,11 @@ async function runEntryScan() {
             htfScore: swingSignal.htfScore,
             triggerScore: swingSignal.triggerScore,
             marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            microstructureSummary: swingSignal.microstructureSummary,
+            fundingRate: swingSignal.fundingRate,
+            openInterest: swingSignal.openInterest,
+            orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
             liquidityState: swingSignal.liquidityState,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
@@ -333,6 +343,11 @@ async function runEntryScan() {
             htfScore: swingSignal.htfScore,
             triggerScore: swingSignal.triggerScore,
             marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            microstructureSummary: swingSignal.microstructureSummary,
+            fundingRate: swingSignal.fundingRate,
+            openInterest: swingSignal.openInterest,
+            orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
             liquidityState: swingSignal.liquidityState,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
@@ -378,6 +393,11 @@ async function runEntryScan() {
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
+          microstructureScore: swingSignal.microstructureScore,
+          microstructureSummary: swingSignal.microstructureSummary,
+          fundingRate: swingSignal.fundingRate,
+          openInterest: swingSignal.openInterest,
+          orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
           reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
@@ -413,6 +433,11 @@ async function runEntryScan() {
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
+          microstructureScore: swingSignal.microstructureScore,
+          microstructureSummary: swingSignal.microstructureSummary,
+          fundingRate: swingSignal.fundingRate,
+          openInterest: swingSignal.openInterest,
+          orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
           reasoning: newPos.reasoning,
@@ -433,6 +458,11 @@ async function runEntryScan() {
           htfScore: swingSignal.htfScore,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
+          microstructureScore: swingSignal.microstructureScore,
+          microstructureSummary: swingSignal.microstructureSummary,
+          fundingRate: swingSignal.fundingRate,
+          openInterest: swingSignal.openInterest,
+          orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
           dataQuality: swingSignal.dataQuality,
           finalConviction: swingSignal.finalConviction,
