@@ -14,6 +14,7 @@ This project is intentionally **paper trading by default**. The goal is to test 
 - Watch supported assets through free market data sources.
 - Use 15m, 1h, and 4h candle structure to find stronger swing setups.
 - Align entries with liquidity sweeps, market structure, and volume-confirmed continuation.
+- Use crypto live-flow evidence from order-book imbalance, funding, and open-interest sensors where free data is available.
 - Avoid obvious trap trades where price sweeps one side and rejects against the intended direction.
 - Trade only when confluence passes the required score.
 - Block oversized trades through a centralized risk admission controller.
@@ -22,7 +23,7 @@ This project is intentionally **paper trading by default**. The goal is to test 
 - Work even when LLM APIs are missing, blocked, or rate-limited.
 - Keep live trading disabled unless it is explicitly enabled.
 
-The system is **not** designed to spam one-second scalps. It can consume fast price updates where free WebSocket data is available, checks active swing exits every 5 seconds, and keeps new entry decisions intentionally slower and more selective.
+The system is **not** designed to spam one-second scalps. It can consume fast price updates where free WebSocket data is available, updates the visible dashboard price layer every second, checks active swing exits every 5 seconds, and keeps new entry decisions intentionally slower and more selective.
 
 ---
 
@@ -33,6 +34,7 @@ flowchart TB
     subgraph Runtime["Free Oracle VPS / Docker Runtime"]
         Dashboard["Spectator + Admin Dashboard"]
         Api["Next.js API Routes"]
+        LiveApi["1s Live Price API"]
         Redis[("Redis State Store")]
         Daemon["Autonomous Swing Daemon"]
         Watchdog["5s Exit Watchdog"]
@@ -49,6 +51,7 @@ flowchart TB
     subgraph Intelligence["Math-First Decision Engine"]
         HTF["15m / 1h / 4h HTF Confluence"]
         Trigger["1m / 5m Live Trigger"]
+        Flow["Crypto Flow Score"]
         Liquidity["Market Structure + Liquidity Map"]
         TrapGate["Anti-Trap Entry Gate"]
         Learning["Local Learning Memory"]
@@ -76,11 +79,15 @@ flowchart TB
     FeedHealth --> HTF
     Redis --> Trigger
     Dashboard <--> Api
+    Dashboard --> LiveApi
+    LiveApi --> Redis
     Api <--> Redis
     Daemon --> HTF
     Daemon --> Watchdog
     HTF --> Liquidity
     Trigger --> Liquidity
+    Redis --> Flow
+    Flow --> TrapGate
     Liquidity --> TrapGate
     Learning --> TrapGate
     LLM -. optional only .-> Learning
@@ -101,9 +108,9 @@ flowchart TB
     classDef state fill:#16a34a,stroke:#14532d,color:#fff,stroke-width:2px;
     classDef ops fill:#0891b2,stroke:#164e63,color:#fff,stroke-width:2px;
 
-    class Dashboard,Api,Daemon,Watchdog runtime;
+    class Dashboard,Api,LiveApi,Daemon,Watchdog runtime;
     class CryptoWS,Kraken,Yahoo,CoinGecko,FeedHealth data;
-    class HTF,Trigger,Liquidity,Learning,LLM brain;
+    class HTF,Trigger,Flow,Liquidity,Learning,LLM brain;
     class TrapGate,Admission,Sizing,ProfitLock guard;
     class Redis,Ledger state;
     class Replay,Audit,DeployCheck,Maintenance ops;
@@ -114,19 +121,21 @@ flowchart TB
 ## How The Autonomous Loop Works
 
 1. The daemon starts and connects the crypto WebSocket mesh for live price cache updates.
-2. A fast exit watchdog checks active swing positions every 5 seconds.
-3. If stop loss or take profit is hit, it closes the paper position.
-4. If there is no open position for an asset, it scans for a new setup.
-5. The `SwingEngine` pulls 15m, 1h, and 4h candles.
-6. Technical indicators and statistics are computed locally.
-7. A confluence score is produced.
-8. The bot checks market structure, liquidity sweeps, volume confirmation, and trap risk.
-9. If the score or structure is too weak, the bot holds.
-10. If the setup is strong and liquidity-aligned, the trade is sent to the `TradeAdmissionController`.
-11. The risk controller sizes margin, leverage, notional exposure, fees, max loss, and portfolio exposure.
-12. If approved, a paper trade is opened and written to Redis.
-13. The exit watchdog protects open positions, including earlier breakeven/profit-lock movement when a swing trade starts working.
-14. The dashboard reads Redis and displays the current portfolio, logs, trades, chart state, latest scan results, and no-trade reasons.
+2. The dashboard polls `/api/live-prices` once per second for a cheap Redis-only live price heartbeat.
+3. A fast exit watchdog checks active swing positions every 5 seconds.
+4. If stop loss or take profit is hit, it closes the paper position.
+5. If there is no open position for an asset, it scans for a new setup.
+6. The `SwingEngine` pulls 1m, 5m, 15m, 1h, and 4h context.
+7. Technical indicators and statistics are computed locally.
+8. A confluence score is produced.
+9. Crypto signals receive an additional live-flow score from order-book imbalance, funding, and open-interest sensors.
+10. The bot checks market structure, liquidity sweeps, volume confirmation, and trap risk.
+11. If the score, structure, data quality, or live flow is too weak, the bot holds.
+12. If the setup is strong and liquidity-aligned, the trade is sent to the `TradeAdmissionController`.
+13. The risk controller sizes margin, leverage, notional exposure, fees, max loss, and portfolio exposure.
+14. If approved, a paper trade is opened and written to Redis.
+15. The exit watchdog protects open positions, including earlier breakeven/profit-lock movement when a swing trade starts working.
+16. The dashboard reads Redis and displays the current portfolio, logs, trades, chart state, latest scan results, learning verdict, and no-trade reasons.
 
 The current daemon entry scan interval is one minute. That is deliberate for this version because the strategy depends on higher-timeframe candles, not sub-second order flow. Active swing exits are monitored separately every 5 seconds.
 
@@ -155,6 +164,7 @@ The current daemon entry scan interval is one minute. That is deliberate for thi
 | Dashboard | `src/components/Dashboard.tsx` |
 | Main page | `src/app/page.tsx` |
 | Status API | `src/app/api/user/status/route.ts` |
+| 1s live price API | `src/app/api/live-prices/route.ts` |
 | Manual trade API | `src/app/api/trade/manual/route.ts` |
 | Swing trade API | `src/app/api/trade/swing/route.ts` |
 | Market data | `src/lib/market.ts` |

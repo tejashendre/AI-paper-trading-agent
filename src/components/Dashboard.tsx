@@ -81,6 +81,23 @@ function dataHealthBadgeClass(status?: string, isDark?: boolean) {
   return isDark ? "text-red-300 border-red-900/50 bg-red-950/25" : "text-red-700 border-red-200 bg-red-50";
 }
 
+function liveSourceText(snapshot: any) {
+  if (!snapshot) return "Waiting for live price";
+  if (snapshot.source === "WEBSOCKET" && snapshot.fresh) return "Live WebSocket";
+  if (snapshot.source === "RECENT_CACHE") return snapshot.mode === "SLOW_SWING" ? "Slow swing feed" : "Recent fallback";
+  return "No recent price";
+}
+
+function liveSourceClass(snapshot: any, isDark: boolean) {
+  if (snapshot?.source === "WEBSOCKET" && snapshot?.fresh) {
+    return isDark ? "text-emerald-300 border-emerald-900/50 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50";
+  }
+  if (snapshot?.source === "RECENT_CACHE") {
+    return isDark ? "text-amber-300 border-amber-900/50 bg-amber-950/25" : "text-amber-700 border-amber-200 bg-amber-50";
+  }
+  return isDark ? "text-red-300 border-red-900/50 bg-red-950/25" : "text-red-700 border-red-200 bg-red-50";
+}
+
 function plainScanStatus(result: any) {
   if (result?.action === "SKIPPED") return "Paused for now";
   if (result?.simpleStatus) return result.simpleStatus;
@@ -116,6 +133,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [chartData, setChartData] = useState<any>(null);
   const [signals, setSignals] = useState<any>(null);
   const [livePrices, setLivePrices] = useState<any>(null);
+  const [liveFeed, setLiveFeed] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [manualAmount, setManualAmount] = useState("");
@@ -133,6 +151,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
+  const [showLearningDetails, setShowLearningDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fetcher = useCallback(async (url: string, init?: RequestInit) => {
@@ -264,11 +283,47 @@ function DashboardContent({ secret }: { secret: string }) {
     return () => clearInterval(interval);
   }, [refresh, activeAsset, viewMode, chartInterval]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshLivePrices = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetcher("/api/live-prices");
+        if (!cancelled && res.ok) {
+          const liveJson = await res.json();
+          setLiveFeed(liveJson);
+          const positiveLivePrices = Object.fromEntries(
+            Object.entries(liveJson.prices || {}).filter(([, snapshot]: [string, any]) => Number(snapshot?.price || 0) > 0)
+          );
+          setLivePrices((previous: any) => ({
+            ...(previous || {}),
+            ...positiveLivePrices,
+          }));
+        }
+      } catch {
+        // Keep the slower /api/prices snapshot if the live tick endpoint misses once.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    refreshLivePrices();
+    const interval = setInterval(refreshLivePrices, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [fetcher]);
+
   // Bind pointers dynamically based on selected view mode
   const portfolio = viewMode === "ai" ? data?.aiPortfolio : data?.userPortfolio;
   const trades = viewMode === "ai" ? data?.aiTrades : data?.userTrades;
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
   const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
+  const activeLivePrice = livePrices?.[activeAsset];
 
   const handleTrade = async () => {
     if (isSpectator) {
@@ -580,6 +635,45 @@ function DashboardContent({ secret }: { secret: string }) {
                 {asset.name}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className={`grid grid-cols-1 md:grid-cols-4 gap-3 rounded-2xl border p-4 ${bgCard}`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center ${bgSubCard}`}>
+              <Activity className={`w-4 h-4 ${activeLivePrice?.source === "WEBSOCKET" && activeLivePrice?.fresh ? "text-emerald-400" : "text-amber-400"}`} />
+            </div>
+            <div>
+              <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Live Price Layer</div>
+              <div className={`text-xs font-bold font-mono ${textPrimary}`}>
+                {liveFeed?.refreshMode === "live-price-only" ? "Updating every 1s" : "Starting live feed"}
+              </div>
+            </div>
+          </div>
+          <div className={`rounded-xl border p-3 ${bgSubCard}`}>
+            <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>{activeAsset} feed</div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded border ${liveSourceClass(activeLivePrice, isDark)}`}>
+                {liveSourceText(activeLivePrice)}
+              </span>
+              {typeof activeLivePrice?.price === "number" && activeLivePrice.price > 0 && (
+                <span className={`text-xs font-bold font-mono ${textPrimary}`}>
+                  ${activeLivePrice.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className={`rounded-xl border p-3 ${bgSubCard}`}>
+            <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Bot Cycle</div>
+            <div className={`text-xs font-bold font-mono mt-1 ${textPrimary}`}>
+              Scan {data?.swingScan?.scanId ? `#${data.swingScan.scanId}` : "waiting"} | Next {timeLeft || "--"}
+            </div>
+          </div>
+          <div className={`rounded-xl border p-3 ${bgSubCard}`}>
+            <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Data Coverage</div>
+            <div className={`text-xs font-bold font-mono mt-1 ${textPrimary}`}>
+              {liveFeed?.summary?.websocket || 0} live, {liveFeed?.summary?.cached || 0} slow, {liveFeed?.summary?.missing || 0} missing
+            </div>
           </div>
         </div>
 
@@ -1024,10 +1118,11 @@ function DashboardContent({ secret }: { secret: string }) {
                               Main blocker: {result.entryGate.primaryBlocker}.
                             </p>
                           )}
-                          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-2 text-[8px] font-mono ${textMuted}`}>
+                          <div className={`grid grid-cols-2 sm:grid-cols-5 gap-1.5 mt-2 text-[8px] font-mono ${textMuted}`}>
                             <span>Confidence: <b className={textPrimary}>{Math.round(result.finalConviction || 0)}</b></span>
                             <span>Trigger: <b className={textPrimary}>{Math.round(result.triggerScore || 0)}</b></span>
                             <span>Data: <b className={textPrimary}>{Math.round(result.dataQuality || 0)}</b></span>
+                            <span>Flow: <b className={textPrimary}>{Math.round(result.microstructureScore || 0)}</b></span>
                             <span>Paper size: <b className={textPrimary}>{result.paperSize || "None"}</b></span>
                           </div>
                         </div>
@@ -1090,6 +1185,30 @@ function DashboardContent({ secret }: { secret: string }) {
                       </div>
                     </div>
 
+                    <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Learning verdict</div>
+                          <p className={`text-[10px] mt-1 ${textSub}`}>
+                            {data?.learningDigest?.headline || "The bot is collecting evidence from watched setups and closed trades."}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setShowLearningDetails((value) => !value)}
+                          className={`shrink-0 px-3 py-1 border text-[9px] font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                        >
+                          {showLearningDetails ? "HIDE DETAILS" : "VIEW DETAILS"}
+                        </button>
+                      </div>
+                      <div className={`grid grid-cols-3 gap-2 mt-2 text-[8px] font-mono ${textMuted}`}>
+                        <span>Trust boosts: <b className={textPrimary}>{data?.learningDigest?.boostCount || 0}</b></span>
+                        <span>Cautions: <b className={textPrimary}>{data?.learningDigest?.cautionCount || 0}</b></span>
+                        <span>Updated: <b className={textPrimary}>{formatAge(data?.learningDigest?.lastUpdated)}</b></span>
+                      </div>
+                    </div>
+
+                    {showLearningDetails && (
+                    <>
                     {data?.opportunitySummary?.bestMissed ? (
                       <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
                         <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Best missed move so far</div>
@@ -1161,6 +1280,8 @@ function DashboardContent({ secret }: { secret: string }) {
                           <p className={`text-[10px] mt-1 ${textMuted}`}>Setup performance will appear after opportunities mature or AI trades close.</p>
                         )}
                       </div>
+                    )}
+                    </>
                     )}
                   </div>
                 )}

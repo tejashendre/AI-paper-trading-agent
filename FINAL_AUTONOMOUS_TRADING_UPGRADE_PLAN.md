@@ -1626,6 +1626,8 @@ The system now has:
 - opportunity journaling,
 - delayed missed-opportunity evaluation,
 - local learning rules,
+- a 1-second Redis-only live dashboard price layer,
+- crypto live-flow scoring from order-book imbalance, funding, and open-interest sensors,
 - replay validation,
 - deployment verification,
 - safe VPS cleanup,
@@ -1636,9 +1638,79 @@ There are no remaining mandatory sprints required for the current architecture t
 Optional future upgrades should be treated carefully because they can add complexity:
 
 - true partial-profit execution,
-- deeper order-book imbalance inside the swing score,
-- funding/open-interest weighting inside the non-LLM swing engine,
 - a tiny exploration lane for low-risk probe trades,
 - local ML trained on a larger real paper-trade sample.
 
 These are not blockers. The correct next operational step is observation: let the bot run, collect completed trades and missed-opportunity evidence, then tune only from measured outcomes.
+
+## 23. Final Small-Sprint Upgrade Completion
+
+This sprint implements the remaining safe upgrades that improve visibility and resilience without converting the swing system into noisy one-second scalping.
+
+### 23.1 Sprint 1 - One-second live layer
+
+Implemented:
+
+- The WebSocket mesh now writes live tick metadata into Redis under `market:liveMeta:<asset>`.
+- Added `/api/live-prices`, a Redis-only endpoint designed for one-second dashboard polling.
+- The dashboard keeps the full system refresh at 30 seconds but updates the visible live price layer every second.
+- The dashboard now shows a compact heartbeat: live price layer, selected asset feed state, next bot scan, and data coverage.
+
+Design decision:
+
+- The bot does not recalculate charts, strategy state, feed health, or portfolio state every second.
+- This protects free APIs and the free VPS while still making the visible dashboard feel alive.
+
+### 23.2 Sprint 2 - Spectator clarity
+
+Implemented:
+
+- Opportunity Radar now shows a compact learning verdict by default.
+- Detailed opportunity evidence, local rules, and setup performance remain available behind `VIEW DETAILS`.
+- Data Health remains available through the existing modal instead of flooding the main page.
+- Dormant AI Brain and scalp sections remain hidden unless they contain real active data.
+
+Design decision:
+
+- The default dashboard should show conclusions first, backend evidence second.
+- This reduces black-box anxiety without turning the spectator view into a backend console.
+
+### 23.3 Sprint 3 - Crypto conviction upgrade
+
+Implemented:
+
+- BTC, ETH, and SOL now receive a bounded `microstructureScore` from free crypto live-flow evidence.
+- Order-book imbalance can boost or penalize the direction.
+- Funding rate can detect crowded long or short conditions.
+- Open-interest sensor availability adds a small confidence bonus.
+- A strong negative live-flow score blocks entries because the setup is fighting immediate market pressure.
+- The score is stored on scan results, open positions, and trade ledger rows.
+
+Design decision:
+
+- Live-flow evidence is a supporting factor, not a magic predictor.
+- It can help conviction, but it cannot override weak structure, stale data, or failed risk admission.
+
+### 23.4 Sprint 4 - Learning visibility
+
+Implemented:
+
+- The status API now returns a compact `learningDigest`.
+- The dashboard shows trust boosts, caution rules, update age, and a plain-language learning headline.
+- Existing local learning rules continue to influence final conviction inside the swing engine.
+- Flow tags are included in setup tags, so the opportunity journal can evaluate them later.
+
+Design decision:
+
+- The learning loop remains local, free, and deterministic.
+- The LLM remains optional and is not required for trading decisions.
+
+### 23.5 Acceptance criteria for this sprint
+
+- TypeScript passes.
+- ESLint passes.
+- Production build passes.
+- Strategy audit passes.
+- Replay validation passes.
+- The dashboard has one-second live price visibility without one-second strategy recalculation.
+- The trading engine can explain live-flow support or opposition for crypto setups.

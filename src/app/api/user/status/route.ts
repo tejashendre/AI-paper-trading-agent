@@ -13,6 +13,52 @@ import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
 
 export const dynamic = "force-dynamic";
 
+function buildLearningDigest(localLearningRules: any[], opportunitySummary: any, setupPerformance: any) {
+    const boostRules = (localLearningRules || []).filter((rule) => rule.action === "BOOST");
+    const reduceRules = (localLearningRules || []).filter((rule) => rule.action === "REDUCE");
+    const watchOnlyRules = (localLearningRules || []).filter((rule) => rule.action === "WATCH_ONLY");
+    const totalEvaluated = Number(opportunitySummary?.totalEvaluated || 0);
+    const favorableRate = Number(opportunitySummary?.favorableRate || 0);
+    const bestSetup = setupPerformance?.bestSetup;
+    const worstSetup = setupPerformance?.worstSetup;
+
+    let headline = "Learning is active, but still collecting enough proof.";
+    if (totalEvaluated >= 20 && boostRules.length > reduceRules.length) {
+        headline = "Learning is finding more helpful patterns than caution patterns.";
+    } else if (totalEvaluated >= 20 && reduceRules.length > boostRules.length) {
+        headline = "Learning is currently making the bot more selective.";
+    } else if (totalEvaluated >= 4) {
+        headline = "Learning has started comparing watched setups against later price movement.";
+    }
+
+    const plainFindings = [
+        bestSetup ? `${bestSetup.label} is the best observed setup so far.` : null,
+        worstSetup && worstSetup.key !== bestSetup?.key ? `${worstSetup.label} still needs caution.` : null,
+        boostRules[0]?.message || null,
+        reduceRules[0]?.message || null,
+    ].filter(Boolean);
+
+    return {
+        headline,
+        totalEvaluated,
+        favorableRate,
+        activeRules: localLearningRules?.length || 0,
+        boostCount: boostRules.length,
+        cautionCount: reduceRules.length,
+        watchOnlyCount: watchOnlyRules.length,
+        bestSetup: bestSetup ? {
+            key: bestSetup.key,
+            label: bestSetup.label,
+            tradeCount: bestSetup.tradeCount,
+            opportunityCount: bestSetup.opportunityCount,
+            favorableRate: bestSetup.opportunityFavorableRate,
+            confidenceAdjustment: bestSetup.confidenceAdjustment,
+        } : null,
+        plainFindings: plainFindings.slice(0, 4),
+        lastUpdated: opportunitySummary?.lastUpdated || setupPerformance?.generatedAt || null,
+    };
+}
+
 export async function GET(request: Request) {
     try {
         const authResult = verifyAuth(request);
@@ -155,6 +201,7 @@ export async function GET(request: Request) {
         const userProfitByAsset = calculateProfitByAsset(userTrades, userPortfolio, userSync.prices);
         const aiProfitByAsset = calculateProfitByAsset(aiTrades, aiPortfolio, aiSync.prices);
         const setupPerformance = SetupPerformance.build(aiTrades, opportunitySummary);
+        const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
 
         // Fetch AI Brain Intelligence Data (non-blocking, failures return nulls)
         let aiReflection = null;
@@ -225,6 +272,7 @@ export async function GET(request: Request) {
             lastExitSweep,
             opportunitySummary,
             setupPerformance,
+            learningDigest,
             feedHealthMatrix,
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
