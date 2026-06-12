@@ -152,7 +152,14 @@ export class MarketService {
 
     // Fallback to Yahoo Finance (Secondary unblocked feed)
     try {
-      const candles = await this.fetchYahooCandles(config.yahooTicker, timeframe, fetchLimit);
+      // Fix 3: For 4h timeframe, fetch 4× as many 1h candles then downsample to real 4h OHLCV.
+      // This gives ~17 days of true 4h history instead of just ~4 days.
+      const yahooFetchLimit = timeframe === "4h" ? fetchLimit * 4 : fetchLimit;
+      const yahooTimeframe: Timeframe = timeframe === "4h" ? "1h" : timeframe;
+      let candles = await this.fetchYahooCandles(config.yahooTicker, yahooTimeframe, yahooFetchLimit);
+      if (timeframe === "4h" && candles.length > 0) {
+        candles = this.downsampleTo4h(candles);
+      }
       if (candles && candles.length > 0) {
         if (this.candlesAreFresh(assetKey, timeframe, candles)) {
           const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
@@ -266,6 +273,25 @@ export class MarketService {
     }
 
     return candles.slice(-limit);
+  }
+
+  // Fix 3: Downsample consecutive 1h candles into true 4h OHLCV candles.
+  // Groups every 4 candles: open from first, high from max, low from min, close from last, volume summed.
+  private static downsampleTo4h(candles1h: Candle[]): Candle[] {
+    const result: Candle[] = [];
+    for (let i = 0; i < candles1h.length; i += 4) {
+      const group = candles1h.slice(i, i + 4);
+      if (group.length === 0) continue;
+      result.push({
+        time:   group[0].time,
+        open:   group[0].open,
+        high:   Math.max(...group.map((c) => c.high)),
+        low:    Math.min(...group.map((c) => c.low)),
+        close:  group[group.length - 1].close,
+        volume: group.reduce((sum, c) => sum + (c.volume || 0), 0),
+      });
+    }
+    return result;
   }
 
   private static async fetchCoinGeckoPrice(coingeckoId: string): Promise<number> {
@@ -496,6 +522,68 @@ export class MarketService {
       };
     } catch (err) {
       return { bidVolume: 0, askVolume: 0, imbalanceRatio: 1, isBullish: false, isBearish: false };
+    }
+  }
+
+  // Upgrade 3: Fetch weekly candles from Yahoo Finance (1wk interval, 6-month range).
+  // Used by SwingEngine for the weekly trend bias gate.
+  // Cached in Redis for 1 hour — weekly data changes very slowly.
+  static async getWeeklyCandles(limit: number = 20, assetKey: string = "BTC"): Promise<Candle[]> {
+    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
+    const redis = getRedis();
+    const cacheKey = `cache:candles:${assetKey}:1w`;
+
+    try {
+      const cached = await redis.get<string>(cacheKey);
+      if (cached) {
+        const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(-limit);
+      }
+    } catch {}
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${config.yahooTicker}?interval=1wk&range=6mo`,
+        {
+          signal: controller.signal,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          }
+        }
+      );
+      clearTimeout(timeoutId);
+      if (!res.ok) return [];
+
+      const data = await res.json();
+      const chartResult = data.chart?.result?.[0];
+      if (!chartResult) return [];
+
+      const timestamps = chartResult.timestamp || [];
+      const quote = chartResult.indicators?.quote?.[0] || {};
+      const candles: Candle[] = [];
+
+      for (let i = 0; i < timestamps.length; i++) {
+        if (quote.open?.[i] != null && quote.close?.[i] != null) {
+          candles.push({
+            time:   timestamps[i],
+            open:   parseFloat(quote.open[i]),
+            high:   parseFloat(quote.high?.[i] ?? quote.open[i]),
+            low:    parseFloat(quote.low?.[i]  ?? quote.open[i]),
+            close:  parseFloat(quote.close[i]),
+            volume: parseFloat(quote.volume?.[i] ?? 0),
+          });
+        }
+      }
+
+      if (candles.length > 0) {
+        // 1-hour TTL — weekly candles barely change intraday
+        await redis.set(cacheKey, JSON.stringify(candles), { ex: 3600 });
+      }
+      return candles.slice(-limit);
+    } catch {
+      return [];
     }
   }
 }

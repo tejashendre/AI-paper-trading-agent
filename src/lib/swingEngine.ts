@@ -371,7 +371,7 @@ function scoreMarketStructureLiquidity(
     state === "SELL_SIDE_SWEEP_RECLAIM" ||
     state === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
     state === "BUY_SIDE_SWEEP_REJECTION";
-  const aligned = permittedState && boundedScore >= 4 && !tags.includes("STRUCTURE_AGAINST_TREND");
+  const aligned = permittedState && boundedScore >= 2;
   const reason = aligned
     ? `Market structure is ${state === "NEUTRAL" ? "neutral" : state.toLowerCase().replace(/_/g, " ")} with liquidity score ${boundedScore}.`
     : `Market structure warns of ${state.toLowerCase().replace(/_/g, " ")}; waiting to avoid a trap trade.`;
@@ -455,12 +455,13 @@ export class SwingEngine {
     try {
       const assetMode = getAssetMode(assetKey);
       // 1. Fetch multi-timeframe candles (Higher Timeframes)
-      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, livePriceResult, orderbookResult, deepSensors] = await Promise.all([
+      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceResult, orderbookResult, deepSensors] = await Promise.all([
         MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("15m", 100, assetKey),
         MarketService.getCandles("1h", 100, assetKey),
         MarketService.getCandles("4h", 100, assetKey),
+        MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
         MarketService.getCurrentPrice(assetKey).catch(() => 0),
         assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
         assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null)
@@ -555,9 +556,27 @@ export class SwingEngine {
       const triggerScore = trigger.score;
       const dataScore = Math.round(dataQuality / 5);
       const riskRewardScore = 10;
-      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + microstructure.score + dataScore + riskRewardScore + learning.adjustment)));
+      let finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + microstructure.score + dataScore + riskRewardScore + learning.adjustment)));
+      
+      // Weekly bias adjustment
+      let weeklyBiasAdjustment = 0;
+      if (candles1w.length >= 8) {
+        const weeklyCloses = candles1w.slice(-8).map((c) => c.close);
+        const weeklyEma8 = weeklyCloses.reduce((sum, v) => sum + v, 0) / weeklyCloses.length;
+        const weeklyTrend = livePrice > weeklyEma8 ? "BULLISH" : "BEARISH";
+
+        if (bestDirection === "LONG" && weeklyTrend === "BULLISH") {
+          weeklyBiasAdjustment = 5;
+        } else if (bestDirection === "SHORT" && weeklyTrend === "BEARISH") {
+          weeklyBiasAdjustment = 5;
+        } else if (bestDirection !== "NEUTRAL") {
+          weeklyBiasAdjustment = -8;
+        }
+      }
+      finalConviction = Math.max(0, Math.min(100, finalConviction + weeklyBiasAdjustment));
+      
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
-      const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.15;
+      const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.60;
       const slippageOk = slippagePercent <= allowedSlippage;
       const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
       const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;

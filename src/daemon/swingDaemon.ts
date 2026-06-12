@@ -11,6 +11,7 @@ import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLif
 import { getMarketSessionState } from "../lib/trading/marketSession";
 import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
+import { isEventBlackout } from "../lib/trading/eventCalendar";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -273,9 +274,56 @@ async function runEntryScan() {
         });
         continue;
       }
+      const requireHighConviction = !session.isPeakLiquidity;
+
+      if (SUPPORTED_ASSETS[asset]?.category !== "crypto") {
+        const eventCheck = isEventBlackout(asset);
+        if (eventCheck.blocked) {
+          results.push({
+            asset,
+            action: "SKIPPED",
+            reason: eventCheck.reason,
+            simpleStatus: "Paused for news event",
+            simpleReason: eventCheck.reason,
+            nextStep: "The bot will resume scanning after the event blackout window clears.",
+            timestamp,
+          });
+          continue;
+        }
+      }
 
       try {
         const swingSignal = await SwingEngine.analyze(asset);
+
+        if (
+          swingSignal.action !== "HOLD" &&
+          requireHighConviction &&
+          swingSignal.finalConviction < 75
+        ) {
+          results.push({
+            asset,
+            action: "HOLD",
+            reason: `${session.reason} Conviction ${swingSignal.finalConviction} is below the 75 required outside peak hours.`,
+            simpleStatus: "Waiting for peak liquidity window",
+            simpleReason: session.reason,
+            nextStep: "The bot will enter when the peak trading session opens.",
+            decisionState: swingSignal.decisionState,
+            score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            microstructureSummary: swingSignal.microstructureSummary,
+            fundingRate: swingSignal.fundingRate,
+            openInterest: swingSignal.openInterest,
+            orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
+            liquidityState: swingSignal.liquidityState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            timestamp,
+          });
+          continue;
+        }
 
         if (swingSignal.action === "HOLD") {
           results.push({
@@ -506,7 +554,7 @@ async function runEntryScan() {
 
     await saveScanSnapshot(results, exitSweep, startedAt, opportunitySweep);
 
-    if (Date.now() - lastSummaryLogTime > 300_000) {
+    if (Date.now() - lastSummaryLogTime > 60_000) {
       lastSummaryLogTime = Date.now();
       const activeCount = Object.keys(portfolio.openPositions || {}).length;
       const summary = summarizeResults(results);
