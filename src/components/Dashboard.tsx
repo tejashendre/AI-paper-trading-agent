@@ -599,6 +599,16 @@ function DashboardContent({ secret }: { secret: string }) {
           </button>
         </div>
 
+        {/* Global Performance Curve */}
+        {trades && trades.length > 0 && (
+          <div className={`border rounded-2xl p-5 mb-6 ${bgCard}`}>
+            <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
+              {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
+            </h2>
+            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
+          </div>
+        )}
+
         {/* Premium Asset Tab Navigator */}
         <div className={`flex flex-col md:flex-row md:items-center gap-6 border-b ${borderCol} pb-4`}>
           <div className={`flex p-1 border rounded-xl gap-1 ${bgTabContainer}`}>
@@ -917,14 +927,6 @@ function DashboardContent({ secret }: { secret: string }) {
                 </div>
               )}
             </div>
-
-            {/* Performance curve */}
-            {trades && (
-              <div className={`border rounded-2xl p-5 ${bgCard}`}>
-                <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Performance Growth Curve</h2>
-                <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
-              </div>
-            )}
 
             {/* Sleek Bloomberg-Style KPI Metrics Row (Shifted inside left columns) */}
             {portfolio && (
