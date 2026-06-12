@@ -22,6 +22,26 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
 };
 
 export class MarketService {
+  private static maxCandleAgeMs(assetKey: string, timeframe: Timeframe): number {
+    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
+    const timeframeMs: Record<Timeframe, number> = {
+      "1m": 60_000,
+      "5m": 5 * 60_000,
+      "15m": 15 * 60_000,
+      "30m": 30 * 60_000,
+      "1h": 60 * 60_000,
+      "4h": 4 * 60 * 60_000,
+    };
+    const ageMultiplier = config.category === "crypto" ? 2.5 : 8.0;
+    return (timeframeMs[timeframe] || 60 * 60_000) * ageMultiplier;
+  }
+
+  private static candlesAreFresh(assetKey: string, timeframe: Timeframe, candles: Candle[]): boolean {
+    const latest = candles[candles.length - 1]?.time;
+    if (!latest) return false;
+    return Date.now() - latest * 1000 <= this.maxCandleAgeMs(assetKey, timeframe);
+  }
+
   static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number, openInterest?: number }> {
     const config = SUPPORTED_ASSETS[assetKey];
     if (!config || config.category !== 'crypto') return {};
@@ -94,6 +114,7 @@ export class MarketService {
   static async getCandles(timeframe: Timeframe, limit: number = 200, assetKey: string = "BTC"): Promise<Candle[]> {
     const redis = getRedis();
     const cacheKey = `cache:candles:${assetKey}:${timeframe}`;
+    let staleCandidate: Candle[] | null = null;
     
     // Attempt cache check first
     try {
@@ -101,7 +122,10 @@ export class MarketService {
       if (cached) {
         const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.slice(-limit);
+          if (this.candlesAreFresh(assetKey, timeframe, parsed)) {
+            return parsed.slice(-limit);
+          }
+          staleCandidate = parsed;
         }
       }
     } catch {}
@@ -114,9 +138,12 @@ export class MarketService {
       try {
         const candles = await this.fetchKrakenCandles(config.krakenPair, timeframe, fetchLimit);
         if (candles && candles.length > 0) {
-          const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
-          await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
-          return candles.slice(-limit);
+          if (this.candlesAreFresh(assetKey, timeframe, candles)) {
+            const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
+            await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
+            return candles.slice(-limit);
+          }
+          staleCandidate = candles;
         }
       } catch (krakenError) {
         console.warn(`Kraken feed failed for ${assetKey}, trying Yahoo Finance fallback...`, krakenError);
@@ -127,12 +154,20 @@ export class MarketService {
     try {
       const candles = await this.fetchYahooCandles(config.yahooTicker, timeframe, fetchLimit);
       if (candles && candles.length > 0) {
-        const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
-        await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
-        return candles.slice(-limit);
+        if (this.candlesAreFresh(assetKey, timeframe, candles)) {
+          const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
+          await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
+          return candles.slice(-limit);
+        }
+        staleCandidate = candles;
       }
     } catch (yahooError) {
       console.error(`Yahoo Finance fallback also failed for ${assetKey}:`, yahooError);
+    }
+
+    if (staleCandidate && staleCandidate.length > 0) {
+      await redis.set(cacheKey, JSON.stringify(staleCandidate), { ex: 15 });
+      return staleCandidate.slice(-limit);
     }
 
     throw new Error(`Failed to fetch candles for asset ${assetKey} from all data feeds.`);
