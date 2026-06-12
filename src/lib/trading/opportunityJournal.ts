@@ -146,7 +146,7 @@ function shouldRecord(result: any) {
   if (!result || !result.asset) return false;
   if (result.action === "ERROR") return true;
   if (result.action === "ENTRY" || result.action === "BLOCKED") return true;
-  if ((result.finalConviction || 0) >= 40) return true;
+  if ((result.finalConviction || 0) >= 25) return true;
   if (["WATCH_LONG", "WATCH_SHORT", "TRIGGER_PENDING", "HIGH_ACCURACY_EXCEPTION"].includes(result.decisionState)) return true;
   return false;
 }

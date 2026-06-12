@@ -36,7 +36,7 @@ function classifyRule(
   const takeProfitRate = (stats.takeProfitHits || 0) / stats.total;
   const stopLossRate = (stats.stopLossHits || 0) / stats.total;
 
-  if ((favorableRate >= 0.65 && stats.avgMove > 0.05) || takeProfitRate >= 0.45) {
+  if ((favorableRate >= 0.65 && stats.avgMove > 0.005) || takeProfitRate >= 0.45) {
     return {
       id: `${scope}:${key}`,
       scope,
@@ -51,7 +51,7 @@ function classifyRule(
     };
   }
 
-  if (favorableRate <= 0.35 || stats.avgMove < -0.05 || stopLossRate >= 0.45) {
+  if (favorableRate <= 0.35 || stats.avgMove < -0.005 || stopLossRate >= 0.45) {
     return {
       id: `${scope}:${key}`,
       scope,
