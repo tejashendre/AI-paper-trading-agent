@@ -42,6 +42,8 @@ interface SwingScanResult {
   score?: number;
   htfScore?: number;
   triggerScore?: number;
+  marketStructureScore?: number;
+  liquidityState?: string;
   dataQuality?: number;
   finalConviction?: number;
   price?: number;
@@ -282,6 +284,8 @@ async function runEntryScan() {
             score: swingSignal.score,
             htfScore: swingSignal.htfScore,
             triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            liquidityState: swingSignal.liquidityState,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
             price: swingSignal.entryPrice,
@@ -328,6 +332,8 @@ async function runEntryScan() {
             score: swingSignal.score,
             htfScore: swingSignal.htfScore,
             triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            liquidityState: swingSignal.liquidityState,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
             price: swingSignal.entryPrice,
@@ -371,6 +377,8 @@ async function runEntryScan() {
           setupTags: swingSignal.setupTags,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
+          marketStructureScore: swingSignal.marketStructureScore,
+          liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
           reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
@@ -404,6 +412,8 @@ async function runEntryScan() {
           setupTags: swingSignal.setupTags,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
+          marketStructureScore: swingSignal.marketStructureScore,
+          liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
           reasoning: newPos.reasoning,
         };
@@ -422,6 +432,8 @@ async function runEntryScan() {
           score: swingSignal.score,
           htfScore: swingSignal.htfScore,
           triggerScore: swingSignal.triggerScore,
+          marketStructureScore: swingSignal.marketStructureScore,
+          liquidityState: swingSignal.liquidityState,
           dataQuality: swingSignal.dataQuality,
           finalConviction: swingSignal.finalConviction,
           price: swingSignal.entryPrice,

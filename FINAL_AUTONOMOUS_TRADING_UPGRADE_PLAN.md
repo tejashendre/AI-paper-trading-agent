@@ -1551,3 +1551,56 @@ For this bot, the free-mode equivalent is:
 - every exception must be recorded and reviewed later
 
 The final system should therefore be aggressive only when it has proof, not aggressive by default.
+
+### 21.10 Market-structure and liquidity anti-trap layer
+
+The final swing engine must not trade only because a mathematical score is high. It must also ask whether price is moving on the correct side of liquidity.
+
+This layer is designed to reduce the exact trap behavior seen during losing short trades, where the bot can technically detect weakness but still enter against a developing buyer reclaim or seller exhaustion move.
+
+The new market-structure layer should check:
+
+- whether the latest 15m candle swept recent sell-side liquidity and reclaimed it
+- whether the latest 15m candle swept recent buy-side liquidity and rejected it
+- whether a breakout or breakdown is confirmed by volume expansion
+- whether the 1h slope agrees with the intended direction
+- whether the latest candle looks like a buyer trap or seller trap
+- whether the entry is chasing after liquidity has already been taken
+
+Trade direction rules:
+
+- Long trades are preferred after sell-side sweep reclaim, bullish continuation, or 1h up-structure alignment.
+- Short trades are preferred only after buy-side sweep rejection. Raw bearish breakdown chasing remains watch-only until replay evidence improves.
+- Long trades are blocked when the latest move looks like a buyer trap.
+- Short trades are blocked when the latest move looks like a seller trap.
+
+This does not promise perfect trades. It makes the bot more honest: when market makers appear to have swept one side and reversed price, the bot should wait instead of betting blindly against the developing move.
+
+### 21.11 Earlier green-trade protection
+
+Swing trades have wider stops and targets, so they can show profit before reaching the official take-profit level. The final system should protect those trades sooner.
+
+The exit watchdog should:
+
+- keep the existing hard stop loss
+- keep the existing full take profit
+- move the stop toward breakeven plus estimated fees after the trade reaches roughly 0.75R profit
+- lock a small profit after the trade reaches roughly 1.1R profit
+- keep the wider trailing behavior after roughly 1.5R profit
+
+This helps the system avoid watching a correct trade turn fully red while still allowing strong moves to run.
+
+### 21.12 Final live-readiness checklist
+
+Before considering the VPS version final:
+
+1. TypeScript must pass.
+2. Lint must pass.
+3. Strategy audit must pass.
+4. Replay validation must pass.
+5. Production build must pass.
+6. VPS deploy verifier must pass against the latest commit.
+7. The live scan ID must advance after deployment.
+8. Docker cleanup must be safe and must not prune Redis volumes.
+9. The dashboard must show clear no-trade reasons instead of silent holds.
+10. The README architecture must match the live system.

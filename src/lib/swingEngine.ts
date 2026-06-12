@@ -16,6 +16,7 @@ export type SwingDecisionState =
 export interface EntryGateDiagnostics {
   htfPassed: boolean;
   triggerPassed: boolean;
+  structurePassed: boolean;
   convictionPassed: boolean;
   dataPassed: boolean;
   slippagePassed: boolean;
@@ -25,6 +26,15 @@ export interface EntryGateDiagnostics {
   primaryBlocker: string;
   missing: string[];
 }
+
+export type LiquidityState =
+  | "NEUTRAL"
+  | "SELL_SIDE_SWEEP_RECLAIM"
+  | "BUY_SIDE_SWEEP_REJECTION"
+  | "BUY_SIDE_BREAKOUT_CONTINUATION"
+  | "SELL_SIDE_BREAKDOWN_CONTINUATION"
+  | "BUYER_TRAP_RISK"
+  | "SELLER_TRAP_RISK";
 
 export interface SwingSignal {
   asset: string;
@@ -37,6 +47,8 @@ export interface SwingSignal {
   expectedMove?: number;
   htfScore: number;
   triggerScore: number;
+  marketStructureScore: number;
+  liquidityState: LiquidityState;
   dataQuality: number;
   finalConviction: number;
   decisionState: SwingDecisionState;
@@ -69,6 +81,8 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     expectedMove: 0,
     htfScore: 0,
     triggerScore: 0,
+    marketStructureScore: 0,
+    liquidityState: "NEUTRAL",
     dataQuality: 0,
     finalConviction: 0,
     decisionState: "BLOCKED_DATA",
@@ -89,6 +103,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     entryGate: {
       htfPassed: false,
       triggerPassed: false,
+      structurePassed: false,
       convictionPassed: false,
       dataPassed: false,
       slippagePassed: false,
@@ -177,6 +192,110 @@ function scoreExecutionTrigger(
   return { score: Math.max(0, Math.min(30, score)), tags, reason };
 }
 
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function slope(values: number[]): number {
+  if (values.length < 2) return 0;
+  const first = values[0];
+  const last = values[values.length - 1];
+  return first !== 0 ? (last - first) / first : 0;
+}
+
+function scoreMarketStructureLiquidity(
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  livePrice: number,
+  candles15m: Candle[],
+  candles1h: Candle[]
+): { score: number; aligned: boolean; state: LiquidityState; tags: string[]; reason: string } {
+  const tags: string[] = [];
+  if (direction === "NEUTRAL") {
+    return { score: 0, aligned: true, state: "NEUTRAL", tags, reason: "No directional market-structure bias yet." };
+  }
+  if (candles15m.length < 30 || candles1h.length < 12 || !Number.isFinite(livePrice) || livePrice <= 0) {
+    return { score: 0, aligned: true, state: "NEUTRAL", tags, reason: "Market-structure data is limited, so liquidity alignment is neutral." };
+  }
+
+  const last15m = candles15m[candles15m.length - 1];
+  const recent15m = candles15m.slice(Math.max(0, candles15m.length - 42), candles15m.length - 2);
+  const recentHigh = Math.max(...recent15m.map((candle) => candle.high));
+  const recentLow = Math.min(...recent15m.map((candle) => candle.low));
+  const avgVolume = average(recent15m.map((candle) => candle.volume || 0));
+  const range = Math.max(last15m.high - last15m.low, Number.EPSILON);
+  const closeLocation = (last15m.close - last15m.low) / range;
+  const oneHourSlope = slope(candles1h.slice(-24).map((candle) => candle.close));
+  const trendAligned = direction === "LONG" ? oneHourSlope >= 0 : oneHourSlope <= 0;
+  const volumeExpansion = avgVolume > 0 && (last15m.volume || 0) > avgVolume * 1.15;
+
+  let score = 0;
+  let state: LiquidityState = "NEUTRAL";
+
+  if (trendAligned) {
+    score += 4;
+    tags.push("STRUCTURE_ALIGNED");
+  } else {
+    score -= 5;
+    tags.push("STRUCTURE_AGAINST_TREND");
+  }
+
+  if (volumeExpansion) {
+    score += 3;
+    tags.push("VOLUME_CONFIRMED_STRUCTURE");
+  }
+
+  if (direction === "LONG") {
+    const sellSideSweepReclaim = last15m.low < recentLow && last15m.close > recentLow && closeLocation >= 0.55;
+    const buySideBreakout = last15m.close > recentHigh && volumeExpansion && closeLocation >= 0.6;
+    const buyerTrapRisk = last15m.high > recentHigh && last15m.close < recentHigh && closeLocation <= 0.45;
+
+    if (sellSideSweepReclaim) {
+      score += 8;
+      state = "SELL_SIDE_SWEEP_RECLAIM";
+      tags.push("SELL_SIDE_LIQUIDITY_RECLAIM");
+    } else if (buySideBreakout) {
+      score += 6;
+      state = "BUY_SIDE_BREAKOUT_CONTINUATION";
+      tags.push("BUY_SIDE_BREAKOUT_CONTINUATION");
+    } else if (buyerTrapRisk) {
+      score -= 16;
+      state = "BUYER_TRAP_RISK";
+      tags.push("LIQUIDITY_TRAP_RISK");
+    }
+  } else {
+    const buySideSweepReject = last15m.high > recentHigh && last15m.close < recentHigh && closeLocation <= 0.45;
+    const sellSideBreakdown = last15m.close < recentLow && volumeExpansion && closeLocation <= 0.4;
+    const sellerTrapRisk = last15m.low < recentLow && last15m.close > recentLow && closeLocation >= 0.55;
+
+    if (buySideSweepReject) {
+      score += 8;
+      state = "BUY_SIDE_SWEEP_REJECTION";
+      tags.push("BUY_SIDE_LIQUIDITY_REJECTION");
+    } else if (sellSideBreakdown) {
+      score += 6;
+      state = "SELL_SIDE_BREAKDOWN_CONTINUATION";
+      tags.push("SELL_SIDE_BREAKDOWN_CONTINUATION");
+    } else if (sellerTrapRisk) {
+      score -= 16;
+      state = "SELLER_TRAP_RISK";
+      tags.push("LIQUIDITY_TRAP_RISK");
+    }
+  }
+
+  const boundedScore = Math.max(-16, Math.min(18, Math.round(score)));
+  const permittedState =
+    state === "SELL_SIDE_SWEEP_RECLAIM" ||
+    state === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
+    state === "BUY_SIDE_SWEEP_REJECTION";
+  const aligned = permittedState && boundedScore >= 4 && !tags.includes("STRUCTURE_AGAINST_TREND");
+  const reason = aligned
+    ? `Market structure is ${state === "NEUTRAL" ? "neutral" : state.toLowerCase().replace(/_/g, " ")} with liquidity score ${boundedScore}.`
+    : `Market structure warns of ${state.toLowerCase().replace(/_/g, " ")}; waiting to avoid a trap trade.`;
+
+  return { score: boundedScore, aligned, state, tags, reason };
+}
+
 function paperSizeFromConviction(conviction: number): SwingSignal["paperSize"] {
   if (conviction >= 90) return "Heavy";
   if (conviction >= 80) return "Strong";
@@ -202,6 +321,7 @@ function buildEntryGateDiagnostics(input: {
   finalConviction: number;
   dataQuality: number;
   slippageOk: boolean;
+  structureAligned: boolean;
   learningWatchOnly: boolean;
   normalEntry: boolean;
   exceptionEntry: boolean;
@@ -210,6 +330,7 @@ function buildEntryGateDiagnostics(input: {
   const htfPassed = input.htfScore >= 14;
   const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < 14;
   const triggerPassed = input.triggerScore >= triggerThreshold;
+  const structurePassed = input.structureAligned;
   const convictionPassed = input.finalConviction >= 60;
   const dataPassed = input.dataQuality >= 60;
   const learningPassed = !input.learningWatchOnly;
@@ -218,6 +339,7 @@ function buildEntryGateDiagnostics(input: {
   if (!learningPassed) missing.push("local learning has this pattern in watch-only mode");
   if (!dataPassed) missing.push("market data quality is below the live-trading minimum");
   if (!input.slippageOk) missing.push("live price moved too far from the signal candle");
+  if (!structurePassed) missing.push("market structure and liquidity are not aligned with the trade direction");
   if (!htfPassed && !exceptionHtfPassed) missing.push("higher-timeframe evidence is still too weak");
   if (!triggerPassed) missing.push("short-term trigger is not confirmed yet");
   if (!convictionPassed) missing.push("final conviction is below the entry minimum");
@@ -225,6 +347,7 @@ function buildEntryGateDiagnostics(input: {
   return {
     htfPassed,
     triggerPassed,
+    structurePassed,
     convictionPassed,
     dataPassed,
     slippagePassed: input.slippageOk,
@@ -336,17 +459,18 @@ export class SwingEngine {
       const bestDirection: "LONG" | "SHORT" | "NEUTRAL" = buyScore > shortScore ? "LONG" : shortScore > buyScore ? "SHORT" : "NEUTRAL";
       const htfScore = Math.max(buyScore, shortScore);
       const trigger = scoreExecutionTrigger(bestDirection, assetMode, livePrice, candles1mResult, candles5mResult, snap15m.vwap);
-      const setupTags = [...details, ...trigger.tags];
+      const liquidity = scoreMarketStructureLiquidity(bestDirection, livePrice, candles15m, candles1h);
+      const setupTags = [...details, ...trigger.tags, ...liquidity.tags];
       const learning = await LocalLearningMemory.getAdjustment(assetKey, setupTags);
       const triggerScore = trigger.score;
       const dataScore = Math.round(dataQuality / 5);
       const riskRewardScore = 10;
-      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + dataScore + riskRewardScore + learning.adjustment)));
+      const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + dataScore + riskRewardScore + learning.adjustment)));
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
       const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.15;
       const slippageOk = slippagePercent <= allowedSlippage;
-      const normalEntry = !learning.watchOnly && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
-      const exceptionEntry = !learning.watchOnly && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const normalEntry = !learning.watchOnly && liquidity.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
+      const exceptionEntry = !learning.watchOnly && liquidity.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
       const entryGate = buildEntryGateDiagnostics({
         assetMode,
         htfScore,
@@ -354,6 +478,7 @@ export class SwingEngine {
         finalConviction,
         dataQuality,
         slippageOk,
+        structureAligned: liquidity.aligned,
         learningWatchOnly: learning.watchOnly,
         normalEntry,
         exceptionEntry,
@@ -397,17 +522,21 @@ export class SwingEngine {
           entryPrice: livePrice,
           stopLoss: plannedStopLoss,
           takeProfit: plannedTakeProfit,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, data quality ${dataQuality}. ${trigger.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
+          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
           expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
           htfScore,
           triggerScore,
+          marketStructureScore: liquidity.score,
+          liquidityState: liquidity.state,
           dataQuality,
           finalConviction,
           decisionState,
           simpleStatus: simpleStateText(decisionState, bestDirection),
           simpleReason: decisionState === "BLOCKED_DATA"
             ? "The bot does not trust the current market data enough to trade."
+            : !liquidity.aligned
+              ? "The bot sees a possible liquidity trap or a move against the main market structure."
             : htfScore < 8
               ? "The market is not showing a strong enough direction yet."
               : "The setup is being watched, but live entry confirmation is not strong enough yet.",
@@ -442,11 +571,13 @@ export class SwingEngine {
         entryPrice: currentPrice,
         stopLoss,
         takeProfit,
-          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
+          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
         score: finalScore,
         expectedMove: expectedMovePercent,
         htfScore,
         triggerScore,
+        marketStructureScore: liquidity.score,
+        liquidityState: liquidity.state,
         dataQuality,
         finalConviction,
         decisionState,

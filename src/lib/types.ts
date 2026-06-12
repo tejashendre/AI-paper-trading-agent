@@ -179,6 +179,8 @@ export interface OpenPosition {
   setupTags?: string[];
   dataQuality?: number;
   triggerScore?: number;
+  marketStructureScore?: number;
+  liquidityState?: string;
   paperSize?: string;
   strategyType?: 'swing' | 'manual' | 'scalp';
   highestPriceReached?: number;
@@ -230,6 +232,8 @@ export interface Trade {
   setupTags?: string[];
   dataQuality?: number;
   triggerScore?: number;
+  marketStructureScore?: number;
+  liquidityState?: string;
   paperSize?: string;
   reasoning: string;
   // Filled when position is closed:
