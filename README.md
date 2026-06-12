@@ -13,9 +13,12 @@ This project is intentionally **paper trading by default**. The goal is to test 
 - Run 24/7 on a free VPS.
 - Watch supported assets through free market data sources.
 - Use 15m, 1h, and 4h candle structure to find stronger swing setups.
+- Align entries with liquidity sweeps, market structure, and volume-confirmed continuation.
+- Avoid obvious trap trades where price sweeps one side and rejects against the intended direction.
 - Trade only when confluence passes the required score.
 - Block oversized trades through a centralized risk admission controller.
 - Simulate paper entries, exits, fees, leverage, margin, stop loss, and take profit.
+- Protect winning swing trades earlier with breakeven/partial-profit stop movement.
 - Work even when LLM APIs are missing, blocked, or rate-limited.
 - Keep live trading disabled unless it is explicitly enabled.
 
@@ -26,53 +29,84 @@ The system is **not** designed to spam one-second scalps. It can consume fast pr
 ## Current Core Architecture
 
 ```mermaid
-flowchart LR
-    subgraph VPS["Free VPS / Docker Runtime"]
-        Dashboard["Next.js Dashboard"]
+flowchart TB
+    subgraph Runtime["Free Oracle VPS / Docker Runtime"]
+        Dashboard["Spectator + Admin Dashboard"]
         Api["Next.js API Routes"]
-        Redis[("Docker Redis State Store")]
-        Daemon["Swing Daemon"]
-        Risk["Trade Admission Controller"]
-        Portfolio["Paper Portfolio Ledger"]
+        Redis[("Redis State Store")]
+        Daemon["Autonomous Swing Daemon"]
+        Watchdog["5s Exit Watchdog"]
     end
 
-    subgraph Data["Free Data Layer"]
-        WS["Binance / Bybit WebSocket Ticks"]
-        Kraken["Kraken OHLC / Ticker"]
+    subgraph Data["Free Market Data Mesh"]
+        CryptoWS["Binance / Bybit Crypto Ticks"]
+        Kraken["Kraken OHLC + Ticker"]
         Yahoo["Yahoo Finance Fallback"]
         CoinGecko["CoinGecko Crypto Fallback"]
+        FeedHealth["Feed Health + Staleness Scoring"]
     end
 
-    subgraph Brain["Decision Layer"]
-        Swing["SwingEngine 15m / 1h / 4h"]
-        Indicators["Indicators + Statistics"]
+    subgraph Intelligence["Math-First Decision Engine"]
+        HTF["15m / 1h / 4h HTF Confluence"]
+        Trigger["1m / 5m Live Trigger"]
+        Liquidity["Market Structure + Liquidity Map"]
+        TrapGate["Anti-Trap Entry Gate"]
+        Learning["Local Learning Memory"]
         LLM["Optional LLM Reflection"]
     end
 
-    WS --> Redis
-    Kraken --> Swing
-    Yahoo --> Swing
-    CoinGecko --> Api
+    subgraph Risk["Risk + Execution Simulation"]
+        Admission["Trade Admission Controller"]
+        Sizing["Conviction-Based Margin + Leverage"]
+        ProfitLock["Swing Breakeven + Profit Lock"]
+        Ledger["Paper Portfolio Ledger"]
+    end
+
+    subgraph Ops["Validation + VPS Operations"]
+        Replay["Deterministic Replay Validator"]
+        Audit["Strategy Audit"]
+        DeployCheck["Live VPS Deploy Verifier"]
+        Maintenance["Safe Docker Cache Cleanup"]
+    end
+
+    CryptoWS --> Redis
+    Kraken --> FeedHealth
+    Yahoo --> FeedHealth
+    CoinGecko --> FeedHealth
+    FeedHealth --> HTF
+    Redis --> Trigger
     Dashboard <--> Api
     Api <--> Redis
-    Daemon --> Swing
-    Swing --> Indicators
-    Indicators --> Risk
-    LLM -. optional .-> Risk
-    Risk --> Portfolio
-    Portfolio <--> Redis
+    Daemon --> HTF
+    Daemon --> Watchdog
+    HTF --> Liquidity
+    Trigger --> Liquidity
+    Liquidity --> TrapGate
+    Learning --> TrapGate
+    LLM -. optional only .-> Learning
+    TrapGate --> Admission
+    Admission --> Sizing
+    Sizing --> Ledger
+    Watchdog --> ProfitLock
+    ProfitLock --> Ledger
+    Ledger <--> Redis
+    Replay --> Audit
+    Audit --> DeployCheck
+    DeployCheck --> Maintenance
 
-    classDef ui fill:#2563eb,stroke:#1e40af,color:#fff,stroke-width:2px;
-    classDef state fill:#16a34a,stroke:#166534,color:#fff,stroke-width:2px;
-    classDef data fill:#f59e0b,stroke:#b45309,color:#111827,stroke-width:2px;
-    classDef brain fill:#7c3aed,stroke:#5b21b6,color:#fff,stroke-width:2px;
-    classDef risk fill:#dc2626,stroke:#991b1b,color:#fff,stroke-width:2px;
+    classDef runtime fill:#2563eb,stroke:#1e3a8a,color:#fff,stroke-width:2px;
+    classDef data fill:#f59e0b,stroke:#92400e,color:#111827,stroke-width:2px;
+    classDef brain fill:#7c3aed,stroke:#4c1d95,color:#fff,stroke-width:2px;
+    classDef guard fill:#dc2626,stroke:#7f1d1d,color:#fff,stroke-width:2px;
+    classDef state fill:#16a34a,stroke:#14532d,color:#fff,stroke-width:2px;
+    classDef ops fill:#0891b2,stroke:#164e63,color:#fff,stroke-width:2px;
 
-    class Dashboard,Api ui;
-    class Redis,Portfolio state;
-    class WS,Kraken,Yahoo,CoinGecko data;
-    class Swing,Indicators,LLM brain;
-    class Risk risk;
+    class Dashboard,Api,Daemon,Watchdog runtime;
+    class CryptoWS,Kraken,Yahoo,CoinGecko,FeedHealth data;
+    class HTF,Trigger,Liquidity,Learning,LLM brain;
+    class TrapGate,Admission,Sizing,ProfitLock guard;
+    class Redis,Ledger state;
+    class Replay,Audit,DeployCheck,Maintenance ops;
 ```
 
 ---
@@ -86,11 +120,13 @@ flowchart LR
 5. The `SwingEngine` pulls 15m, 1h, and 4h candles.
 6. Technical indicators and statistics are computed locally.
 7. A confluence score is produced.
-8. If the score is too weak, the bot holds.
-9. If the score is strong enough, the trade is sent to the `TradeAdmissionController`.
-10. The risk controller sizes margin, leverage, notional exposure, fees, max loss, and portfolio exposure.
-11. If approved, a paper trade is opened and written to Redis.
-12. The dashboard reads Redis and displays the current portfolio, logs, trades, chart state, latest scan results, and no-trade reasons.
+8. The bot checks market structure, liquidity sweeps, volume confirmation, and trap risk.
+9. If the score or structure is too weak, the bot holds.
+10. If the setup is strong and liquidity-aligned, the trade is sent to the `TradeAdmissionController`.
+11. The risk controller sizes margin, leverage, notional exposure, fees, max loss, and portfolio exposure.
+12. If approved, a paper trade is opened and written to Redis.
+13. The exit watchdog protects open positions, including earlier breakeven/profit-lock movement when a swing trade starts working.
+14. The dashboard reads Redis and displays the current portfolio, logs, trades, chart state, latest scan results, and no-trade reasons.
 
 The current daemon entry scan interval is one minute. That is deliberate for this version because the strategy depends on higher-timeframe candles, not sub-second order flow. Active swing exits are monitored separately every 5 seconds.
 
@@ -103,6 +139,8 @@ The current daemon entry scan interval is one minute. That is deliberate for thi
 - LLM keys are optional.
 - Missing or failed LLM calls should not stop the math-first swing system.
 - Each trade goes through margin and risk admission before opening.
+- Each trade must pass the market-structure/liquidity gate before opening.
+- Trap-risk states block entries even if the old HTF score looks attractive.
 - The system blocks duplicate active positions in the same asset.
 - The system caps total portfolio margin exposure.
 - Leverage is score-based, not fixed.

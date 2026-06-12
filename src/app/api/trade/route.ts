@@ -139,9 +139,9 @@ async function handleSwingTrade(request: Request) {
           };
 
           await PortfolioManager.logTrade(trade);
-          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, finalConviction: swingSignal.finalConviction, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, triggerScore: swingSignal.triggerScore, dataQuality: swingSignal.dataQuality, price: currentPrice, margin: admission.requiredMarginUsd, leverage: admission.leverage, paperSize: swingSignal.paperSize });
+          scanResults.push({ asset, action: swingSignal.action, score: swingSignal.score, finalConviction: swingSignal.finalConviction, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, triggerScore: swingSignal.triggerScore, marketStructureScore: swingSignal.marketStructureScore, liquidityState: swingSignal.liquidityState, dataQuality: swingSignal.dataQuality, price: currentPrice, margin: admission.requiredMarginUsd, leverage: admission.leverage, paperSize: swingSignal.paperSize });
         } else {
-          scanResults.push({ asset, action: "HOLD", reason: swingSignal.reasoning, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, nextStep: swingSignal.nextStep, score: swingSignal.score, triggerScore: swingSignal.triggerScore, dataQuality: swingSignal.dataQuality, finalConviction: swingSignal.finalConviction, paperSize: swingSignal.paperSize });
+          scanResults.push({ asset, action: "HOLD", reason: swingSignal.reasoning, decisionState: swingSignal.decisionState, simpleStatus: swingSignal.simpleStatus, simpleReason: swingSignal.simpleReason, nextStep: swingSignal.nextStep, score: swingSignal.score, triggerScore: swingSignal.triggerScore, marketStructureScore: swingSignal.marketStructureScore, liquidityState: swingSignal.liquidityState, dataQuality: swingSignal.dataQuality, finalConviction: swingSignal.finalConviction, paperSize: swingSignal.paperSize });
         }
       } catch (assetErr) {
         console.error(`Error scanning swing setup for ${asset}:`, assetErr);

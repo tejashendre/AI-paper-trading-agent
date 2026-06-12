@@ -273,6 +273,10 @@ export class RiskManager {
       ? (position.entryPrice - (position.lowestPriceReached || currentPrice)) / position.entryPrice
       : ((position.highestPriceReached || currentPrice) - position.entryPrice) / position.entryPrice;
 
+    const currentProfitPercent = isShort
+      ? (position.entryPrice - currentPrice) / position.entryPrice
+      : (currentPrice - position.entryPrice) / position.entryPrice;
+
     // 1. Hard Stop Loss & Take Profit Trigger checks
     if (isShort) {
       if (currentPrice >= position.stopLoss) return { triggered: true, reason: "STOP_LOSS", exitPrice: position.stopLoss };
@@ -282,8 +286,33 @@ export class RiskManager {
       if (currentPrice >= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     }
 
-    // 2. Dynamic Trailing Stop calculation
+    // 2. Earlier swing profit protection: once a trade is working, protect fees first,
+    // then lock a small part of the move before the distant swing target is reached.
     let newStopLoss = position.stopLoss;
+    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 0.75) {
+      const feeBufferPercent = 0.001;
+      const breakevenLockPercent = Math.max(feeBufferPercent, originalRiskPercent * 0.1);
+      const protectedStop = isShort
+        ? position.entryPrice * (1 - breakevenLockPercent)
+        : position.entryPrice * (1 + breakevenLockPercent);
+      const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
+      if (isBetterStop) {
+        newStopLoss = protectedStop;
+      }
+    }
+
+    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.1) {
+      const profitLockPercent = originalRiskPercent * 0.35;
+      const protectedStop = isShort
+        ? position.entryPrice * (1 - profitLockPercent)
+        : position.entryPrice * (1 + profitLockPercent);
+      const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
+      if (isBetterStop) {
+        newStopLoss = protectedStop;
+      }
+    }
+
+    // 3. Dynamic Trailing Stop calculation
     if (watermarkProfitPercent > activationThreshold) {
       position.isTrailing = true; // Once activated, we ignore the static Take Profit and let it run
       if (isShort) {

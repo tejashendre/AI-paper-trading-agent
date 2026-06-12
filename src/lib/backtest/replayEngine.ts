@@ -31,6 +31,7 @@ export interface ReplayTrade {
   finalConviction: number;
   htfScore: number;
   triggerScore: number;
+  marketStructureScore: number;
   setupTags: string[];
   exitReason: ReplayExitReason;
   executionPriceSource: "candle.close";
@@ -100,6 +101,7 @@ interface ReplaySignal {
   direction: ReplayDirection;
   htfScore: number;
   triggerScore: number;
+  marketStructureScore: number;
   finalConviction: number;
   setupTags: string[];
   entryReady: boolean;
@@ -123,6 +125,7 @@ interface ActiveReplayPosition {
   finalConviction: number;
   htfScore: number;
   triggerScore: number;
+  marketStructureScore: number;
   setupTags: string[];
 }
 
@@ -214,6 +217,58 @@ function slope(values: number[]): number {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
+function scoreReplayMarketStructure(direction: ReplayDirection, window: Candle[]) {
+  const tags: string[] = [];
+  if (direction === "NEUTRAL" || window.length < 32) return { score: 0, aligned: true, tags };
+
+  const last = window[window.length - 1];
+  const recent = window.slice(Math.max(0, window.length - 42), window.length - 2);
+  const recentHigh = Math.max(...recent.map((candle) => candle.high));
+  const recentLow = Math.min(...recent.map((candle) => candle.low));
+  const avgVolume = average(recent.map((candle) => candle.volume || 0));
+  const closeLocation = (last.close - last.low) / Math.max(last.high - last.low, Number.EPSILON);
+  const trendSlope = slope(window.slice(-24).map((candle) => candle.close));
+  const trendAligned = direction === "LONG" ? trendSlope >= 0 : trendSlope <= 0;
+  const volumeExpansion = avgVolume > 0 && (last.volume || 0) > avgVolume * 1.15;
+
+  let score = trendAligned ? 4 : -5;
+  tags.push(trendAligned ? "STRUCTURE_ALIGNED" : "STRUCTURE_AGAINST_TREND");
+  if (volumeExpansion) {
+    score += 3;
+    tags.push("VOLUME_CONFIRMED_STRUCTURE");
+  }
+
+  if (direction === "LONG") {
+    if (last.low < recentLow && last.close > recentLow && closeLocation >= 0.55) {
+      score += 8;
+      tags.push("SELL_SIDE_LIQUIDITY_RECLAIM");
+    } else if (last.close > recentHigh && volumeExpansion && closeLocation >= 0.6) {
+      score += 6;
+      tags.push("BUY_SIDE_BREAKOUT_CONTINUATION");
+    } else if (last.high > recentHigh && last.close < recentHigh && closeLocation <= 0.45) {
+      score -= 16;
+      tags.push("LIQUIDITY_TRAP_RISK");
+    }
+  } else if (last.high > recentHigh && last.close < recentHigh && closeLocation <= 0.45) {
+    score += 8;
+    tags.push("BUY_SIDE_LIQUIDITY_REJECTION");
+  } else if (last.close < recentLow && volumeExpansion && closeLocation <= 0.4) {
+    score += 6;
+    tags.push("SELL_SIDE_BREAKDOWN_CONTINUATION");
+  } else if (last.low < recentLow && last.close > recentLow && closeLocation >= 0.55) {
+    score -= 16;
+    tags.push("LIQUIDITY_TRAP_RISK");
+  }
+
+  const boundedScore = Math.max(-16, Math.min(18, Math.round(score)));
+  const hasPermittedEvent = tags.some((tag) =>
+    tag === "SELL_SIDE_LIQUIDITY_RECLAIM" ||
+    tag === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
+    tag === "BUY_SIDE_LIQUIDITY_REJECTION"
+  );
+  return { score: boundedScore, aligned: hasPermittedEvent && boundedScore >= 4 && !tags.includes("LIQUIDITY_TRAP_RISK") && !tags.includes("STRUCTURE_AGAINST_TREND"), tags };
+}
+
 function buildSignal(asset: string, candles: Candle[], index: number): ReplaySignal {
   const window = candles.slice(0, index + 1);
   const indicators = computeAllIndicators(window);
@@ -274,20 +329,22 @@ function buildSignal(asset: string, candles: Candle[], index: number): ReplaySig
   if (volumeBurst) triggerScore += 5;
   triggerScore = Math.min(30, triggerScore);
 
+  const structure = scoreReplayMarketStructure(direction, window);
   const dataQuality = 90;
   const riskRewardScore = 10;
-  const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + Math.round(dataQuality / 5) + riskRewardScore)));
+  const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + structure.score + Math.round(dataQuality / 5) + riskRewardScore)));
   const isCrypto = SUPPORTED_ASSETS[asset]?.category === "crypto";
   const triggerThreshold = isCrypto ? 14 : 8;
-  const entryReady = htfScore >= 14 && triggerScore >= triggerThreshold && finalConviction >= 60;
-  const highAccuracyException = isCrypto && htfScore >= 8 && htfScore < 14 && triggerScore >= 24 && finalConviction >= 75;
+  const entryReady = structure.aligned && htfScore >= 14 && triggerScore >= triggerThreshold && finalConviction >= 60;
+  const highAccuracyException = structure.aligned && isCrypto && htfScore >= 8 && htfScore < 14 && triggerScore >= 24 && finalConviction >= 75;
 
   return {
     direction,
     htfScore,
     triggerScore,
+    marketStructureScore: structure.score,
     finalConviction,
-    setupTags: tags.length > 0 ? Array.from(new Set(tags)) : ["UNTAGGED"],
+    setupTags: [...tags, ...structure.tags].length > 0 ? Array.from(new Set([...tags, ...structure.tags])) : ["UNTAGGED"],
     entryReady,
     highAccuracyException,
     watched: direction !== "NEUTRAL" && htfScore >= 8,
@@ -323,6 +380,7 @@ function markOpenPosition(portfolio: Portfolio, position: ActiveReplayPosition) 
     leverageUsed: position.leverage,
     finalConviction: position.finalConviction,
     triggerScore: position.triggerScore,
+    marketStructureScore: position.marketStructureScore,
     setupTags: position.setupTags,
     strategyType: "swing",
   };
@@ -376,6 +434,7 @@ function closePosition(position: ActiveReplayPosition, candle: Candle, index: nu
     finalConviction: position.finalConviction,
     htfScore: position.htfScore,
     triggerScore: position.triggerScore,
+    marketStructureScore: position.marketStructureScore,
     setupTags: position.setupTags,
     exitReason: reason,
     executionPriceSource: "candle.close",
@@ -584,6 +643,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
             finalConviction: signal.finalConviction,
             htfScore: signal.htfScore,
             triggerScore: signal.triggerScore,
+            marketStructureScore: signal.marketStructureScore,
             setupTags: signal.setupTags,
           };
           markOpenPosition(portfolio, active);
