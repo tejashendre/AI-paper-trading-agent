@@ -10,6 +10,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Type Check
+        run: npx tsc --noEmit
+
+      - name: Run Lint
+        run: npm run lint
+
+      - name: Build Dashboard
+        run: npm run build
+
+      - name: Run Strategy Audit
+        run: npm run audit:strategy
+
       - name: Deploy to Oracle VPS via SSH
         uses: appleboy/ssh-action@master
         with:

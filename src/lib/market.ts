@@ -276,14 +276,27 @@ export class MarketService {
   }
 
   // Fix 3: Downsample consecutive 1h candles into true 4h OHLCV candles.
-  // Groups every 4 candles: open from first, high from max, low from min, close from last, volume summed.
+  // Groups candles by strict UTC 4-hour buckets (00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
   private static downsampleTo4h(candles1h: Candle[]): Candle[] {
+    const buckets = new Map<number, Candle[]>();
+    
+    for (const c of candles1h) {
+      // 4 hours = 14400 seconds. Floor to nearest 4h bucket.
+      const bucketTime = Math.floor(c.time / 14400) * 14400;
+      if (!buckets.has(bucketTime)) buckets.set(bucketTime, []);
+      buckets.get(bucketTime)!.push(c);
+    }
+
     const result: Candle[] = [];
-    for (let i = 0; i < candles1h.length; i += 4) {
-      const group = candles1h.slice(i, i + 4);
+    // Sort buckets chronologically
+    const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
+    
+    for (const [bucketTime, group] of sortedBuckets) {
       if (group.length === 0) continue;
+      // Sort group chronologically just in case
+      group.sort((a, b) => a.time - b.time);
       result.push({
-        time:   group[0].time,
+        time:   bucketTime,
         open:   group[0].open,
         high:   Math.max(...group.map((c) => c.high)),
         low:    Math.min(...group.map((c) => c.low)),

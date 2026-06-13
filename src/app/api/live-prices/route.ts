@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 type LivePriceSnapshot = {
   price: number;
-  source: "WEBSOCKET" | "RECENT_CACHE" | "MISSING";
+  source: "WEBSOCKET" | "RECENT_CACHE" | "REALTIME_UNAVAILABLE";
   provider: string;
   mode: "REALTIME_FAST" | "SLOW_SWING";
   fresh: boolean;
@@ -90,7 +90,7 @@ export async function GET(request: Request) {
 
     prices[asset] = {
       price: 0,
-      source: "MISSING",
+      source: "REALTIME_UNAVAILABLE",
       provider: "NO_RECENT_PRICE",
       mode,
       fresh: false,
@@ -107,7 +107,7 @@ export async function GET(request: Request) {
   const snapshots = Object.values(prices);
   const websocket = snapshots.filter((snapshot) => snapshot.source === "WEBSOCKET" && snapshot.fresh).length;
   const cached = snapshots.filter((snapshot) => snapshot.source === "RECENT_CACHE").length;
-  const missing = snapshots.filter((snapshot) => snapshot.source === "MISSING").length;
+  const missing = snapshots.filter((snapshot) => snapshot.source === "REALTIME_UNAVAILABLE").length;
 
   return NextResponse.json({
     success: true,

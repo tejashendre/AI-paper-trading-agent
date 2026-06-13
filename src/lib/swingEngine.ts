@@ -561,8 +561,14 @@ export class SwingEngine {
       // Weekly bias adjustment
       let weeklyBiasAdjustment = 0;
       if (candles1w.length >= 8) {
+        // True 8-period EMA calculation
         const weeklyCloses = candles1w.slice(-8).map((c) => c.close);
-        const weeklyEma8 = weeklyCloses.reduce((sum, v) => sum + v, 0) / weeklyCloses.length;
+        const k = 2 / (8 + 1);
+        let weeklyEma8 = weeklyCloses[0];
+        for (let i = 1; i < weeklyCloses.length; i++) {
+          weeklyEma8 = (weeklyCloses[i] - weeklyEma8) * k + weeklyEma8;
+        }
+        
         const weeklyTrend = livePrice > weeklyEma8 ? "BULLISH" : "BEARISH";
 
         if (bestDirection === "LONG" && weeklyTrend === "BULLISH") {
@@ -578,7 +584,11 @@ export class SwingEngine {
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
       const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.60;
       const slippageOk = slippagePercent <= allowedSlippage;
-      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= 60 && dataQuality >= 60 && slippageOk;
+      
+      // Structure Safety Buffer: If the market structure score is weak (< 4), demand +5 finalConviction to execute
+      const requiredConviction = liquidity.score < 4 ? 65 : 60;
+      
+      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= requiredConviction && dataQuality >= 60 && slippageOk;
       const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
       const entryGate = buildEntryGateDiagnostics({
         assetMode,
