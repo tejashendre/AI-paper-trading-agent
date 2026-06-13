@@ -26,8 +26,8 @@ interface CalendarEvent {
 
 const EVENTS: CalendarEvent[] = [
   { name: "FOMC Decision",  utc: "2026-06-17T18:00:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD","SILVER"] },
-  { name: "US NFP",         utc: "2026-07-03T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
-  { name: "US CPI",         utc: "2026-07-15T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
+  { name: "US NFP",         utc: "2026-07-02T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
+  { name: "US CPI",         utc: "2026-07-14T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
   { name: "BOE Decision",   utc: "2026-06-25T11:00:00Z", affectedAssets: ["GBPUSD"] },
   { name: "ECB Decision",   utc: "2026-07-23T12:15:00Z", affectedAssets: ["EURUSD"] },
   { name: "BOJ Decision",   utc: "2026-07-31T03:00:00Z", affectedAssets: ["USDJPY"] },
