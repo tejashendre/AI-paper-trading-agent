@@ -25,7 +25,13 @@ interface CalendarEvent {
 // { name: "EIA Oil Report", utc: "2026-07-09T14:30:00Z", affectedAssets: ["OIL"] },
 
 const EVENTS: CalendarEvent[] = [
-  // Add upcoming month's events here
+  { name: "FOMC Decision",  utc: "2026-06-17T18:00:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD","SILVER"] },
+  { name: "US NFP",         utc: "2026-07-03T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
+  { name: "US CPI",         utc: "2026-07-15T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
+  { name: "BOE Decision",   utc: "2026-06-25T11:00:00Z", affectedAssets: ["GBPUSD"] },
+  { name: "ECB Decision",   utc: "2026-07-23T12:15:00Z", affectedAssets: ["EURUSD"] },
+  { name: "BOJ Decision",   utc: "2026-07-31T03:00:00Z", affectedAssets: ["USDJPY"] },
+  { name: "EIA Oil Report", utc: "2026-06-18T14:30:00Z", affectedAssets: ["OIL"] },
 ];
 
 // ─── Blackout window configuration ────────────────────────────────────────────
