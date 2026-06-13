@@ -28,7 +28,7 @@ The codebase has been surgically patched to fix edge-case bugs and massively upg
 - **Finance Curve Integration**: The `EquityCurve` was successfully relocated to immediately below the Human VS AI Leaderboard Comparison on the Dashboard, making the performance growth fully visible upfront.
 
 ## VPS Deployment & CI/CD
-- **Pre-Deploy Safety Checks**: The `.github/workflows/deploy.yml` workflow has been upgraded to run `npm ci`, `tsc`, `lint`, `build`, and `audit:strategy` on the GitHub Actions runner before allowing a VPS deploy. This prevents broken builds from reaching production.
+- **Pre-Deploy Safety Checks**: The `.github/workflows/deploy.yml` workflow has been upgraded to run `npm ci`, `lint`, `build`, `tsc`, and `audit:strategy` on the GitHub Actions runner before allowing a VPS deploy. The build step runs before standalone type-checking so Next.js has generated its `.next/types` files.
 - **Automated Pulls**: On success, the CI/CD pipeline connects to the Oracle VPS, pulls the changes, rebuilds the Docker daemon image, automatically clears the legacy Docker cache, and restarts the environment with zero downtime!
 
 The bot is now operating precisely at the absolute limit of what a 100% free data pipeline allows, ensuring high-fidelity signal execution with maximum safety overrides!
