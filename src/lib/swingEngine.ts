@@ -9,6 +9,7 @@ export type SwingDecisionState =
   | "WATCH_LONG"
   | "WATCH_SHORT"
   | "TRIGGER_PENDING"
+  | "PROBE_ENTRY"
   | "ENTRY_READY"
   | "HIGH_ACCURACY_EXCEPTION"
   | "BLOCKED_DATA";
@@ -24,6 +25,7 @@ export interface EntryGateDiagnostics {
   learningPassed: boolean;
   normalEntry: boolean;
   exceptionEntry: boolean;
+  controlledProbeEntry: boolean;
   primaryBlocker: string;
   missing: string[];
 }
@@ -63,6 +65,7 @@ export interface SwingSignal {
   nextStep: string;
   paperSize: "None" | "Probe" | "Normal" | "Strong" | "Heavy";
   riskMode: "Normal" | "Protected" | "Watch Only";
+  entryMode: "STANDARD" | "CONTROLLED_PROBE";
   assetMode: "REALTIME_FAST" | "SLOW_SWING" | "CONDITIONAL_FAST";
   setupTags: string[];
   directionBias: "LONG" | "SHORT" | "NEUTRAL";
@@ -102,6 +105,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     nextStep: "The bot will wait for fresh market data before considering a trade.",
     paperSize: "None",
     riskMode: "Watch Only",
+    entryMode: "STANDARD",
     assetMode: "SLOW_SWING",
     setupTags: [],
     directionBias: "NEUTRAL",
@@ -122,6 +126,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
       learningPassed: false,
       normalEntry: false,
       exceptionEntry: false,
+      controlledProbeEntry: false,
       primaryBlocker: reason,
       missing: [reason],
     },
@@ -389,6 +394,7 @@ function paperSizeFromConviction(conviction: number): SwingSignal["paperSize"] {
 
 function simpleStateText(state: SwingDecisionState, direction: "LONG" | "SHORT" | "NEUTRAL") {
   if (state === "ENTRY_READY") return "Trade setup confirmed";
+  if (state === "PROBE_ENTRY") return "Small paper probe approved";
   if (state === "HIGH_ACCURACY_EXCEPTION") return "Special high-confidence setup";
   if (state === "WATCH_LONG") return "Watching for a buy setup";
   if (state === "WATCH_SHORT") return "Watching for a short setup";
@@ -409,12 +415,13 @@ function buildEntryGateDiagnostics(input: {
   learningWatchOnly: boolean;
   normalEntry: boolean;
   exceptionEntry: boolean;
+  controlledProbeEntry: boolean;
 }): EntryGateDiagnostics {
   const triggerThreshold = input.assetMode === "REALTIME_FAST" ? 14 : 8;
   const htfPassed = input.htfScore >= 14;
   const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < 14;
   const triggerPassed = input.triggerScore >= triggerThreshold;
-  const structurePassed = input.structureAligned;
+  const structurePassed = input.structureAligned || input.controlledProbeEntry;
   const microstructurePassed = input.microstructureAligned;
   const convictionPassed = input.finalConviction >= 60;
   const dataPassed = input.dataQuality >= 60;
@@ -441,6 +448,7 @@ function buildEntryGateDiagnostics(input: {
     learningPassed,
     normalEntry: input.normalEntry,
     exceptionEntry: input.exceptionEntry,
+    controlledProbeEntry: input.controlledProbeEntry,
     primaryBlocker: missing[0] || "all entry gates passed",
     missing,
   };
@@ -590,6 +598,21 @@ export class SwingEngine {
       
       const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= requiredConviction && dataQuality >= 60 && slippageOk;
       const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const controlledProbeEntry =
+        !normalEntry &&
+        !exceptionEntry &&
+        !learning.watchOnly &&
+        assetMode === "REALTIME_FAST" &&
+        bestDirection !== "NEUTRAL" &&
+        htfScore >= 8 &&
+        triggerScore >= 24 &&
+        finalConviction >= 70 &&
+        dataQuality >= 90 &&
+        slippageOk &&
+        liquidity.state === "NEUTRAL" &&
+        liquidity.score >= 4 &&
+        microstructure.aligned &&
+        microstructure.score >= -5;
       const entryGate = buildEntryGateDiagnostics({
         assetMode,
         htfScore,
@@ -602,6 +625,7 @@ export class SwingEngine {
         learningWatchOnly: learning.watchOnly,
         normalEntry,
         exceptionEntry,
+        controlledProbeEntry,
       });
       const htfAtr = snap1h.atr;
       const currentPrice = livePrice;
@@ -620,16 +644,17 @@ export class SwingEngine {
           : 0;
 
       // Require strong HTF alignment (score >= 14)
-      if ((normalEntry || exceptionEntry) && bestDirection === "LONG") {
+      if ((normalEntry || exceptionEntry || controlledProbeEntry) && bestDirection === "LONG") {
         action = 'SWING_BUY';
         finalScore = htfScore;
-      } else if ((normalEntry || exceptionEntry) && bestDirection === "SHORT") {
+      } else if ((normalEntry || exceptionEntry || controlledProbeEntry) && bestDirection === "SHORT") {
         action = 'SWING_SHORT';
         finalScore = htfScore;
       }
 
       let decisionState: SwingDecisionState = "NO_BIAS";
       if (dataQuality < 50) decisionState = "BLOCKED_DATA";
+      else if (controlledProbeEntry) decisionState = "PROBE_ENTRY";
       else if (exceptionEntry) decisionState = "HIGH_ACCURACY_EXCEPTION";
       else if (normalEntry) decisionState = "ENTRY_READY";
       else if (bestDirection === "LONG" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_LONG";
@@ -674,6 +699,7 @@ export class SwingEngine {
               : "The bot will keep scanning for a clearer setup.",
           paperSize: paperSizeFromConviction(finalConviction),
           riskMode: dataQuality < 70 ? "Protected" : "Normal",
+          entryMode: "STANDARD",
           assetMode,
           setupTags,
           directionBias: bestDirection,
@@ -714,12 +740,15 @@ export class SwingEngine {
         finalConviction,
         decisionState,
         simpleStatus: simpleStateText(decisionState, bestDirection),
-        simpleReason: exceptionEntry
+        simpleReason: controlledProbeEntry
+          ? "The setup is not perfect, but the bot has enough live proof to test it with a smaller paper position."
+          : exceptionEntry
           ? "The old long-term score is below the normal threshold, but live market behavior is strongly confirming the setup."
           : "Long-term direction and live entry confirmation agree.",
         nextStep: "The bot can enter with predefined stop loss, take profit, and paper position size.",
-        paperSize: paperSizeFromConviction(finalConviction),
+        paperSize: controlledProbeEntry ? "Probe" : paperSizeFromConviction(finalConviction),
         riskMode: dataQuality < 70 ? "Protected" : "Normal",
+        entryMode: controlledProbeEntry ? "CONTROLLED_PROBE" : "STANDARD",
         assetMode,
         setupTags,
         directionBias: bestDirection,

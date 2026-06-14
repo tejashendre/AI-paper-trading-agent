@@ -187,6 +187,7 @@ export interface OpenPosition {
   orderbookImbalanceRatio?: number;
   liquidityState?: string;
   paperSize?: string;
+  entryMode?: 'STANDARD' | 'CONTROLLED_PROBE';
   strategyType?: 'swing' | 'manual' | 'scalp';
   highestPriceReached?: number;
   lowestPriceReached?: number;
@@ -245,6 +246,7 @@ export interface Trade {
   orderbookImbalanceRatio?: number;
   liquidityState?: string;
   paperSize?: string;
+  entryMode?: 'STANDARD' | 'CONTROLLED_PROBE';
   reasoning: string;
   // Filled when position is closed:
   pnl?: number;

@@ -16,6 +16,7 @@ import { isEventBlackout } from "../lib/trading/eventCalendar";
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
+const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
 
 type SwingScanAction = "HOLD" | "BLOCKED" | "ENTRY" | "SKIPPED" | "ERROR";
 type SwingDecisionSummaryKey =
@@ -23,6 +24,7 @@ type SwingDecisionSummaryKey =
   | "WATCH_LONG"
   | "WATCH_SHORT"
   | "TRIGGER_PENDING"
+  | "PROBE_ENTRY"
   | "ENTRY_READY"
   | "HIGH_ACCURACY_EXCEPTION"
   | "BLOCKED_DATA"
@@ -60,6 +62,7 @@ interface SwingScanResult {
   margin?: number;
   leverage?: number;
   paperSize?: string;
+  entryMode?: string;
   riskMode?: string;
   assetMode?: string;
   setupTags?: string[];
@@ -68,6 +71,16 @@ interface SwingScanResult {
   learningRules?: string[];
   entryGate?: unknown;
   timestamp: string;
+}
+
+interface LifetimeScanStats {
+  scanCycles: number;
+  assetChecks: number;
+  entrySignals: number;
+  blockedOrSkipped: number;
+  errors: number;
+  trackedSince: string;
+  lastUpdated: string;
 }
 
 const getAIPortfolio = () => PortfolioManager.getPortfolio("ai");
@@ -81,6 +94,7 @@ let isEntryScanning = false;
 let isExitWatching = false;
 let lastSummaryLogTime = 0;
 let scanSequence = 0;
+let lifetimeStatsBootstrapped = false;
 
 function ensurePortfolioShape(portfolio: any) {
   portfolio.openPositions = portfolio.openPositions || {};
@@ -102,7 +116,9 @@ function summarizeResults(results: SwingScanResult[]) {
 function decisionKeyForResult(result: SwingScanResult): SwingDecisionSummaryKey {
   if (result.action === "ERROR") return "ERROR";
   if (result.action === "ENTRY") {
-    return result.decisionState === "HIGH_ACCURACY_EXCEPTION" ? "HIGH_ACCURACY_EXCEPTION" : "ENTRY_READY";
+    if (result.decisionState === "HIGH_ACCURACY_EXCEPTION") return "HIGH_ACCURACY_EXCEPTION";
+    if (result.decisionState === "PROBE_ENTRY") return "PROBE_ENTRY";
+    return "ENTRY_READY";
   }
   if (result.action === "BLOCKED") return "BLOCKED_RISK";
   if (result.action === "SKIPPED") {
@@ -119,6 +135,7 @@ function decisionKeyForResult(result: SwingScanResult): SwingDecisionSummaryKey 
     state === "WATCH_LONG" ||
     state === "WATCH_SHORT" ||
     state === "TRIGGER_PENDING" ||
+    state === "PROBE_ENTRY" ||
     state === "ENTRY_READY" ||
     state === "HIGH_ACCURACY_EXCEPTION" ||
     state === "BLOCKED_DATA"
@@ -135,6 +152,7 @@ function summarizeDecisionStates(results: SwingScanResult[]) {
     WATCH_LONG: 0,
     WATCH_SHORT: 0,
     TRIGGER_PENDING: 0,
+    PROBE_ENTRY: 0,
     ENTRY_READY: 0,
     HIGH_ACCURACY_EXCEPTION: 0,
     BLOCKED_DATA: 0,
@@ -166,6 +184,67 @@ function summarizeEntryBlockers(results: SwingScanResult[]) {
     .map(([reason, count]) => ({ reason, count }));
 }
 
+function emptyLifetimeStats(nowIso: string): LifetimeScanStats {
+  return {
+    scanCycles: 0,
+    assetChecks: 0,
+    entrySignals: 0,
+    blockedOrSkipped: 0,
+    errors: 0,
+    trackedSince: nowIso,
+    lastUpdated: nowIso,
+  };
+}
+
+async function bootstrapLifetimeStats() {
+  if (lifetimeStatsBootstrapped) return;
+  lifetimeStatsBootstrapped = true;
+
+  const redis = getRedis();
+  const existing = await redis.get<LifetimeScanStats>(LIFETIME_STATS_KEY);
+  if (existing?.trackedSince) return;
+
+  const nowIso = new Date().toISOString();
+  const previousScan = await redis.get<any>(SCAN_SNAPSHOT_KEY).catch(() => null);
+  const previousScanId = Number(previousScan?.scanId || 0);
+  const previousAssetCount = Array.isArray(previousScan?.results) && previousScan.results.length > 0
+    ? previousScan.results.length
+    : Object.keys(SUPPORTED_ASSETS).length;
+
+  await redis.set(LIFETIME_STATS_KEY, {
+    scanCycles: previousScanId,
+    assetChecks: previousScanId * previousAssetCount,
+    entrySignals: 0,
+    blockedOrSkipped: 0,
+    errors: 0,
+    trackedSince: previousScan?.startedAt || nowIso,
+    lastUpdated: nowIso,
+  });
+}
+
+async function updateLifetimeStats(results: SwingScanResult[]): Promise<LifetimeScanStats> {
+  await bootstrapLifetimeStats();
+
+  const redis = getRedis();
+  const current = await redis.get<LifetimeScanStats>(LIFETIME_STATS_KEY).catch(() => null);
+  const nowIso = new Date().toISOString();
+  const summary = summarizeResults(results);
+  const next = current?.trackedSince ? current : emptyLifetimeStats(nowIso);
+
+  const updated: LifetimeScanStats = {
+    scanCycles: Number(next.scanCycles || 0) + 1,
+    assetChecks: Number(next.assetChecks || 0) + results.length,
+    entrySignals: Number(next.entrySignals || 0) + summary.ENTRY,
+    blockedOrSkipped: Number(next.blockedOrSkipped || 0) + summary.BLOCKED + summary.SKIPPED,
+    errors: Number(next.errors || 0) + summary.ERROR,
+    trackedSince: next.trackedSince || nowIso,
+    lastUpdated: nowIso,
+  };
+
+  await redis.set(LIFETIME_STATS_KEY, updated);
+  return updated;
+}
+
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
@@ -178,6 +257,7 @@ async function saveScanSnapshot(
   const summary = summarizeResults(results);
   const decisionSummary = summarizeDecisionStates(results);
   const blockerSummary = summarizeEntryBlockers(results);
+  const lifetimeStats = await updateLifetimeStats(results);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
@@ -192,6 +272,7 @@ async function saveScanSnapshot(
       summary,
       decisionSummary,
       blockerSummary,
+      lifetimeStats,
       exitSweep,
       opportunitySweep,
       results,
@@ -376,6 +457,9 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
+          requestedMarginUsd: swingSignal.entryMode === "CONTROLLED_PROBE"
+            ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
+            : undefined,
         });
 
         if (!admission.approved) {
@@ -448,6 +532,7 @@ async function runEntryScan() {
           orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
+          entryMode: swingSignal.entryMode,
           reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
           isScalp: false,
@@ -488,6 +573,7 @@ async function runEntryScan() {
           orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
+          entryMode: swingSignal.entryMode,
           reasoning: newPos.reasoning,
         };
 
@@ -522,6 +608,7 @@ async function runEntryScan() {
           margin: admission.requiredMarginUsd,
           leverage: admission.leverage,
           paperSize: swingSignal.paperSize,
+          entryMode: swingSignal.entryMode,
           riskMode: swingSignal.riskMode,
           assetMode: swingSignal.assetMode,
           setupTags: swingSignal.setupTags,
