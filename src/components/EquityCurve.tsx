@@ -19,6 +19,11 @@ export function EquityCurve({ trades, initialCapital }: Props) {
 
   useEffect(() => {
     if (!chartContainerRef.current || !trades) return;
+    const safeInitialCapital = Number.isFinite(Number(initialCapital)) ? Number(initialCapital) : 10000;
+    const safeTrades = trades.filter((trade) => {
+      const ts = new Date(trade?.timestamp || "").getTime();
+      return Number.isFinite(ts) && Number.isFinite(Number(trade?.pnl ?? 0));
+    });
 
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#A3A3A3" },
@@ -31,25 +36,27 @@ export function EquityCurve({ trades, initialCapital }: Props) {
     chartRef.current = chart;
 
     // Build equity curve from trade history
-    let equity = initialCapital;
+    let equity = safeInitialCapital;
     const equityPoints: { time: Time; value: number }[] = [{
-      time: (new Date(trades[trades.length - 1]?.timestamp || Date.now()).getTime() / 1000 - 86400) as Time,
-      value: initialCapital
+      time: (new Date(safeTrades[safeTrades.length - 1]?.timestamp || Date.now()).getTime() / 1000 - 86400) as Time,
+      value: safeInitialCapital
     }];
 
     // Process trades from oldest to newest (they come newest-first from Redis LPUSH)
-    const sortedTrades = [...trades].reverse();
+    const sortedTrades = [...safeTrades].reverse();
     
     for (const trade of sortedTrades) {
       if (trade.pnl !== undefined && trade.pnl !== null) {
-        equity += trade.pnl;
+        equity += Number(trade.pnl);
         const ts = Math.floor(new Date(trade.timestamp).getTime() / 1000);
-        equityPoints.push({ time: ts as Time, value: equity });
+        if (Number.isFinite(ts) && Number.isFinite(equity)) {
+          equityPoints.push({ time: ts as Time, value: equity });
+        }
       }
     }
 
     // Determine if profitable overall
-    const isProfitable = equity >= initialCapital;
+    const isProfitable = equity >= safeInitialCapital;
 
     const areaSeries = chart.addAreaSeries({
       topColor: isProfitable ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)',
@@ -81,7 +88,7 @@ export function EquityCurve({ trades, initialCapital }: Props) {
 
     // Add baseline at initial capital
     areaSeries.createPriceLine({
-      price: initialCapital,
+      price: safeInitialCapital,
       color: '#525252',
       lineWidth: 1,
       lineStyle: 2,
