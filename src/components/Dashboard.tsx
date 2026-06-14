@@ -678,6 +678,11 @@ function DashboardContent({ secret }: { secret: string }) {
             <div className={`text-xs font-bold font-mono mt-1 ${textPrimary}`}>
               Scan {data?.swingScan?.scanId ? `#${data.swingScan.scanId}` : "waiting"} | Next {timeLeft || "--"}
             </div>
+            {data?.swingScan?.lifetimeStats && (
+              <div className={`text-[8px] font-mono mt-1 ${textMuted}`}>
+                Lifetime: {(data.swingScan.lifetimeStats.scanCycles || 0).toLocaleString()} scans / {(data.swingScan.lifetimeStats.assetChecks || 0).toLocaleString()} asset checks
+              </div>
+            )}
           </div>
           <div className={`rounded-xl border p-3 ${bgSubCard}`}>
             <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Data Coverage</div>
@@ -1024,6 +1029,11 @@ function DashboardContent({ secret }: { secret: string }) {
                           Scan #{data.swingScan.scanId ?? "-"} | Updated {formatAge(data.swingScan.completedAt || data.swingScan.startedAt)}
                           {typeof data.swingScan.durationMs === "number" ? ` | Runtime ${(data.swingScan.durationMs / 1000).toFixed(1)}s` : ""}
                         </p>
+                        {data.swingScan.lifetimeStats && (
+                          <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                            Total effort: {(data.swingScan.lifetimeStats.scanCycles || 0).toLocaleString()} scan cycles / {(data.swingScan.lifetimeStats.assetChecks || 0).toLocaleString()} asset checks since tracking began.
+                          </p>
+                        )}
                       </div>
                       <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
                         isDark ? "bg-emerald-950/30 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-200"
@@ -1044,7 +1054,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
                         <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Ready Now</div>
                         <div className="text-lg font-bold font-mono text-emerald-400">
-                          {(data.swingScan.summary?.ENTRY || 0) + (data.swingScan.decisionSummary?.ENTRY_READY || 0) + (data.swingScan.decisionSummary?.HIGH_ACCURACY_EXCEPTION || 0)}
+                          {(data.swingScan.summary?.ENTRY || 0) + (data.swingScan.decisionSummary?.ENTRY_READY || 0) + (data.swingScan.decisionSummary?.PROBE_ENTRY || 0) + (data.swingScan.decisionSummary?.HIGH_ACCURACY_EXCEPTION || 0)}
                         </div>
                       </div>
                       <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
@@ -1070,7 +1080,7 @@ function DashboardContent({ secret }: { secret: string }) {
 
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                       <p className={`text-[9px] font-mono ${textMuted}`}>
-                        Buy watch: <b className="text-emerald-400">{data.swingScan.decisionSummary?.WATCH_LONG || 0}</b> | Short watch: <b className="text-red-400">{data.swingScan.decisionSummary?.WATCH_SHORT || 0}</b> | Data unsafe: <b className="text-amber-400">{data.swingScan.decisionSummary?.BLOCKED_DATA || 0}</b>
+                        Buy watch: <b className="text-emerald-400">{data.swingScan.decisionSummary?.WATCH_LONG || 0}</b> | Probe ready: <b className="text-cyan-400">{data.swingScan.decisionSummary?.PROBE_ENTRY || 0}</b> | Data unsafe: <b className="text-amber-400">{data.swingScan.decisionSummary?.BLOCKED_DATA || 0}</b>
                       </p>
                       <button
                         onClick={() => setShowSwingScanDetails((value) => !value)}
@@ -1086,7 +1096,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         const confidence = confidenceLabel(result.finalConviction);
                         const status = plainScanStatus(result);
                         const reason = plainScanReason(result);
-                        const isReady = result.action === "ENTRY" || result.decisionState === "ENTRY_READY" || result.decisionState === "HIGH_ACCURACY_EXCEPTION";
+                        const isReady = result.action === "ENTRY" || result.decisionState === "ENTRY_READY" || result.decisionState === "PROBE_ENTRY" || result.decisionState === "HIGH_ACCURACY_EXCEPTION";
                         const isBlocked = result.action === "BLOCKED" || result.action === "ERROR" || result.decisionState === "BLOCKED_DATA";
                         const statusBadgeClass = isReady
                           ? (isDark ? "text-emerald-300 border-emerald-800 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50")
