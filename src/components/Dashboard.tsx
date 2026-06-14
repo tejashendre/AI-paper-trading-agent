@@ -1,11 +1,45 @@
 "use client";
 import { AuthGate, createAuthFetch } from "./AuthGate";
-import { useEffect, useState, useCallback, useRef } from "react";
+import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
+
+class DashboardErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; message: string }> {
+  state = { hasError: false, message: "" };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error?.message || "The dashboard hit a display issue." };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("Dashboard render error:", error);
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#050505] p-4 text-white">
+        <div className="max-w-md w-full rounded-xl border border-neutral-800 bg-[#0f0f0f] p-6 shadow-2xl">
+          <div className="text-xs font-mono font-bold uppercase tracking-wider text-orange-400">Dashboard display recovered</div>
+          <p className="mt-3 text-sm text-neutral-300">
+            A display-only panel failed to render. The trading daemon keeps running in the background.
+          </p>
+          <p className="mt-2 text-[11px] font-mono text-neutral-500">{this.state.message}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-5 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-2 text-xs font-bold font-mono text-neutral-200 hover:bg-neutral-800"
+          >
+            RELOAD DASHBOARD
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
 
 const ASSETS = [
   { key: "BTC", name: "Bitcoin", category: "Crypto", symbol: "BTC-USD" },
@@ -116,7 +150,11 @@ function plainScanReason(result: any) {
 export function Dashboard() {
   return (
     <AuthGate>
-      {(secret) => <DashboardContent secret={secret} />}
+      {(secret) => (
+        <DashboardErrorBoundary>
+          <DashboardContent secret={secret} />
+        </DashboardErrorBoundary>
+      )}
     </AuthGate>
   );
 }
@@ -779,19 +817,26 @@ function DashboardContent({ secret }: { secret: string }) {
                     <p className={`text-xs ${textMuted} italic`}>No past trades logged.</p>
                   ) : (
                     trades?.map((t: any) => {
-                      const isScalp = t.action.startsWith("SCALP_");
-                      const isEntry = t.action === "BUY" || t.action === "SHORT" || t.action === "SCALP_BUY" || t.action === "SCALP_SHORT";
-                      const date = new Date(t.timestamp);
-                      const dateStr = date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
-                      const timeStr = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+                      const action = String(t?.action || "UNKNOWN");
+                      const asset = String(t?.asset || "ASSET");
+                      const price = Number(t?.price || 0);
+                      const amount = Number(t?.amount || 0);
+                      const usdValue = Number(t?.usdValue || amount * price || 0);
+                      const pnl = t?.pnl === undefined || t?.pnl === null ? null : Number(t.pnl);
+                      const pnlPercent = t?.pnlPercent === undefined || t?.pnlPercent === null ? null : Number(t.pnlPercent);
+                      const isScalp = action.startsWith("SCALP_");
+                      const date = new Date(t?.timestamp || Date.now());
+                      const validDate = Number.isFinite(date.getTime());
+                      const dateStr = validDate ? date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }) : "--";
+                      const timeStr = validDate ? date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }) : "--:--";
                       const dateTimeStr = `${dateStr}, ${timeStr}`;
                       
                       return (
-                        <div key={t.id} className={`border-b ${borderCol} pb-3 space-y-1.5`}>
+                        <div key={t.id || `${asset}-${dateTimeStr}-${action}`} className={`border-b ${borderCol} pb-3 space-y-1.5`}>
                           {/* Top Row: Asset, Time, and Type Badge */}
                           <div className="flex justify-between items-center text-xs">
                             <div className="flex items-center gap-2">
-                              <span className={`font-bold ${textPrimary}`}>{t.asset}</span>
+                              <span className={`font-bold ${textPrimary}`}>{asset}</span>
                               <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded border ${
                                 isScalp 
                                   ? (isDark ? "bg-[#312e81]/30 text-indigo-400 border-indigo-900/30" : "bg-indigo-50 text-indigo-700 border-indigo-200")
@@ -807,21 +852,21 @@ function DashboardContent({ secret }: { secret: string }) {
                           <div className="flex justify-between items-center text-[10px] font-mono">
                             <div className="flex items-center gap-1.5">
                               <span className={`font-bold px-1 py-0.5 rounded text-[8px] border ${
-                                t.action.includes("BUY") || t.action.includes("COVER")
+                                action.includes("BUY") || action.includes("COVER")
                                   ? (isDark ? 'bg-emerald-950/40 text-emerald-400 border-emerald-900/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200')
                                   : (isDark ? 'bg-rose-950/40 text-rose-400 border-rose-900/30' : 'bg-rose-50 text-rose-700 border-rose-200')
                               }`}>
-                                {t.action}
+                                {action}
                               </span>
-                              <span className={textSub}>${t.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+                              <span className={textSub}>${price.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
                               <span className="text-[9px] text-slate-500 font-semibold">
-                                (${(t.usdValue || t.amount * t.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                                (${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
                               </span>
                             </div>
                             <div className="flex flex-col text-right">
-                              <span className={textMuted}>Vol: {t.amount.toFixed(4)}</span>
+                              <span className={textMuted}>Vol: {amount.toFixed(4)}</span>
                               <span className="text-[8px] text-indigo-400/80 font-bold">
-                                Alloc: {(((t.usdValue || t.amount * t.price) / (portfolio?.initialCapital || 10000)) * 100).toFixed(1)}%
+                                Alloc: {((usdValue / (portfolio?.initialCapital || 10000)) * 100).toFixed(1)}%
                               </span>
                             </div>
                           </div>
@@ -829,23 +874,25 @@ function DashboardContent({ secret }: { secret: string }) {
                           {/* Bottom Row: Outcome P&L (if closed) or "Opened" state */}
                           <div className="flex justify-between items-center text-[10px]">
                             <span className={textMuted}>Outcome:</span>
-                            {t.pnl !== undefined && t.pnl !== null ? (
-                              <span className={`font-bold font-mono ${t.pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                                {t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(2)} ({t.pnl >= 0 ? "+" : ""}{t.pnlPercent?.toFixed(2)}%)
+                            {pnl !== null && Number.isFinite(pnl) ? (
+                              <span className={`font-bold font-mono ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                                {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{Number.isFinite(pnlPercent) ? pnlPercent?.toFixed(2) : "0.00"}%)
                               </span>
                             ) : (() => {
-                              const isShort = t.direction === "SHORT" || t.action === "SHORT" || t.action === "SCALP_SHORT";
-                              const hasPotential = t.takeProfit > 0 && t.stopLoss > 0 && t.amount > 0 && t.price > 0;
+                              const takeProfit = Number(t?.takeProfit || 0);
+                              const stopLoss = Number(t?.stopLoss || 0);
+                              const isShort = t.direction === "SHORT" || action === "SHORT" || action === "SCALP_SHORT";
+                              const hasPotential = takeProfit > 0 && stopLoss > 0 && amount > 0 && price > 0;
                               if (!hasPotential) {
                                 return <span className="text-slate-400 font-mono italic">Position Opened</span>;
                               }
                               const tradeLikePosition = {
                                 direction: isShort ? "SHORT" : "LONG",
-                                entryPrice: t.price,
-                                amount: t.amount
+                                entryPrice: price,
+                                amount
                               };
-                              const tpPnl = calculateDisplayPnl(t.asset, tradeLikePosition, t.takeProfit);
-                              const slPnl = calculateDisplayPnl(t.asset, tradeLikePosition, t.stopLoss);
+                              const tpPnl = calculateDisplayPnl(asset, tradeLikePosition, takeProfit);
+                              const slPnl = calculateDisplayPnl(asset, tradeLikePosition, stopLoss);
                               return (
                                 <div className="flex items-center gap-1.5 font-mono text-[9px]">
                                   <span className="text-green-500 font-bold">TP: +${tpPnl.toFixed(2)}</span>
