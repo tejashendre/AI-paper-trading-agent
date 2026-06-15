@@ -239,13 +239,13 @@ async function scaleIntoWinner(
   if (pos.strategyType && pos.strategyType !== "swing") return false;
   if ((pos.scaleInCount || 0) >= 1) return false;
   if (pos.entryMode !== "CONTROLLED_PROBE") return false;
-  if (profitMultiple(asset, pos, currentPrice) < 0.55) return false;
-  if ((pos.finalConviction || 0) < 50 || (pos.dataQuality || 0) < 68) return false;
+  if (profitMultiple(asset, pos, currentPrice) < 0.9) return false;
+  if ((pos.finalConviction || 0) < 60 || (pos.dataQuality || 0) < 68) return false;
 
   const equity = Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
   const maxTotalMargin = equity * 0.55;
   const remainingRoom = Math.max(0, maxTotalMargin - activeMarginUsd(portfolio));
-  const addMarginUsd = Math.min(portfolio.usd * 0.08, pos.usdInvested * 0.75, 750, remainingRoom);
+  const addMarginUsd = Math.min(portfolio.usd * 0.06, pos.usdInvested * 0.5, 600, remainingRoom);
   const leverage = Math.max(1, pos.leverageUsed || 1);
   if (!Number.isFinite(addMarginUsd) || addMarginUsd < 50) return false;
 

@@ -147,9 +147,9 @@ function entryThresholds(assetMode: SwingSignal["assetMode"]) {
     probeTrigger: assetMode === "REALTIME_FAST" ? 24 : 10,
     probeConviction: assetMode === "REALTIME_FAST" ? 70 : 64,
     probeData: assetMode === "REALTIME_FAST" ? 90 : 68,
-    impulseHtf: assetMode === "REALTIME_FAST" ? 6 : 8,
+    impulseHtf: assetMode === "REALTIME_FAST" ? 8 : 10,
     impulseTrigger: assetMode === "REALTIME_FAST" ? 17 : 10,
-    impulseConviction: assetMode === "REALTIME_FAST" ? 50 : 50,
+    impulseConviction: assetMode === "REALTIME_FAST" ? 58 : 60,
     impulseData: assetMode === "REALTIME_FAST" ? 85 : 68,
   };
 }
