@@ -4,7 +4,8 @@
 //   NFP / CPI:      https://www.bls.gov/schedule/news_release/empsit.htm
 //
 // Add each event as an ISO 8601 UTC datetime string.
-// The blackout window is PRE_EVENT_BLACKOUT_MS before and POST_EVENT_BLACKOUT_MS after.
+// The release guard only covers the most chaotic event minutes.
+// The rest of the event day remains tradable for high-volume follow-through.
 // If EVENTS is empty or outdated, the system fails OPEN — trading continues normally.
 
 interface CalendarEvent {
@@ -35,8 +36,8 @@ const EVENTS: CalendarEvent[] = [
 ];
 
 // ─── Blackout window configuration ────────────────────────────────────────────
-const PRE_EVENT_BLACKOUT_MS  = 4 * 60 * 60_000;  // 4 hours before event
-const POST_EVENT_BLACKOUT_MS = 1 * 60 * 60_000;  // 1 hour after event
+const PRE_EVENT_BLACKOUT_MS  = 30 * 60_000;  // 30 minutes before event
+const POST_EVENT_BLACKOUT_MS = 15 * 60_000;  // 15 minutes after event
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 export function isEventBlackout(
@@ -65,7 +66,7 @@ export function isEventBlackout(
           : `${Math.abs(minutesTo)} minutes after ${event.name}`;
       return {
         blocked: true,
-        reason: `High-impact event blackout: ${event.name} (${label}). New entries paused to avoid event-driven volatility.`,
+        reason: `High-impact event release guard: ${event.name} (${label}). New entries pause only during the release spike; the rest of the event day remains tradable.`,
       };
     }
   }
