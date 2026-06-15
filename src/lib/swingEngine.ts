@@ -137,6 +137,19 @@ function getAssetMode(assetKey: string): SwingSignal["assetMode"] {
   return assetKey === "BTC" || assetKey === "ETH" || assetKey === "SOL" ? "REALTIME_FAST" : "SLOW_SWING";
 }
 
+function entryThresholds(assetMode: SwingSignal["assetMode"]) {
+  return {
+    htf: assetMode === "REALTIME_FAST" ? 14 : 12,
+    trigger: assetMode === "REALTIME_FAST" ? 14 : 8,
+    exceptionTrigger: assetMode === "REALTIME_FAST" ? 24 : 12,
+    exceptionConviction: assetMode === "REALTIME_FAST" ? 75 : 70,
+    exceptionData: assetMode === "REALTIME_FAST" ? 85 : 68,
+    probeTrigger: assetMode === "REALTIME_FAST" ? 24 : 10,
+    probeConviction: assetMode === "REALTIME_FAST" ? 70 : 64,
+    probeData: assetMode === "REALTIME_FAST" ? 90 : 68,
+  };
+}
+
 function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[]) {
   let score = assetMode === "REALTIME_FAST" ? 92 : 72;
   const latest15m = candles15m[candles15m.length - 1]?.time ? candles15m[candles15m.length - 1].time * 1000 : 0;
@@ -417,9 +430,10 @@ function buildEntryGateDiagnostics(input: {
   exceptionEntry: boolean;
   controlledProbeEntry: boolean;
 }): EntryGateDiagnostics {
-  const triggerThreshold = input.assetMode === "REALTIME_FAST" ? 14 : 8;
-  const htfPassed = input.htfScore >= 14;
-  const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < 14;
+  const thresholds = entryThresholds(input.assetMode);
+  const triggerThreshold = thresholds.trigger;
+  const htfPassed = input.htfScore >= thresholds.htf;
+  const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < thresholds.htf;
   const triggerPassed = input.triggerScore >= triggerThreshold;
   const structurePassed = input.structureAligned || input.controlledProbeEntry;
   const microstructurePassed = input.microstructureAligned;
@@ -596,21 +610,21 @@ export class SwingEngine {
       // Structure Safety Buffer: If the market structure score is weak (< 4), demand +5 finalConviction to execute
       const requiredConviction = liquidity.score < 4 ? 65 : 60;
       
-      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 14 && triggerScore >= (assetMode === "REALTIME_FAST" ? 14 : 8) && finalConviction >= requiredConviction && dataQuality >= 60 && slippageOk;
-      const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < 14 && assetMode === "REALTIME_FAST" && triggerScore >= 24 && dataQuality >= 85 && finalConviction >= 75 && slippageOk;
+      const thresholds = entryThresholds(assetMode);
+      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= thresholds.htf && triggerScore >= thresholds.trigger && finalConviction >= requiredConviction && dataQuality >= 60 && slippageOk;
+      const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < thresholds.htf && triggerScore >= thresholds.exceptionTrigger && dataQuality >= thresholds.exceptionData && finalConviction >= thresholds.exceptionConviction && slippageOk;
       const controlledProbeEntry =
         !normalEntry &&
         !exceptionEntry &&
         !learning.watchOnly &&
-        assetMode === "REALTIME_FAST" &&
         bestDirection !== "NEUTRAL" &&
         htfScore >= 8 &&
-        triggerScore >= 24 &&
-        finalConviction >= 70 &&
-        dataQuality >= 90 &&
+        triggerScore >= thresholds.probeTrigger &&
+        finalConviction >= thresholds.probeConviction &&
+        dataQuality >= thresholds.probeData &&
         slippageOk &&
         liquidity.state === "NEUTRAL" &&
-        liquidity.score >= 4 &&
+        liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
         microstructure.aligned &&
         microstructure.score >= -5;
       const entryGate = buildEntryGateDiagnostics({

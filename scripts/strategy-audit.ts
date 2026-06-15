@@ -166,10 +166,10 @@ function auditAdmissionSizing(): AuditResult[] {
   const portfolio = basePortfolio();
   const scenarios = [
     { conviction: 58, expected: "weak/watch", maxMargin: 600 },
-    { conviction: 65, expected: "probe", maxMargin: 1_100 },
-    { conviction: 75, expected: "normal", maxMargin: 1_600 },
-    { conviction: 85, expected: "strong", maxMargin: 2_100 },
-    { conviction: 92, expected: "heavy", maxMargin: 2_600 },
+    { conviction: 65, expected: "probe", maxMargin: 1_300 },
+    { conviction: 75, expected: "normal", maxMargin: 2_100 },
+    { conviction: 85, expected: "strong", maxMargin: 2_600 },
+    { conviction: 92, expected: "heavy", maxMargin: 3_100 },
   ];
 
   for (const scenario of scenarios) {
@@ -244,10 +244,10 @@ function auditAdmissionSizing(): AuditResult[] {
 
   const totalMarginAfter = 3_500 + capped.requiredMarginUsd;
   checks.push(result(
-    capped.approved && totalMarginAfter <= 4_000.01 ? "PASS" : "FAIL",
+    capped.approved && totalMarginAfter <= 5_500.01 ? "PASS" : "FAIL",
     "total margin cap",
     capped.approved
-      ? `Existing $3,500 exposure allows only $${capped.requiredMarginUsd.toFixed(2)} more margin, keeping total near the 40% cap.`
+      ? `Existing $3,500 exposure allows only $${capped.requiredMarginUsd.toFixed(2)} more margin, keeping total near the 55% paper-aggressive cap.`
       : `Trade rejected with existing exposure: ${capped.reason}`
   ));
 

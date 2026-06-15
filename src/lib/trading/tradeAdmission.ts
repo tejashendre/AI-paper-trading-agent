@@ -36,7 +36,7 @@ export interface TradeAdmissionResult {
 }
 
 const BASE_RISK_PERCENT = 0.015;
-const MAX_TOTAL_MARGIN_PERCENT = 0.40;
+const MAX_TOTAL_MARGIN_PERCENT = 0.55;
 
 function activeMarginUsd(portfolio: Portfolio): number {
   const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
@@ -69,9 +69,9 @@ function leverageFromConviction(signalScore: number, maxLeverage: number, finalC
   const admissionScore = Math.max(0, Math.min(100, finalConviction ?? signalScore * 4));
 
   let leverage = 1;
-  if (admissionScore >= 90) leverage = 5;
-  else if (admissionScore >= 80) leverage = 3;
-  else if (admissionScore >= 70) leverage = 2;
+  if (admissionScore >= 88) leverage = 5;
+  else if (admissionScore >= 78) leverage = 3;
+  else if (admissionScore >= 68) leverage = 2;
   else if (admissionScore >= 60) leverage = 1.5;
 
   return {
@@ -83,20 +83,20 @@ function leverageFromConviction(signalScore: number, maxLeverage: number, finalC
 function marginPercentFromConviction(specMaxMarginPercent: number, finalConviction?: number): number {
   const conviction = finalConviction ?? 0;
   let target = specMaxMarginPercent;
-  if (conviction >= 90) target = 0.25;
-  else if (conviction >= 80) target = 0.20;
-  else if (conviction >= 70) target = 0.15;
-  else if (conviction >= 60) target = 0.10;
+  if (conviction >= 90) target = 0.30;
+  else if (conviction >= 80) target = 0.25;
+  else if (conviction >= 70) target = 0.20;
+  else if (conviction >= 60) target = 0.12;
   else target = Math.min(0.05, specMaxMarginPercent);
 
-  return Math.max(0.01, Math.min(0.25, target));
+  return Math.max(0.01, Math.min(0.30, target));
 }
 
 function riskMultiplierFromConviction(finalConviction?: number): number {
   const conviction = finalConviction ?? 0;
-  if (conviction >= 90) return 2.0;
-  if (conviction >= 80) return 1.6;
-  if (conviction >= 70) return 1.25;
+  if (conviction >= 90) return 2.25;
+  if (conviction >= 80) return 1.8;
+  if (conviction >= 70) return 1.4;
   if (conviction >= 60) return 1.0;
   return 0.5;
 }
