@@ -100,6 +100,12 @@ function classifyExitReason(pos: OpenPosition, reason: "STOP_LOSS" | "TAKE_PROFI
   return "STOP_LOSS";
 }
 
+function cooldownSecondsForExit(reason: NonNullable<Trade["exitReason"]>, netPnl: number): number {
+  if (reason === "TAKE_PROFIT" || reason === "TRAILING_STOP_PROFIT" || reason === "SIGNAL_REVERSAL") return 0;
+  if (netPnl >= 0) return 0;
+  return 600;
+}
+
 function isCryptoFastAsset(asset: string) {
   return asset === "BTC" || asset === "ETH" || asset === "SOL";
 }
@@ -165,11 +171,12 @@ async function closePosition(
   }
 
   delete portfolio.openPositions[asset];
-  if (setCooldown) {
-    await redis.set(`swing:cooldown:${asset}`, "1", { ex: 3600 });
+  const exitReason = classifyExitReason(pos, reason, netPnl);
+  const cooldownSeconds = setCooldown ? cooldownSecondsForExit(exitReason, netPnl) : 0;
+  if (cooldownSeconds > 0) {
+    await redis.set(`swing:cooldown:${asset}`, "1", { ex: cooldownSeconds });
   }
 
-  const exitReason = classifyExitReason(pos, reason, netPnl);
   const closeTrade = buildCloseTrade(
     asset,
     pos,

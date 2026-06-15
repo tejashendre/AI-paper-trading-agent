@@ -376,15 +376,16 @@ async function runEntryScan() {
       try {
         const swingSignal = await SwingEngine.analyze(asset);
 
+        const requiredOffPeakConviction = swingSignal.entryMode === "CONTROLLED_PROBE" ? 68 : 72;
         if (
           swingSignal.action !== "HOLD" &&
           requireHighConviction &&
-          swingSignal.finalConviction < 75
+          swingSignal.finalConviction < requiredOffPeakConviction
         ) {
           results.push({
             asset,
             action: "HOLD",
-            reason: `${session.reason} Conviction ${swingSignal.finalConviction} is below the 75 required outside peak hours.`,
+            reason: `${session.reason} Conviction ${swingSignal.finalConviction} is below the ${requiredOffPeakConviction} required outside peak hours.`,
             simpleStatus: "Waiting for peak liquidity window",
             simpleReason: session.reason,
             nextStep: "The bot will enter when the peak trading session opens.",
@@ -458,7 +459,7 @@ async function runEntryScan() {
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd: swingSignal.entryMode === "CONTROLLED_PROBE"
-            ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
+            ? Math.max(150, Math.min(1_000, portfolio.usd * 0.10))
             : undefined,
         });
 

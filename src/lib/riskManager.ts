@@ -251,8 +251,8 @@ export class RiskManager {
     // Advanced Swing Trade Trailing Logic (Dynamic Watermark)
     // ══════════════════════════════════════════════════════════════
     const originalRiskPercent = Math.abs(position.entryPrice - position.stopLoss) / position.entryPrice;
-    const activationThreshold = originalRiskPercent * 1.5; // Start trailing after 1.5R profit
-    const trailDistancePercent = originalRiskPercent * 0.8; // Trail at 0.8R behind peak price
+    const activationThreshold = originalRiskPercent * 2.0; // Let swing winners breathe before hard trailing
+    const trailDistancePercent = originalRiskPercent * 1.15; // Wider trail helps capture larger directional runs
     const isShort = position.direction === 'SHORT';
 
     // Track watermarks (Peak profitable price)
@@ -286,10 +286,10 @@ export class RiskManager {
       if (currentPrice >= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     }
 
-    // 2. Earlier swing profit protection: once a trade is working, protect fees first,
-    // then lock a small part of the move before the distant swing target is reached.
+    // 2. Swing profit protection: protect fees first, then lock part of the move
+    // only after the trade has already travelled far enough to avoid choking rallies.
     let newStopLoss = position.stopLoss;
-    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 0.75) {
+    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.0) {
       const feeBufferPercent = 0.001;
       const breakevenLockPercent = Math.max(feeBufferPercent, originalRiskPercent * 0.1);
       const protectedStop = isShort
@@ -301,8 +301,8 @@ export class RiskManager {
       }
     }
 
-    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.1) {
-      const profitLockPercent = originalRiskPercent * 0.35;
+    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.6) {
+      const profitLockPercent = originalRiskPercent * 0.45;
       const protectedStop = isShort
         ? position.entryPrice * (1 - profitLockPercent)
         : position.entryPrice * (1 + profitLockPercent);
