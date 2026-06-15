@@ -5,7 +5,7 @@ import { Logger } from "@/lib/logger";
 import { getRedis } from "@/lib/redis";
 import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 
 export interface SwingExitSweepResult {
@@ -13,6 +13,8 @@ export interface SwingExitSweepResult {
   checked: number;
   closed: number;
   trailed: number;
+  scaledIn?: number;
+  partialExits?: number;
   signalReversals: number;
   skipped: number;
   errors: number;
@@ -110,6 +112,33 @@ function isCryptoFastAsset(asset: string) {
   return asset === "BTC" || asset === "ETH" || asset === "SOL";
 }
 
+function activeMarginUsd(portfolio: Portfolio): number {
+  const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
+    (sum, position) => sum + (position?.usdInvested || 0),
+    0
+  );
+  const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce(
+    (sum, position) => sum + (position?.usdInvested || 0),
+    0
+  );
+  return swingMargin + scalpMargin;
+}
+
+function unrealizedNetPnl(asset: string, pos: OpenPosition, currentPrice: number): number {
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
+  const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+  const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+  return grossPnl - entryFee - exitFee;
+}
+
+function profitMultiple(asset: string, pos: OpenPosition, currentPrice: number): number {
+  const maxLoss = pos.maxLossUsd && pos.maxLossUsd > 0
+    ? pos.maxLossUsd
+    : Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+  if (!Number.isFinite(maxLoss) || maxLoss <= 0) return 0;
+  return unrealizedNetPnl(asset, pos, currentPrice) / maxLoss;
+}
+
 function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
@@ -197,6 +226,171 @@ async function closePosition(
   if (reason === "SIGNAL_REVERSAL") result.signalReversals++;
 }
 
+async function scaleIntoWinner(
+  portfolio: Portfolio,
+  portfolioType: "ai" | "user",
+  source: string,
+  asset: string,
+  pos: OpenPosition,
+  currentPrice: number,
+  result: SwingExitSweepResult
+): Promise<boolean> {
+  if (portfolioType !== "ai") return false;
+  if (pos.strategyType && pos.strategyType !== "swing") return false;
+  if ((pos.scaleInCount || 0) >= 1) return false;
+  if (pos.entryMode !== "CONTROLLED_PROBE") return false;
+  if (profitMultiple(asset, pos, currentPrice) < 0.55) return false;
+  if ((pos.finalConviction || 0) < 50 || (pos.dataQuality || 0) < 68) return false;
+
+  const equity = Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
+  const maxTotalMargin = equity * 0.55;
+  const remainingRoom = Math.max(0, maxTotalMargin - activeMarginUsd(portfolio));
+  const addMarginUsd = Math.min(portfolio.usd * 0.08, pos.usdInvested * 0.75, 750, remainingRoom);
+  const leverage = Math.max(1, pos.leverageUsed || 1);
+  if (!Number.isFinite(addMarginUsd) || addMarginUsd < 50) return false;
+
+  const addNotionalUsd = addMarginUsd * leverage;
+  const addAmount = amountFromNotionalUsd(asset, addNotionalUsd, currentPrice);
+  const entryFee = estimateFeeUsd(asset, addAmount, currentPrice);
+  if (addMarginUsd + entryFee > portfolio.usd || addAmount <= 0) return false;
+
+  const existingNotional = estimateNotionalUsd(asset, pos.amount, pos.entryPrice);
+  const totalNotional = existingNotional + addNotionalUsd;
+  pos.entryPrice = totalNotional > 0
+    ? ((pos.entryPrice * existingNotional) + (currentPrice * addNotionalUsd)) / totalNotional
+    : pos.entryPrice;
+  pos.amount += addAmount;
+  pos.btcAmount = pos.amount;
+  pos.usdInvested += addMarginUsd;
+  pos.notionalUsd = (pos.notionalUsd || existingNotional) + addNotionalUsd;
+  pos.entryFeePaid = (pos.entryFeePaid || 0) + entryFee;
+  pos.maxLossUsd = Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+  pos.scaleInCount = (pos.scaleInCount || 0) + 1;
+  pos.lastScaleInTime = new Date().toISOString();
+  pos.paperSize = pos.paperSize === "Probe" ? "Normal" : pos.paperSize;
+  pos.reasoning = `${pos.reasoning} | Scaled into profitable probe after live follow-through.`;
+
+  portfolio.usd -= addMarginUsd + entryFee;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
+  if (pos.direction === "LONG") {
+    portfolio.balances[asset] = (portfolio.balances[asset] || 0) + addAmount;
+  }
+
+  const scaleTrade: Trade = {
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    asset,
+    action: pos.direction === "SHORT" ? "SHORT" : "BUY",
+    direction: pos.direction,
+    amount: addAmount,
+    btcAmount: addAmount,
+    price: currentPrice,
+    usdValue: addMarginUsd,
+    stopLoss: pos.stopLoss,
+    takeProfit: pos.takeProfit,
+    signalScore: pos.signalScore,
+    finalConviction: pos.finalConviction,
+    decisionState: pos.decisionState,
+    setupTags: pos.setupTags,
+    dataQuality: pos.dataQuality,
+    triggerScore: pos.triggerScore,
+    marketStructureScore: pos.marketStructureScore,
+    microstructureScore: pos.microstructureScore,
+    microstructureSummary: pos.microstructureSummary,
+    fundingRate: pos.fundingRate,
+    openInterest: pos.openInterest,
+    orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
+    liquidityState: pos.liquidityState,
+    paperSize: pos.paperSize,
+    entryMode: pos.entryMode,
+    reasoning: `Scaled into profitable swing winner. Added $${addMarginUsd.toFixed(2)} margin after probe follow-through.`,
+  };
+
+  await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+  await PortfolioManager.logTrade(scaleTrade, portfolioType);
+  await Logger.info(`[${source}] Scaled into ${asset} ${pos.direction}. Added margin $${addMarginUsd.toFixed(2)} after profitable follow-through.`);
+  result.scaledIn = (result.scaledIn || 0) + 1;
+  return true;
+}
+
+async function takePartialProfit(
+  portfolio: Portfolio,
+  portfolioType: "ai" | "user",
+  source: string,
+  asset: string,
+  pos: OpenPosition,
+  currentPrice: number,
+  result: SwingExitSweepResult
+): Promise<boolean> {
+  if (portfolioType !== "ai") return false;
+  if (pos.strategyType && pos.strategyType !== "swing") return false;
+  if ((pos.partialExitCount || 0) >= 1) return false;
+  if (profitMultiple(asset, pos, currentPrice) < 1.2) return false;
+  if (pos.amount <= 0 || pos.usdInvested <= 0) return false;
+
+  const exitFraction = 0.35;
+  const exitAmount = pos.amount * exitFraction;
+  const releasedMargin = pos.usdInvested * exitFraction;
+  const entryFeeShare = (pos.entryFeePaid || 0) * exitFraction;
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, exitAmount, pos.direction);
+  const exitFee = estimateFeeUsd(asset, exitAmount, currentPrice);
+  const netPnl = grossPnl - entryFeeShare - exitFee;
+  const pnlPercent = releasedMargin > 0 ? (netPnl / releasedMargin) * 100 : 0;
+
+  pos.amount -= exitAmount;
+  pos.btcAmount = pos.amount;
+  pos.usdInvested -= releasedMargin;
+  pos.entryFeePaid = Math.max(0, (pos.entryFeePaid || 0) - entryFeeShare);
+  pos.notionalUsd = Math.max(0, (pos.notionalUsd || estimateNotionalUsd(asset, pos.amount, pos.entryPrice)) * (1 - exitFraction));
+  pos.maxLossUsd = Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+  pos.partialExitCount = (pos.partialExitCount || 0) + 1;
+  pos.lastPartialExitTime = new Date().toISOString();
+  pos.isTrailing = true;
+
+  portfolio.usd += releasedMargin + entryFeeShare + netPnl;
+  portfolio.totalPnl += netPnl;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
+  if (portfolio.returns) portfolio.returns.push(pnlPercent);
+  if (portfolio.returns && portfolio.returns.length > 2000) portfolio.returns.shift();
+  if (netPnl >= 0) portfolio.grossProfit = (portfolio.grossProfit || 0) + netPnl;
+  else portfolio.grossLoss = (portfolio.grossLoss || 0) + Math.abs(netPnl);
+  if (pos.direction === "LONG") {
+    portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - exitAmount);
+  }
+
+  const partialTrade = buildCloseTrade(
+    asset,
+    { ...pos, amount: exitAmount, btcAmount: exitAmount, usdInvested: releasedMargin, entryFeePaid: entryFeeShare },
+    currentPrice,
+    "TAKE_PROFIT",
+    netPnl,
+    pnlPercent,
+    entryFeeShare
+  );
+  partialTrade.reasoning = `Partial profit taken on swing winner. Closed ${(exitFraction * 100).toFixed(0)}% and left runner active. Net PnL: $${netPnl.toFixed(2)}`;
+
+  await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+  await PortfolioManager.logTrade(partialTrade, portfolioType);
+  await Logger.info(`[${source}] Partial profit ${asset} ${pos.direction}. Closed ${(exitFraction * 100).toFixed(0)}%, net PnL ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}.`);
+  result.partialExits = (result.partialExits || 0) + 1;
+  return true;
+}
+
+async function manageProfitableWinner(
+  portfolio: Portfolio,
+  portfolioType: "ai" | "user",
+  source: string,
+  asset: string,
+  pos: OpenPosition,
+  currentPrice: number,
+  result: SwingExitSweepResult
+) {
+  const scaled = await scaleIntoWinner(portfolio, portfolioType, source, asset, pos, currentPrice, result);
+  if (!scaled) {
+    await takePartialProfit(portfolio, portfolioType, source, asset, pos, currentPrice, result);
+  }
+}
+
 async function getStrongOppositeSignal(asset: string, pos: OpenPosition): Promise<SwingSignal | null> {
   if (!isCryptoFastAsset(asset)) return null;
 
@@ -220,6 +414,8 @@ export async function sweepSwingExits(
     checked: 0,
     closed: 0,
     trailed: 0,
+    scaledIn: 0,
+    partialExits: 0,
     signalReversals: 0,
     skipped: 0,
     errors: 0,
@@ -261,6 +457,7 @@ export async function sweepSwingExits(
           await PortfolioManager.updatePortfolio(portfolio, portfolioType);
           await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
           result.trailed++;
+          await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
         }
       } else if (sltp.trailed) {
         if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
@@ -268,6 +465,9 @@ export async function sweepSwingExits(
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
         await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
         result.trailed++;
+        await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
+      } else {
+        await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
       }
     } catch (error) {
       result.errors++;

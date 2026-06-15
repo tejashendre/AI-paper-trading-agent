@@ -192,6 +192,10 @@ export interface OpenPosition {
   highestPriceReached?: number;
   lowestPriceReached?: number;
   isTrailing?: boolean;
+  scaleInCount?: number;
+  partialExitCount?: number;
+  lastScaleInTime?: string;
+  lastPartialExitTime?: string;
 }
 
 export interface Portfolio {
