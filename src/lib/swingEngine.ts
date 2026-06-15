@@ -147,6 +147,10 @@ function entryThresholds(assetMode: SwingSignal["assetMode"]) {
     probeTrigger: assetMode === "REALTIME_FAST" ? 24 : 10,
     probeConviction: assetMode === "REALTIME_FAST" ? 70 : 64,
     probeData: assetMode === "REALTIME_FAST" ? 90 : 68,
+    impulseHtf: assetMode === "REALTIME_FAST" ? 6 : 8,
+    impulseTrigger: assetMode === "REALTIME_FAST" ? 17 : 10,
+    impulseConviction: assetMode === "REALTIME_FAST" ? 50 : 50,
+    impulseData: assetMode === "REALTIME_FAST" ? 85 : 68,
   };
 }
 
@@ -627,6 +631,21 @@ export class SwingEngine {
         liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
         microstructure.aligned &&
         microstructure.score >= -5;
+      const momentumImpulseProbeEntry =
+        !normalEntry &&
+        !exceptionEntry &&
+        !controlledProbeEntry &&
+        !learning.watchOnly &&
+        bestDirection !== "NEUTRAL" &&
+        htfScore >= thresholds.impulseHtf &&
+        triggerScore >= thresholds.impulseTrigger &&
+        finalConviction >= thresholds.impulseConviction &&
+        dataQuality >= thresholds.impulseData &&
+        slippageOk &&
+        liquidity.score >= 4 &&
+        microstructure.aligned &&
+        microstructure.score >= (assetMode === "REALTIME_FAST" ? 0 : -2);
+      const approvedProbeEntry = controlledProbeEntry || momentumImpulseProbeEntry;
       const entryGate = buildEntryGateDiagnostics({
         assetMode,
         htfScore,
@@ -639,7 +658,7 @@ export class SwingEngine {
         learningWatchOnly: learning.watchOnly,
         normalEntry,
         exceptionEntry,
-        controlledProbeEntry,
+        controlledProbeEntry: approvedProbeEntry,
       });
       const htfAtr = snap1h.atr;
       const currentPrice = livePrice;
@@ -658,17 +677,17 @@ export class SwingEngine {
           : 0;
 
       // Require strong HTF alignment (score >= 14)
-      if ((normalEntry || exceptionEntry || controlledProbeEntry) && bestDirection === "LONG") {
+      if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
         action = 'SWING_BUY';
         finalScore = htfScore;
-      } else if ((normalEntry || exceptionEntry || controlledProbeEntry) && bestDirection === "SHORT") {
+      } else if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "SHORT") {
         action = 'SWING_SHORT';
         finalScore = htfScore;
       }
 
       let decisionState: SwingDecisionState = "NO_BIAS";
       if (dataQuality < 50) decisionState = "BLOCKED_DATA";
-      else if (controlledProbeEntry) decisionState = "PROBE_ENTRY";
+      else if (approvedProbeEntry) decisionState = "PROBE_ENTRY";
       else if (exceptionEntry) decisionState = "HIGH_ACCURACY_EXCEPTION";
       else if (normalEntry) decisionState = "ENTRY_READY";
       else if (bestDirection === "LONG" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_LONG";
@@ -756,13 +775,15 @@ export class SwingEngine {
         simpleStatus: simpleStateText(decisionState, bestDirection),
         simpleReason: controlledProbeEntry
           ? "The setup is not perfect, but the bot has enough live proof to test it with a smaller paper position."
+          : momentumImpulseProbeEntry
+          ? "The full structure model is not perfect yet, but live momentum and volume are strong enough for a controlled paper probe."
           : exceptionEntry
           ? "The old long-term score is below the normal threshold, but live market behavior is strongly confirming the setup."
           : "Long-term direction and live entry confirmation agree.",
         nextStep: "The bot can enter with predefined stop loss, take profit, and paper position size.",
-        paperSize: controlledProbeEntry ? "Probe" : paperSizeFromConviction(finalConviction),
+        paperSize: approvedProbeEntry ? "Probe" : paperSizeFromConviction(finalConviction),
         riskMode: dataQuality < 70 ? "Protected" : "Normal",
-        entryMode: controlledProbeEntry ? "CONTROLLED_PROBE" : "STANDARD",
+        entryMode: approvedProbeEntry ? "CONTROLLED_PROBE" : "STANDARD",
         assetMode,
         setupTags,
         directionBias: bestDirection,
