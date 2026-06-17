@@ -8,7 +8,7 @@ const nextConfig = {
                 has: [
                     {
                         type: 'host',
-                        value: '(?!(ai-quant-trader\\.duckdns\\.org|localhost)).*',
+                        value: '(?!(ai-quant-trader\\.duckdns\\.org|localhost|.*\\.trycloudflare\\.com)).*',
                     },
                 ],
                 destination: 'https://ai-quant-trader.duckdns.org/:path*',
