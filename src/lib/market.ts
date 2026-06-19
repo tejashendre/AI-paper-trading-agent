@@ -22,6 +22,66 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
 };
 
 export class MarketService {
+  private static normalizeCandles(assetKey: string, timeframe: Timeframe, candles: Candle[]): Candle[] {
+    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
+    const ordered = candles
+      .filter((c) => (
+        Number.isFinite(c.time) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close) &&
+        c.time > 0 &&
+        c.open > 0 &&
+        c.high > 0 &&
+        c.low > 0 &&
+        c.close > 0
+      ))
+      .sort((a, b) => a.time - b.time);
+
+    const deduped = new Map<number, Candle>();
+    for (const candle of ordered) {
+      deduped.set(candle.time, candle);
+    }
+
+    const unique = Array.from(deduped.values());
+    const maxRangePercent =
+      config.category === "forex" ? 0.035 :
+      config.category === "commodity" ? 0.08 :
+      timeframe === "1m" || timeframe === "5m" ? 0.08 : 0.16;
+
+    return unique.map((candle, index) => {
+      const repaired: Candle = {
+        ...candle,
+        volume: Number.isFinite(candle.volume) && candle.volume >= 0 ? candle.volume : 0,
+      };
+
+      const previousClose = unique[index - 1]?.close;
+      const nextOpen = unique[index + 1]?.open;
+      const anchors = [repaired.open, repaired.close, previousClose, nextOpen].filter(
+        (value): value is number => Number.isFinite(value) && value > 0
+      );
+      const reference = anchors.reduce((sum, value) => sum + value, 0) / Math.max(anchors.length, 1);
+      const upperLimit = reference * (1 + maxRangePercent);
+      const lowerLimit = reference * (1 - maxRangePercent);
+
+      const bodyHigh = Math.max(repaired.open, repaired.close);
+      const bodyLow = Math.min(repaired.open, repaired.close);
+
+      if (repaired.high < bodyHigh) repaired.high = bodyHigh;
+      if (repaired.low > bodyLow) repaired.low = bodyLow;
+
+      if (repaired.high > upperLimit && bodyHigh <= upperLimit) {
+        repaired.high = bodyHigh;
+      }
+      if (repaired.low < lowerLimit && bodyLow >= lowerLimit) {
+        repaired.low = bodyLow;
+      }
+
+      return repaired;
+    });
+  }
+
   private static maxCandleAgeMs(assetKey: string, timeframe: Timeframe): number {
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
     const timeframeMs: Record<Timeframe, number> = {
@@ -122,10 +182,11 @@ export class MarketService {
       if (cached) {
         const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
         if (Array.isArray(parsed) && parsed.length > 0) {
-          if (this.candlesAreFresh(assetKey, timeframe, parsed)) {
-            return parsed.slice(-limit);
+          const normalized = this.normalizeCandles(assetKey, timeframe, parsed);
+          if (this.candlesAreFresh(assetKey, timeframe, normalized)) {
+            return normalized.slice(-limit);
           }
-          staleCandidate = parsed;
+          staleCandidate = normalized;
         }
       }
     } catch {}
@@ -136,7 +197,7 @@ export class MarketService {
     // Try Kraken first (Primary institutional feed)
     if (config.krakenPair) {
       try {
-        const candles = await this.fetchKrakenCandles(config.krakenPair, timeframe, fetchLimit);
+        const candles = this.normalizeCandles(assetKey, timeframe, await this.fetchKrakenCandles(config.krakenPair, timeframe, fetchLimit));
         if (candles && candles.length > 0) {
           if (this.candlesAreFresh(assetKey, timeframe, candles)) {
             const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
@@ -160,6 +221,7 @@ export class MarketService {
       if (timeframe === "4h" && candles.length > 0) {
         candles = this.downsampleTo4h(candles);
       }
+      candles = this.normalizeCandles(assetKey, timeframe, candles);
       if (candles && candles.length > 0) {
         if (this.candlesAreFresh(assetKey, timeframe, candles)) {
           const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
