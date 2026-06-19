@@ -139,6 +139,45 @@ function profitMultiple(asset: string, pos: OpenPosition, currentPrice: number):
   return unrealizedNetPnl(asset, pos, currentPrice) / maxLoss;
 }
 
+function updateProfitWatermark(asset: string, pos: OpenPosition, currentPrice: number): { netPnl: number; peakPnl: number; updated: boolean } {
+  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
+  const previousPeak = Number(pos.maxUnrealizedPnlUsd || 0);
+  if (Number.isFinite(netPnl) && netPnl > previousPeak) {
+    pos.maxUnrealizedPnlUsd = netPnl;
+    pos.maxUnrealizedPnlTime = new Date().toISOString();
+    return { netPnl, peakPnl: netPnl, updated: true };
+  }
+
+  return { netPnl, peakPnl: previousPeak, updated: false };
+}
+
+function profitGivebackLimit(peakPnl: number): number {
+  if (peakPnl >= 150) return Math.max(8, peakPnl * 0.06);
+  if (peakPnl >= 80) return 5;
+  if (peakPnl >= 40) return 4;
+  if (peakPnl >= 20) return 3;
+  return Infinity;
+}
+
+function shouldCloseOnProfitGiveback(asset: string, pos: OpenPosition, currentPrice: number) {
+  const watermark = updateProfitWatermark(asset, pos, currentPrice);
+  const givebackLimit = profitGivebackLimit(watermark.peakPnl);
+  const giveback = watermark.peakPnl - watermark.netPnl;
+  const triggered = (
+    Number.isFinite(givebackLimit) &&
+    watermark.peakPnl >= 20 &&
+    watermark.netPnl > 0 &&
+    giveback >= givebackLimit
+  );
+
+  return {
+    ...watermark,
+    giveback,
+    givebackLimit,
+    triggered,
+  };
+}
+
 function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
@@ -437,6 +476,18 @@ export async function sweepSwingExits(
       const currentLivePrice = await getLivePrice(asset);
       if (!Number.isFinite(currentLivePrice) || currentLivePrice <= 0) {
         result.skipped++;
+        continue;
+      }
+
+      const profitGuard = shouldCloseOnProfitGiveback(asset, pos, currentLivePrice);
+      if (profitGuard.updated) {
+        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+      }
+      if (portfolioType === "ai" && profitGuard.triggered) {
+        await Logger.info(
+          `[${source}] ${asset} profit giveback guard closing. Peak open PnL $${profitGuard.peakPnl.toFixed(2)}, current $${profitGuard.netPnl.toFixed(2)}, giveback $${profitGuard.giveback.toFixed(2)}.`
+        );
+        await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "TAKE_PROFIT", result, false);
         continue;
       }
 

@@ -1,7 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { getRedis } from "@/lib/redis";
+import { PortfolioManager } from "@/lib/portfolio";
 import { OpportunityJournal } from "./opportunityJournal";
+import { SetupPerformance, SetupPerformanceBucket } from "./setupPerformance";
 
 const RULES_KEY = "learning:localRules";
 
@@ -69,21 +71,60 @@ function classifyRule(
   return null;
 }
 
+function ruleFromPerformanceBucket(
+  scope: LocalLearningRule["scope"],
+  bucket: SetupPerformanceBucket
+): LocalLearningRule | null {
+  if (bucket.tradeCount < 3 && bucket.opportunityCount < 6) return null;
+  if (bucket.confidenceAdjustment === 0) return null;
+
+  const action: LocalLearningRule["action"] = bucket.confidenceAdjustment > 0 ? "BOOST" : "REDUCE";
+  const sampleSize = Math.max(bucket.tradeCount, bucket.opportunityCount);
+  const favorableRate = bucket.tradeCount > 0 ? bucket.winRate : bucket.opportunityFavorableRate;
+  const avgMove = bucket.tradeCount > 0 ? bucket.avgPnl : bucket.avgOpportunityMove;
+  const evidenceLabel = bucket.evidence.includes("trade") ? "closed trades" : "watched opportunities";
+
+  return {
+    id: `${scope}:${bucket.key}`,
+    scope,
+    key: bucket.key,
+    action,
+    confidenceAdjustment: Math.max(-12, Math.min(8, bucket.confidenceAdjustment)),
+    message: `${bucket.label} is ${action === "BOOST" ? "performing well" : "underperforming"} based on ${evidenceLabel}; the bot should ${action === "BOOST" ? "trust it slightly more" : "be more selective here"}.`,
+    sampleSize,
+    favorableRate,
+    avgMove,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export class LocalLearningMemory {
   static async rebuildRules() {
     const summary = await OpportunityJournal.getSummary();
-    const rules: LocalLearningRule[] = [];
+    const ruleMap = new Map<string, LocalLearningRule>();
 
     for (const [asset, stats] of Object.entries(summary.byAsset || {}) as any) {
       const rule = classifyRule("asset", asset, stats);
-      if (rule) rules.push(rule);
+      if (rule) ruleMap.set(rule.id, rule);
     }
 
     for (const [setup, stats] of Object.entries(summary.bySetup || {}) as any) {
       const rule = classifyRule("setup", setup, stats);
-      if (rule) rules.push(rule);
+      if (rule) ruleMap.set(rule.id, rule);
     }
 
+    const aiTrades = await PortfolioManager.getTrades("ai");
+    const setupPerformance = SetupPerformance.build(aiTrades, summary);
+    for (const bucket of setupPerformance.byAsset) {
+      const rule = ruleFromPerformanceBucket("asset", bucket);
+      if (rule) ruleMap.set(rule.id, rule);
+    }
+    for (const bucket of setupPerformance.bySetup) {
+      const rule = ruleFromPerformanceBucket("setup", bucket);
+      if (rule) ruleMap.set(rule.id, rule);
+    }
+
+    const rules = Array.from(ruleMap.values());
     const redis = getRedis();
     await redis.set(RULES_KEY, rules);
     writeJsonBackup("local_learning_rules.json", rules);

@@ -196,6 +196,8 @@ export interface OpenPosition {
   partialExitCount?: number;
   lastScaleInTime?: string;
   lastPartialExitTime?: string;
+  maxUnrealizedPnlUsd?: number;
+  maxUnrealizedPnlTime?: string;
 }
 
 export interface Portfolio {

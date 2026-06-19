@@ -95,6 +95,7 @@ let isExitWatching = false;
 let lastSummaryLogTime = 0;
 let scanSequence = 0;
 let lifetimeStatsBootstrapped = false;
+let localLearningBootstrapped = false;
 
 function ensurePortfolioShape(portfolio: any) {
   portfolio.openPositions = portfolio.openPositions || {};
@@ -222,6 +223,14 @@ async function bootstrapLifetimeStats() {
   });
 }
 
+async function bootstrapLocalLearningRules() {
+  if (localLearningBootstrapped) return;
+  localLearningBootstrapped = true;
+  await LocalLearningMemory.rebuildRules().catch((error) => {
+    Logger.warn(`[LEARNING] Bootstrap rebuild skipped: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
 async function updateLifetimeStats(results: SwingScanResult[]): Promise<LifetimeScanStats> {
   await bootstrapLifetimeStats();
 
@@ -315,6 +324,7 @@ async function runEntryScan() {
   };
 
   try {
+    await bootstrapLocalLearningRules();
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
