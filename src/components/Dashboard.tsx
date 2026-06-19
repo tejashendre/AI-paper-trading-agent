@@ -643,7 +643,7 @@ function DashboardContent({ secret }: { secret: string }) {
             <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
               {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
             </h2>
-            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
+            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} currentValue={totalValue} />
           </div>
         )}
 

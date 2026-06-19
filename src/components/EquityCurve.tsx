@@ -11,9 +11,10 @@ interface Trade {
 interface Props {
   trades: Trade[];
   initialCapital: number;
+  currentValue?: number;
 }
 
-export function EquityCurve({ trades, initialCapital }: Props) {
+export function EquityCurve({ trades, initialCapital, currentValue }: Props) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
@@ -53,6 +54,17 @@ export function EquityCurve({ trades, initialCapital }: Props) {
           equityPoints.push({ time: ts as Time, value: equity });
         }
       }
+    }
+
+    const safeCurrentValue = Number(currentValue);
+    if (Number.isFinite(safeCurrentValue) && safeCurrentValue > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const lastPointTime = Number(equityPoints[equityPoints.length - 1]?.time || 0);
+      equityPoints.push({
+        time: Math.max(now, lastPointTime + 1) as Time,
+        value: safeCurrentValue,
+      });
+      equity = safeCurrentValue;
     }
 
     // Determine if profitable overall
@@ -107,7 +119,7 @@ export function EquityCurve({ trades, initialCapital }: Props) {
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, [trades, initialCapital]);
+  }, [trades, initialCapital, currentValue]);
 
   return <div ref={chartContainerRef} className="w-full h-[200px]" />;
 }
