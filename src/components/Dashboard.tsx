@@ -740,19 +740,13 @@ function DashboardContent({ secret }: { secret: string }) {
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>{selectedAssetConfig.name} ({selectedAssetConfig.symbol}) / {chartInterval.toUpperCase()} / {viewMode.toUpperCase()} MODE</h2>
                   {chartData && chartData.candles && chartData.candles.length > 0 && (
                     (() => {
-                      const decimals = selectedAssetConfig.category === 'FOREX' ? 5 : 2;
+                      const decimals = selectedAssetConfig.category === 'Forex' ? 5 : 2;
                       const lastCandle = chartData.candles[chartData.candles.length - 1];
-                      let maxHigh = -Infinity;
-                      let minLow = Infinity;
-                      for (const c of chartData.candles) {
-                        if (c.high > maxHigh) maxHigh = c.high;
-                        if (c.low < minLow) minLow = c.low;
-                      }
                       return (
                         <div className={`flex items-center gap-3 text-[10px] font-mono font-bold border-l pl-4 ${borderCol}`}>
                           <span className={`${isDark ? "text-blue-400" : "text-blue-600"}`}>LIVE: {lastCandle.close.toFixed(decimals)}</span>
-                          <span className={`${isDark ? "text-green-400" : "text-green-600"}`}>H: {maxHigh.toFixed(decimals)}</span>
-                          <span className={`${isDark ? "text-red-400" : "text-red-600"}`}>L: {minLow.toFixed(decimals)}</span>
+                          <span className={`${isDark ? "text-green-400" : "text-green-600"}`}>H: {lastCandle.high.toFixed(decimals)}</span>
+                          <span className={`${isDark ? "text-red-400" : "text-red-600"}`}>L: {lastCandle.low.toFixed(decimals)}</span>
                         </div>
                       );
                     })()
