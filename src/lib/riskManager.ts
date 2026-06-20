@@ -277,12 +277,15 @@ export class RiskManager {
       ? (position.entryPrice - currentPrice) / position.entryPrice
       : (currentPrice - position.entryPrice) / position.entryPrice;
 
-    // 1. Hard Stop Loss & Take Profit Trigger checks
+    // 1. Hard Stop Loss & Take Profit Trigger checks.
+    // If price has already moved beyond the stop between checks, fill at the
+    // current observed price instead of the stale stop level. This avoids
+    // overstating paper fills when an invalid/stale trailing stop is crossed.
     if (isShort) {
-      if (currentPrice >= position.stopLoss) return { triggered: true, reason: "STOP_LOSS", exitPrice: position.stopLoss };
+      if (currentPrice >= position.stopLoss) return { triggered: true, reason: "STOP_LOSS", exitPrice: Math.max(currentPrice, position.stopLoss) };
       if (currentPrice <= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     } else {
-      if (currentPrice <= position.stopLoss) return { triggered: true, reason: "STOP_LOSS", exitPrice: position.stopLoss };
+      if (currentPrice <= position.stopLoss) return { triggered: true, reason: "STOP_LOSS", exitPrice: Math.min(currentPrice, position.stopLoss) };
       if (currentPrice >= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     }
 
@@ -296,7 +299,8 @@ export class RiskManager {
         ? position.entryPrice * (1 - breakevenLockPercent)
         : position.entryPrice * (1 + breakevenLockPercent);
       const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
-      if (isBetterStop) {
+      const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
+      if (isBetterStop && isProtectiveStop) {
         newStopLoss = protectedStop;
       }
     }
@@ -307,7 +311,8 @@ export class RiskManager {
         ? position.entryPrice * (1 - profitLockPercent)
         : position.entryPrice * (1 + profitLockPercent);
       const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
-      if (isBetterStop) {
+      const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
+      if (isBetterStop && isProtectiveStop) {
         newStopLoss = protectedStop;
       }
     }
@@ -317,12 +322,12 @@ export class RiskManager {
       position.isTrailing = true; // Once activated, we ignore the static Take Profit and let it run
       if (isShort) {
         const trailingStopLevel = (position.lowestPriceReached || currentPrice) * (1 + trailDistancePercent);
-        if (trailingStopLevel < position.stopLoss) {
+        if (trailingStopLevel < position.stopLoss && trailingStopLevel > currentPrice) {
           newStopLoss = trailingStopLevel;
         }
       } else {
         const trailingStopLevel = (position.highestPriceReached || currentPrice) * (1 - trailDistancePercent);
-        if (trailingStopLevel > position.stopLoss) {
+        if (trailingStopLevel > position.stopLoss && trailingStopLevel < currentPrice) {
           newStopLoss = trailingStopLevel;
         }
       }
