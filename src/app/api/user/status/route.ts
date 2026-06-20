@@ -64,7 +64,10 @@ function buildEquityCurveTrades(trades: any[]) {
         .filter((trade) => trade?.timestamp && trade.pnl !== undefined && trade.pnl !== null)
         .map((trade) => ({
             timestamp: trade.timestamp,
+            asset: trade.asset,
             action: trade.action,
+            direction: trade.direction,
+            exitReason: trade.exitReason,
             pnl: Number(trade.pnl),
         }));
 }
