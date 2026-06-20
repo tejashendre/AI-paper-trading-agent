@@ -59,6 +59,16 @@ function buildLearningDigest(localLearningRules: any[], opportunitySummary: any,
     };
 }
 
+function buildEquityCurveTrades(trades: any[]) {
+    return (trades || [])
+        .filter((trade) => trade?.timestamp && trade.pnl !== undefined && trade.pnl !== null)
+        .map((trade) => ({
+            timestamp: trade.timestamp,
+            action: trade.action,
+            pnl: Number(trade.pnl),
+        }));
+}
+
 export async function GET(request: Request) {
     try {
         const authResult = verifyAuth(request);
@@ -202,6 +212,8 @@ export async function GET(request: Request) {
         const aiProfitByAsset = calculateProfitByAsset(aiTrades, aiPortfolio, aiSync.prices);
         const setupPerformance = SetupPerformance.build(aiTrades, opportunitySummary);
         const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
+        const userEquityTrades = buildEquityCurveTrades(userTrades);
+        const aiEquityTrades = buildEquityCurveTrades(aiTrades);
 
         // Fetch AI Brain Intelligence Data (non-blocking, failures return nulls)
         let aiReflection = null;
@@ -249,12 +261,14 @@ export async function GET(request: Request) {
             portfolio: userPortfolio,
             userPortfolio: userPortfolio,
             userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades, // Keep restored history visible while bounded
+            userEquityTrades,
             userTotalValue: userSync.totalValue,
             userProfitByAsset,
 
             // AI Data
             aiPortfolio: aiPortfolio,
             aiTrades: isSpectator ? aiTrades.slice(0, 100) : aiTrades, // Keep restored history visible while bounded
+            aiEquityTrades,
             aiTotalValue: aiSync.totalValue,
             aiProfitByAsset,
             aiDetailedStats,
@@ -277,6 +291,10 @@ export async function GET(request: Request) {
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
             logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators
+        }, {
+            headers: {
+                "Cache-Control": "no-store, max-age=0",
+            },
         });
     } catch (error) {
         return NextResponse.json({ error: String(error) }, { status: 500 });
