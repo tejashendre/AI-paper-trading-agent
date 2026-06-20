@@ -643,7 +643,8 @@ function DashboardContent({ secret }: { secret: string }) {
             <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
               {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
             </h2>
-            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} currentValue={totalValue} />
+            <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Live value is shown in the portfolio card above.</p>
+            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
           </div>
         )}
 
