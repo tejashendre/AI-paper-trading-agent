@@ -131,6 +131,27 @@ function unrealizedNetPnl(asset: string, pos: OpenPosition, currentPrice: number
   return grossPnl - entryFee - exitFee;
 }
 
+function repairInvalidProtectiveStop(pos: OpenPosition, currentPrice: number): boolean {
+  const reference = Math.max(currentPrice, pos.entryPrice, 1e-9);
+  const minBufferPercent = 0.001;
+
+  if (pos.direction === "SHORT" && pos.stopLoss <= currentPrice) {
+    const repairedStop = Math.max(currentPrice * (1 + minBufferPercent), pos.entryPrice * (1 + minBufferPercent));
+    pos.stopLoss = repairedStop;
+    pos.isTrailing = true;
+    return true;
+  }
+
+  if (pos.direction === "LONG" && pos.stopLoss >= currentPrice) {
+    const repairedStop = Math.min(currentPrice * (1 - minBufferPercent), pos.entryPrice * (1 - minBufferPercent));
+    pos.stopLoss = Math.max(repairedStop, reference * 0.01);
+    pos.isTrailing = true;
+    return true;
+  }
+
+  return false;
+}
+
 function profitMultiple(asset: string, pos: OpenPosition, currentPrice: number): number {
   const maxLoss = pos.maxLossUsd && pos.maxLossUsd > 0
     ? pos.maxLossUsd
@@ -477,6 +498,13 @@ export async function sweepSwingExits(
       if (!Number.isFinite(currentLivePrice) || currentLivePrice <= 0) {
         result.skipped++;
         continue;
+      }
+
+      if (repairInvalidProtectiveStop(pos, currentLivePrice)) {
+        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+        await Logger.warn(
+          `[${source}] Repaired invalid ${asset} ${pos.direction} protective stop. New SL: $${pos.stopLoss.toFixed(4)}`
+        );
       }
 
       const profitGuard = shouldCloseOnProfitGiveback(asset, pos, currentLivePrice);
