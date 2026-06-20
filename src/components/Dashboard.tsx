@@ -195,6 +195,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const fetcher = useCallback(async (url: string, init?: RequestInit) => {
     return fetch(url, {
       ...init,
+      cache: "no-store",
       headers: { ...init?.headers, 'Authorization': `Bearer ${secret}` },
     });
   }, [secret]);
@@ -359,6 +360,9 @@ function DashboardContent({ secret }: { secret: string }) {
   // Bind pointers dynamically based on selected view mode
   const portfolio = viewMode === "ai" ? data?.aiPortfolio : data?.userPortfolio;
   const trades = viewMode === "ai" ? data?.aiTrades : data?.userTrades;
+  const equityTrades = viewMode === "ai"
+    ? (data?.aiEquityTrades || data?.aiTrades)
+    : (data?.userEquityTrades || data?.userTrades);
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
   const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
   const activeLivePrice = livePrices?.[activeAsset];
@@ -638,13 +642,13 @@ function DashboardContent({ secret }: { secret: string }) {
         </div>
 
         {/* Global Performance Curve */}
-        {trades && trades.length > 0 && (
+        {equityTrades && equityTrades.length > 0 && (
           <div className={`border rounded-2xl p-5 mb-6 ${bgCard}`}>
             <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
               {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
             </h2>
             <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Live value is shown in the portfolio card above.</p>
-            <EquityCurve trades={trades} initialCapital={portfolio?.initialCapital || 10000} />
+            <EquityCurve trades={equityTrades} initialCapital={portfolio?.initialCapital || 10000} />
           </div>
         )}
 
