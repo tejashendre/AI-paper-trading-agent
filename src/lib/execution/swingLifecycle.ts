@@ -7,6 +7,7 @@ import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
+import { LocalLearningMemory } from "@/lib/trading/localLearning";
 
 export interface SwingExitSweepResult {
   source: string;
@@ -204,14 +205,90 @@ function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
   if (!oppositeLong && !oppositeShort) return false;
 
+  const convictionGap = signal.finalConviction - Number(pos.finalConviction || 0);
+  const isFastCrypto = isCryptoFastAsset(pos.asset);
+  const requiredConviction = isFastCrypto
+    ? Math.max(72, Number(pos.finalConviction || 0) + 6)
+    : Math.max(82, Number(pos.finalConviction || 0) + 10);
+
   return (
-    signal.assetMode === "REALTIME_FAST" &&
-    signal.dataQuality >= 80 &&
-    signal.triggerScore >= 14 &&
-    signal.finalConviction >= 70 &&
-    signal.htfScore >= 8 &&
-    signal.slippagePercent <= 0.25
+    signal.dataQuality >= (isFastCrypto ? 80 : 74) &&
+    signal.triggerScore >= (isFastCrypto ? 16 : 12) &&
+    signal.finalConviction >= requiredConviction &&
+    convictionGap >= (isFastCrypto ? 6 : 10) &&
+    signal.htfScore >= (isFastCrypto ? 8 : 10) &&
+    signal.slippagePercent <= (isFastCrypto ? 0.25 : 0.35)
   );
+}
+
+function isOppositeSignalPresent(pos: OpenPosition, signal: SwingSignal) {
+  return (
+    (pos.direction === "SHORT" && signal.action === "SWING_BUY") ||
+    (pos.direction === "LONG" && signal.action === "SWING_SHORT")
+  );
+}
+
+function tightenStopForWeakThesis(pos: OpenPosition, currentPrice: number): boolean {
+  const bufferPercent = isCryptoFastAsset(pos.asset) ? 0.0035 : 0.0045;
+
+  if (pos.direction === "LONG") {
+    const tightenedStop = currentPrice * (1 - bufferPercent);
+    if (tightenedStop > pos.stopLoss && tightenedStop < currentPrice) {
+      pos.stopLoss = tightenedStop;
+      pos.isTrailing = true;
+      return true;
+    }
+    return false;
+  }
+
+  const tightenedStop = currentPrice * (1 + bufferPercent);
+  if (tightenedStop < pos.stopLoss && tightenedStop > currentPrice) {
+    pos.stopLoss = tightenedStop;
+    pos.isTrailing = true;
+    return true;
+  }
+
+  return false;
+}
+
+async function reviewLiveThesis(asset: string, pos: OpenPosition, currentPrice: number) {
+  const signal = await SwingEngine.analyze(asset);
+  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
+  const learning = await LocalLearningMemory.getAdjustment(asset, pos.setupTags || []).catch(() => ({
+    adjustment: 0,
+    watchOnly: false,
+    rules: [],
+  }));
+
+  const checkedAt = new Date().toISOString();
+  pos.lastThesisCheckTime = checkedAt;
+
+  if (isOppositeSignalStrong(pos, signal)) {
+    pos.thesisStatus = "OPPOSITE_EDGE_CONFIRMED";
+    pos.thesisReason = `Opposite ${signal.directionBias.toLowerCase()} setup is stronger than the open ${pos.direction.toLowerCase()} trade: conviction ${signal.finalConviction}, trigger ${signal.triggerScore}, data ${signal.dataQuality}.`;
+    pos.scaleInBlockedReason = "Opposite edge confirmed; scale-in disabled.";
+    return { signal, shouldClose: true, tightened: false, updated: true, netPnl };
+  }
+
+  const oppositeSignalPresent = isOppositeSignalPresent(pos, signal);
+  const oppositeConviction = oppositeSignalPresent && signal.finalConviction >= Math.max(62, Number(pos.finalConviction || 0) - 4);
+  const learningWarning = learning.watchOnly || learning.adjustment <= -10;
+  const shouldTighten = (oppositeConviction || learningWarning) && netPnl <= 20;
+
+  if (oppositeConviction || learningWarning) {
+    pos.thesisStatus = "WEAKENING";
+    pos.thesisReason = oppositeConviction
+      ? `Live market evidence is pushing against the open ${pos.direction.toLowerCase()} trade, but the opposite edge is not strong enough to force a close yet.`
+      : `Local learning has reduced trust in this asset/setup, so the bot is protecting the trade more tightly.`;
+    pos.scaleInBlockedReason = "Live thesis is weakening; scale-in disabled until the trade proves itself again.";
+    const tightened = shouldTighten ? tightenStopForWeakThesis(pos, currentPrice) : false;
+    return { signal, shouldClose: false, tightened, updated: true, netPnl };
+  }
+
+  pos.thesisStatus = "VALID";
+  pos.thesisReason = "Live thesis still matches the open trade closely enough to keep managing it normally.";
+  pos.scaleInBlockedReason = undefined;
+  return { signal, shouldClose: false, tightened: false, updated: true, netPnl };
 }
 
 async function closePosition(
@@ -297,6 +374,8 @@ async function scaleIntoWinner(
 ): Promise<boolean> {
   if (portfolioType !== "ai") return false;
   if (pos.strategyType && pos.strategyType !== "swing") return false;
+  if (pos.scaleInBlockedReason) return false;
+  if (pos.thesisStatus && pos.thesisStatus !== "VALID") return false;
   if ((pos.scaleInCount || 0) >= 1) return false;
   if (pos.entryMode !== "CONTROLLED_PROBE") return false;
   if (profitMultiple(asset, pos, currentPrice) < 0.9) return false;
@@ -451,13 +530,6 @@ async function manageProfitableWinner(
   }
 }
 
-async function getStrongOppositeSignal(asset: string, pos: OpenPosition): Promise<SwingSignal | null> {
-  if (!isCryptoFastAsset(asset)) return null;
-
-  const signal = await SwingEngine.analyze(asset);
-  return isOppositeSignalStrong(pos, signal) ? signal : null;
-}
-
 export async function sweepSwingExits(
   portfolio: Portfolio,
   options: { portfolioType?: "ai" | "user"; source?: string; checkSignalReversal?: boolean } = {}
@@ -524,18 +596,27 @@ export async function sweepSwingExits(
       if (sltp.triggered && sltp.reason) {
         await closePosition(portfolio, portfolioType, source, asset, pos, sltp.exitPrice, sltp.reason, result);
       } else if (checkSignalReversal) {
-        const oppositeSignal = await getStrongOppositeSignal(asset, pos);
-        if (oppositeSignal) {
+        const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice);
+        if (thesisReview.shouldClose) {
           await Logger.info(
-            `[${source}] ${asset} signal reversal detected. Current ${pos.direction} thesis invalidated by ${oppositeSignal.directionBias} setup at ${oppositeSignal.finalConviction} conviction.`
+            `[${source}] ${asset} signal reversal detected. Current ${pos.direction} thesis invalidated by ${thesisReview.signal.directionBias} setup at ${thesisReview.signal.finalConviction} conviction.`
           );
           await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_REVERSAL", result, false);
+        } else if (thesisReview.tightened) {
+          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+          await Logger.warn(
+            `[${source}] ${asset} thesis weakening. Tightened protective stop to $${pos.stopLoss.toFixed(4)} instead of waiting for full stop loss.`
+          );
+          result.trailed++;
         } else if (sltp.trailed) {
           if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
           if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
           await PortfolioManager.updatePortfolio(portfolio, portfolioType);
           await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
           result.trailed++;
+          await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
+        } else if (thesisReview.updated) {
+          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
           await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
         }
       } else if (sltp.trailed) {

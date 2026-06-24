@@ -12,6 +12,7 @@ import { getMarketSessionState } from "../lib/trading/marketSession";
 import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
+import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -70,6 +71,7 @@ interface SwingScanResult {
   learningAdjustment?: number;
   learningRules?: string[];
   entryGate?: unknown;
+  portfolioGuard?: unknown;
   timestamp: string;
 }
 
@@ -328,17 +330,33 @@ async function runEntryScan() {
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
+    const learningRules = await LocalLearningMemory.getRules().catch(() => []);
 
     exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
 
-      if (portfolio.openPositions?.[asset]) {
+      const activePosition = portfolio.openPositions?.[asset];
+      if (activePosition) {
         results.push({
           asset,
           action: "SKIPPED",
           reason: "Active position already open for this asset.",
+          simpleStatus: `Managing active ${activePosition.direction.toLowerCase()} trade`,
+          simpleReason: activePosition.thesisStatus
+            ? `Current thesis status: ${activePosition.thesisStatus.replaceAll("_", " ").toLowerCase()}. ${activePosition.thesisReason || ""}`.trim()
+            : "The bot is monitoring the open trade before adding a new one.",
+          nextStep: "Exit watchdog will trail profit, block unsafe scale-ins, or close the trade if the thesis fails.",
+          decisionState: "ACTIVE_POSITION",
+          finalConviction: activePosition.finalConviction,
+          dataQuality: activePosition.dataQuality,
+          price: activePosition.entryPrice,
+          stopLoss: activePosition.stopLoss,
+          takeProfit: activePosition.takeProfit,
+          paperSize: activePosition.paperSize,
+          entryMode: activePosition.entryMode,
+          setupTags: activePosition.setupTags,
           timestamp,
         });
         continue;
@@ -457,6 +475,57 @@ async function runEntryScan() {
         }
 
         const isShort = swingSignal.action === "SWING_SHORT";
+        const portfolioGuard = PortfolioGuards.evaluateNewSwing({
+          portfolio,
+          asset,
+          direction: isShort ? "SHORT" : "LONG",
+          dataQuality: swingSignal.dataQuality,
+          finalConviction: swingSignal.finalConviction,
+          setupTags: swingSignal.setupTags,
+          learningRules,
+        });
+
+        if (!portfolioGuard.approved) {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason: portfolioGuard.reason,
+            simpleStatus: "Portfolio exposure blocked this trade",
+            simpleReason: portfolioGuard.reason,
+            nextStep: "The bot will wait for a cleaner or less crowded setup before adding risk.",
+            decisionState: "BLOCKED_RISK",
+            score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            microstructureSummary: swingSignal.microstructureSummary,
+            fundingRate: swingSignal.fundingRate,
+            openInterest: swingSignal.openInterest,
+            orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
+            liquidityState: swingSignal.liquidityState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            price: swingSignal.entryPrice,
+            signalPrice: swingSignal.signalPrice,
+            slippagePercent: swingSignal.slippagePercent,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
+            paperSize: swingSignal.paperSize,
+            riskMode: "Protected",
+            assetMode: swingSignal.assetMode,
+            setupTags: swingSignal.setupTags,
+            directionBias: swingSignal.directionBias,
+            learningAdjustment: swingSignal.learningAdjustment,
+            learningRules: swingSignal.learningRules,
+            entryGate: swingSignal.entryGate,
+            portfolioGuard,
+            timestamp,
+          });
+          await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
+          continue;
+        }
+
         const admission = TradeAdmissionController.evaluate({
           portfolio,
           asset,
@@ -554,6 +623,9 @@ async function runEntryScan() {
           maxLossUsd: admission.maxLossUsd,
           admissionScore: admission.admissionScore,
           strategyType: "swing",
+          thesisStatus: "VALID",
+          thesisReason: "Initial entry thesis is active and awaiting live follow-through.",
+          lastThesisCheckTime: new Date().toISOString(),
         };
 
         portfolio.openPositions[asset] = newPos;
