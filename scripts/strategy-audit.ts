@@ -2,6 +2,9 @@ import { ASSET_CONTRACT_SPECS, getAssetSpec } from "../src/lib/trading/assetSpec
 import { runReplay } from "../src/lib/backtest/replayEngine";
 import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
 import { Candle, Portfolio } from "../src/lib/types";
+import { RiskManager } from "../src/lib/riskManager";
+import fs from "fs";
+import path from "path";
 
 type AuditLevel = "PASS" | "WARN" | "FAIL";
 
@@ -289,6 +292,73 @@ function auditAdmissionSizing(): AuditResult[] {
   return checks;
 }
 
+function auditExitSafety(): AuditResult[] {
+  const checks: AuditResult[] = [];
+
+  const longStop = RiskManager.checkStopLossOrTakeProfit({
+    asset: "GOLD",
+    entryPrice: 4_185,
+    amount: 0.3,
+    btcAmount: 0.3,
+    usdInvested: 600,
+    stopLoss: 4_100,
+    takeProfit: 4_250,
+    entryTime: new Date().toISOString(),
+    signalScore: 14,
+    reasoning: "Audit long stop",
+    direction: "LONG",
+    strategyType: "swing",
+    maxLossUsd: 25,
+  }, 4_050);
+
+  checks.push(result(
+    longStop.triggered && longStop.reason === "STOP_LOSS" ? "PASS" : "FAIL",
+    "long stop crossing",
+    longStop.triggered
+      ? `Long position closes at ${longStop.exitPrice} once price crosses stop.`
+      : "Long position did not close after price crossed below stop."
+  ));
+
+  const shortStop = RiskManager.checkStopLossOrTakeProfit({
+    asset: "BTC",
+    entryPrice: 60_000,
+    amount: 0.03,
+    btcAmount: 0.03,
+    usdInvested: 1_000,
+    stopLoss: 61_000,
+    takeProfit: 58_000,
+    entryTime: new Date().toISOString(),
+    signalScore: 14,
+    reasoning: "Audit short stop",
+    direction: "SHORT",
+    strategyType: "swing",
+    maxLossUsd: 30,
+  }, 61_500);
+
+  checks.push(result(
+    shortStop.triggered && shortStop.reason === "STOP_LOSS" ? "PASS" : "FAIL",
+    "short stop crossing",
+    shortStop.triggered
+      ? `Short position closes at ${shortStop.exitPrice} once price crosses stop.`
+      : "Short position did not close after price crossed above stop."
+  ));
+
+  const lifecyclePath = path.join(process.cwd(), "src", "lib", "execution", "swingLifecycle.ts");
+  const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
+  const stopCheckIndex = lifecycleSource.indexOf("RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice)");
+  const repairIndex = lifecycleSource.indexOf("repairInvalidProtectiveStop(pos, currentLivePrice)");
+
+  checks.push(result(
+    stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex ? "PASS" : "FAIL",
+    "exit lifecycle stop-before-repair order",
+    stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex
+      ? "Swing lifecycle checks hard stop/target before repairing protective stops."
+      : "Swing lifecycle may repair a crossed stop before closing it."
+  ));
+
+  return checks;
+}
+
 function syntheticCandles(startPrice: number, drift: number, count = 260): Candle[] {
   const candles: Candle[] = [];
   let price = startPrice;
@@ -511,6 +581,7 @@ async function main() {
   const results: AuditResult[] = [
     ...auditAssetSpecs(),
     ...auditAdmissionSizing(),
+    ...auditExitSafety(),
     ...auditReplayEngine(),
   ];
 
