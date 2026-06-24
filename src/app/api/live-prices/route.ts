@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
 import { getRedis } from "@/lib/redis";
-import { SUPPORTED_ASSETS } from "@/lib/market";
+import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -87,6 +87,27 @@ export async function GET(request: Request) {
       };
       return;
     }
+
+    try {
+      const fallbackPrice = await MarketService.getCurrentPrice(asset);
+      if (Number.isFinite(fallbackPrice) && fallbackPrice > 0) {
+        prices[asset] = {
+          price: fallbackPrice,
+          source: "RECENT_CACHE",
+          provider: mode === "REALTIME_FAST" ? "HTTP_FALLBACK_FETCH" : "SLOW_FEED_FETCH",
+          mode,
+          fresh: mode === "SLOW_SWING",
+          updatedAt: new Date().toISOString(),
+          ageSeconds: 0,
+          change24h: 0,
+          changePercent24h: 0,
+          high24h: 0,
+          low24h: 0,
+          volume24h: 0,
+        };
+        return;
+      }
+    } catch {}
 
     prices[asset] = {
       price: 0,
