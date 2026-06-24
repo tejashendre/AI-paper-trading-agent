@@ -198,6 +198,10 @@ export interface OpenPosition {
   lastPartialExitTime?: string;
   maxUnrealizedPnlUsd?: number;
   maxUnrealizedPnlTime?: string;
+  thesisStatus?: 'VALID' | 'WEAKENING' | 'INVALID' | 'OPPOSITE_EDGE_CONFIRMED';
+  thesisReason?: string;
+  lastThesisCheckTime?: string;
+  scaleInBlockedReason?: string;
 }
 
 export interface Portfolio {

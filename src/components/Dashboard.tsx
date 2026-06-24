@@ -1795,6 +1795,23 @@ function DashboardContent({ secret }: { secret: string }) {
                       const currentPrice = livePrices?.[assetKey]?.price || pos.entryPrice;
                       const pnl = calculateDisplayPnl(assetKey, pos, currentPrice);
                       const pnlPercent = (pnl / pos.usdInvested) * 100;
+                      const thesisStatus = pos.thesisStatus || (isScalp ? "SCALP_ACTIVE" : "MONITORING");
+                      const thesisLabel = thesisStatus === "VALID"
+                        ? "Trade thesis healthy"
+                        : thesisStatus === "WEAKENING"
+                          ? "Trade thesis weakening"
+                          : thesisStatus === "OPPOSITE_EDGE_CONFIRMED"
+                            ? "Opposite setup confirmed"
+                            : thesisStatus === "INVALID"
+                              ? "Trade thesis invalid"
+                              : "Trade being monitored";
+                      const thesisColor = thesisStatus === "VALID"
+                        ? "text-emerald-500 border-emerald-500/30 bg-emerald-500/10"
+                        : thesisStatus === "WEAKENING"
+                          ? "text-amber-500 border-amber-500/30 bg-amber-500/10"
+                          : thesisStatus === "OPPOSITE_EDGE_CONFIRMED" || thesisStatus === "INVALID"
+                            ? "text-red-500 border-red-500/30 bg-red-500/10"
+                            : `${textMuted} ${bgSubCard}`;
                       
                       return (
                         <div key={`${assetKey}-${idx}`} className={`p-3 border rounded-xl space-y-2 ${bgSubCard}`}>
@@ -1812,6 +1829,23 @@ function DashboardContent({ secret }: { secret: string }) {
                             <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                             <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                           </div>
+                          {!isScalp && (
+                            <div className={`rounded-lg border px-2 py-1.5 ${thesisColor}`}>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[8px] font-mono font-bold uppercase">Trade health</span>
+                                <span className="text-[8px] font-mono font-bold uppercase">{thesisStatus.replaceAll("_", " ")}</span>
+                              </div>
+                              <p className={`mt-1 text-[10px] font-mono leading-snug ${textPrimary}`}>
+                                {thesisLabel}
+                                {pos.thesisReason ? `: ${pos.thesisReason}` : ""}
+                              </p>
+                              {pos.scaleInBlockedReason && (
+                                <p className="mt-1 text-[9px] font-mono leading-snug text-amber-500">
+                                  Scale-in paused: {pos.scaleInBlockedReason}
+                                </p>
+                              )}
+                            </div>
+                          )}
                           <div className={`flex justify-between items-center pt-1 border-t ${borderCol}`}>
                             <span className={`text-[10px] font-mono ${textMuted}`}>PnL:</span>
                             <span className={`font-mono text-xs font-bold ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>

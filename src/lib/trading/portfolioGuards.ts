@@ -1,0 +1,174 @@
+import { OpenPosition, Portfolio } from "@/lib/types";
+import { LocalLearningRule } from "./localLearning";
+
+export type PortfolioExposureMode = "NORMAL" | "DRAWDOWN" | "RECOVERY";
+
+export interface PortfolioGuardInput {
+  portfolio: Portfolio;
+  asset: string;
+  direction: OpenPosition["direction"];
+  dataQuality?: number;
+  finalConviction?: number;
+  setupTags?: string[];
+  learningRules?: LocalLearningRule[];
+}
+
+export interface PortfolioGuardDecision {
+  approved: boolean;
+  reason: string;
+  mode: PortfolioExposureMode;
+  activeSwingCount: number;
+  sameDirectionCount: number;
+  weakDataCount: number;
+  reduceAssetOpenCount: number;
+  maxOpenPositions: number;
+  maxSameDirection: number;
+  maxWeakDataPositions: number;
+  maxReduceAssetPositions: number;
+}
+
+function activeSwingPositions(portfolio: Portfolio): OpenPosition[] {
+  return Object.values(portfolio.openPositions || {}).filter(
+    (position): position is OpenPosition => Boolean(position) && position.strategyType !== "manual"
+  );
+}
+
+function activeMarginUsd(portfolio: Portfolio): number {
+  const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
+    (sum, position) => sum + (position?.usdInvested || 0),
+    0
+  );
+  const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce(
+    (sum, position) => sum + (position?.usdInvested || 0),
+    0
+  );
+  return swingMargin + scalpMargin;
+}
+
+function estimateEquity(portfolio: Portfolio): number {
+  return Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
+}
+
+function exposureMode(portfolio: Portfolio): PortfolioExposureMode {
+  const equity = estimateEquity(portfolio);
+  const peak = Number(portfolio.peakValue || portfolio.initialCapital || equity);
+  if (!Number.isFinite(equity) || !Number.isFinite(peak) || peak <= 0) return "NORMAL";
+
+  const drawdownPercent = ((peak - equity) / peak) * 100;
+  if (drawdownPercent >= 7) return "RECOVERY";
+  if (drawdownPercent >= 4.5) return "DRAWDOWN";
+  return "NORMAL";
+}
+
+function maxOpenPositionsForMode(mode: PortfolioExposureMode) {
+  if (mode === "RECOVERY") return 3;
+  if (mode === "DRAWDOWN") return 5;
+  return 7;
+}
+
+function reduceRuleKeys(rules: LocalLearningRule[] = []) {
+  return new Set(
+    rules
+      .filter((rule) => rule.action === "REDUCE" && rule.confidenceAdjustment <= -6)
+      .map((rule) => `${rule.scope}:${rule.key}`)
+  );
+}
+
+function hasReduceRuleForPosition(position: OpenPosition, reduceKeys: Set<string>) {
+  if (reduceKeys.has(`asset:${position.asset}`)) return true;
+  return (position.setupTags || []).some((tag) => reduceKeys.has(`setup:${tag}`));
+}
+
+function hasReduceRuleForCandidate(input: PortfolioGuardInput, reduceKeys: Set<string>) {
+  if (reduceKeys.has(`asset:${input.asset}`)) return true;
+  return (input.setupTags || []).some((tag) => reduceKeys.has(`setup:${tag}`));
+}
+
+function emptyDecision(input: PortfolioGuardInput, reason: string): PortfolioGuardDecision {
+  const mode = exposureMode(input.portfolio);
+  const positions = activeSwingPositions(input.portfolio);
+  const reduceKeys = reduceRuleKeys(input.learningRules);
+
+  return {
+    approved: false,
+    reason,
+    mode,
+    activeSwingCount: positions.length,
+    sameDirectionCount: positions.filter((position) => position.direction === input.direction).length,
+    weakDataCount: positions.filter((position) => Number(position.dataQuality || 0) < 80).length,
+    reduceAssetOpenCount: positions.filter((position) => hasReduceRuleForPosition(position, reduceKeys)).length,
+    maxOpenPositions: maxOpenPositionsForMode(mode),
+    maxSameDirection: mode === "NORMAL" ? 4 : 3,
+    maxWeakDataPositions: mode === "NORMAL" ? 2 : 1,
+    maxReduceAssetPositions: 1,
+  };
+}
+
+export class PortfolioGuards {
+  static evaluateNewSwing(input: PortfolioGuardInput): PortfolioGuardDecision {
+    const mode = exposureMode(input.portfolio);
+    const positions = activeSwingPositions(input.portfolio);
+    const reduceKeys = reduceRuleKeys(input.learningRules);
+    const activeSwingCount = positions.length;
+    const sameDirectionCount = positions.filter((position) => position.direction === input.direction).length;
+    const weakDataCount = positions.filter((position) => Number(position.dataQuality || 0) < 80).length;
+    const reduceAssetOpenCount = positions.filter((position) => hasReduceRuleForPosition(position, reduceKeys)).length;
+    const maxOpenPositions = maxOpenPositionsForMode(mode);
+    const maxSameDirection = mode === "NORMAL" ? 4 : 3;
+    const maxWeakDataPositions = mode === "NORMAL" ? 2 : 1;
+    const maxReduceAssetPositions = 1;
+
+    const decision: PortfolioGuardDecision = {
+      approved: true,
+      reason: "Portfolio exposure allows this new swing attempt.",
+      mode,
+      activeSwingCount,
+      sameDirectionCount,
+      weakDataCount,
+      reduceAssetOpenCount,
+      maxOpenPositions,
+      maxSameDirection,
+      maxWeakDataPositions,
+      maxReduceAssetPositions,
+    };
+
+    if (activeSwingCount >= maxOpenPositions) {
+      return emptyDecision(
+        input,
+        `Portfolio already has ${activeSwingCount} active swing positions; ${mode.toLowerCase()} mode allows ${maxOpenPositions}.`
+      );
+    }
+
+    if (sameDirectionCount >= maxSameDirection && Number(input.finalConviction || 0) < 88) {
+      return emptyDecision(
+        input,
+        `Portfolio already has ${sameDirectionCount} ${input.direction.toLowerCase()} theses; new same-side trades need 88+ conviction.`
+      );
+    }
+
+    if (Number(input.dataQuality || 0) < 80 && weakDataCount >= maxWeakDataPositions) {
+      return emptyDecision(
+        input,
+        `Too many active trades are already running on degraded data; this entry needs cleaner live data first.`
+      );
+    }
+
+    if (hasReduceRuleForCandidate(input, reduceKeys)) {
+      if (reduceAssetOpenCount >= maxReduceAssetPositions) {
+        return emptyDecision(
+          input,
+          `Local learning has too many reduced-confidence positions active; wait for one to close before adding another.`
+        );
+      }
+
+      if (Number(input.finalConviction || 0) < 82) {
+        return emptyDecision(
+          input,
+          `Local learning says this asset/setup has been weak recently; it now needs 82+ conviction to trade.`
+        );
+      }
+    }
+
+    return decision;
+  }
+}
