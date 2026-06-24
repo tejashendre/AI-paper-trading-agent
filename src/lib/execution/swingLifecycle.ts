@@ -8,6 +8,7 @@ import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 
 export interface SwingExitSweepResult {
   source: string;
@@ -398,6 +399,11 @@ async function closePosition(
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(closeTrade, portfolioType);
+  if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
+    await TradeReviewJournal.recordSwingClose(closeTrade, pos).catch((error) => {
+      console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
+    });
+  }
   await Logger.info(
     `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
   );
