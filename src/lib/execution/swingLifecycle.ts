@@ -216,6 +216,33 @@ function shouldCloseOnPlannedRiskBreach(asset: string, pos: OpenPosition, curren
   };
 }
 
+function shouldCloseWeakThesisProfitDecay(asset: string, pos: OpenPosition, currentPrice: number) {
+  if (pos.thesisStatus !== "WEAKENING") {
+    return { triggered: false, netPnl: unrealizedNetPnl(asset, pos, currentPrice), peakPnl: Number(pos.maxUnrealizedPnlUsd || 0), giveback: 0, givebackLimit: Infinity };
+  }
+
+  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
+  const peakPnl = Number(pos.maxUnrealizedPnlUsd || 0);
+  const giveback = peakPnl - netPnl;
+  const givebackLimit = Math.max(2, peakPnl * 0.25);
+  const triggered = (
+    peakPnl >= 8 &&
+    netPnl > 0 &&
+    (
+      giveback >= givebackLimit ||
+      (peakPnl >= 12 && netPnl <= peakPnl * 0.55)
+    )
+  );
+
+  return {
+    triggered,
+    netPnl,
+    peakPnl,
+    giveback,
+    givebackLimit,
+  };
+}
+
 function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
@@ -630,22 +657,30 @@ export async function sweepSwingExits(
             `[${source}] ${asset} signal reversal detected. Current ${pos.direction} thesis invalidated by ${thesisReview.signal.directionBias} setup at ${thesisReview.signal.finalConviction} conviction.`
           );
           await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_REVERSAL", result, false);
-        } else if (thesisReview.tightened) {
-          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-          await Logger.warn(
-            `[${source}] ${asset} thesis weakening. Tightened protective stop to $${pos.stopLoss.toFixed(4)} instead of waiting for full stop loss.`
-          );
-          result.trailed++;
-        } else if (sltp.trailed) {
-          if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
-          if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
-          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-          await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
-          result.trailed++;
-          await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
-        } else if (thesisReview.updated) {
-          await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-          await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
+        } else {
+          const weakProfitGuard = shouldCloseWeakThesisProfitDecay(asset, pos, currentLivePrice);
+          if (portfolioType === "ai" && weakProfitGuard.triggered) {
+            await Logger.info(
+              `[${source}] ${asset} weak-thesis profit guard closing. Peak $${weakProfitGuard.peakPnl.toFixed(2)}, current $${weakProfitGuard.netPnl.toFixed(2)}, giveback $${weakProfitGuard.giveback.toFixed(2)}.`
+            );
+            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "TAKE_PROFIT", result, false);
+          } else if (thesisReview.tightened) {
+            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+            await Logger.warn(
+              `[${source}] ${asset} thesis weakening. Tightened protective stop to $${pos.stopLoss.toFixed(4)} instead of waiting for full stop loss.`
+            );
+            result.trailed++;
+          } else if (sltp.trailed) {
+            if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
+            if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
+            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+            await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
+            result.trailed++;
+            await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
+          } else if (thesisReview.updated) {
+            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+            await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
+          }
         }
       } else if (sltp.trailed) {
         if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
