@@ -200,6 +200,22 @@ function shouldCloseOnProfitGiveback(asset: string, pos: OpenPosition, currentPr
   };
 }
 
+function shouldCloseOnPlannedRiskBreach(asset: string, pos: OpenPosition, currentPrice: number) {
+  const plannedMaxLoss = Number(pos.maxLossUsd || 0);
+  if (!Number.isFinite(plannedMaxLoss) || plannedMaxLoss <= 0) {
+    return { triggered: false, netPnl: unrealizedNetPnl(asset, pos, currentPrice), plannedMaxLoss };
+  }
+
+  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
+  const breachLimit = Math.max(5, plannedMaxLoss * 1.25);
+  return {
+    triggered: netPnl <= -breachLimit,
+    netPnl,
+    plannedMaxLoss,
+    breachLimit,
+  };
+}
+
 function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
@@ -572,13 +588,6 @@ export async function sweepSwingExits(
         continue;
       }
 
-      if (repairInvalidProtectiveStop(pos, currentLivePrice)) {
-        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-        await Logger.warn(
-          `[${source}] Repaired invalid ${asset} ${pos.direction} protective stop. New SL: $${pos.stopLoss.toFixed(4)}`
-        );
-      }
-
       const profitGuard = shouldCloseOnProfitGiveback(asset, pos, currentLivePrice);
       if (profitGuard.updated) {
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
@@ -595,7 +604,26 @@ export async function sweepSwingExits(
 
       if (sltp.triggered && sltp.reason) {
         await closePosition(portfolio, portfolioType, source, asset, pos, sltp.exitPrice, sltp.reason, result);
-      } else if (checkSignalReversal) {
+        continue;
+      }
+
+      const riskBreach = shouldCloseOnPlannedRiskBreach(asset, pos, currentLivePrice);
+      if (portfolioType === "ai" && riskBreach.triggered) {
+        await Logger.warn(
+          `[${source}] ${asset} planned risk breach closing. Net PnL $${riskBreach.netPnl.toFixed(2)} exceeded planned max loss $${riskBreach.plannedMaxLoss.toFixed(2)}.`
+        );
+        await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "STOP_LOSS", result);
+        continue;
+      }
+
+      if (repairInvalidProtectiveStop(pos, currentLivePrice)) {
+        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+        await Logger.warn(
+          `[${source}] Repaired invalid ${asset} ${pos.direction} protective stop after confirming no stop trigger. New SL: $${pos.stopLoss.toFixed(4)}`
+        );
+      }
+
+      if (checkSignalReversal) {
         const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice);
         if (thesisReview.shouldClose) {
           await Logger.info(
