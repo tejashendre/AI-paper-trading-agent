@@ -10,6 +10,7 @@ import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { SetupPerformance } from "@/lib/trading/setupPerformance";
 import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
+import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 
 export const dynamic = "force-dynamic";
 
@@ -83,7 +84,7 @@ export async function GET(request: Request) {
 
         const redis = getRedis();
 
-        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix] = await Promise.all([
+        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix, tradeReviewDigest, recentTradeReviews] = await Promise.all([
             PortfolioManager.getPortfolio("user"),
             PortfolioManager.getTrades("user"),
             PortfolioManager.getPortfolio("ai"),
@@ -95,6 +96,8 @@ export async function GET(request: Request) {
             OpportunityJournal.getRecent(12),
             LocalLearningMemory.getRules(),
             FeedHealthSummary.build(),
+            TradeReviewJournal.getDigest(),
+            TradeReviewJournal.getRecent(8),
         ]);
 
         const calculateTrueValue = async (portfolio: any, type: "user" | "ai") => {
@@ -290,6 +293,8 @@ export async function GET(request: Request) {
             opportunitySummary,
             setupPerformance,
             learningDigest,
+            tradeReviewDigest,
+            recentTradeReviews: isSpectator ? recentTradeReviews.slice(0, 5) : recentTradeReviews,
             feedHealthMatrix,
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,

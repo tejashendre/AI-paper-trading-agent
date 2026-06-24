@@ -3,6 +3,7 @@ import { runReplay } from "../src/lib/backtest/replayEngine";
 import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
 import { Candle, Portfolio } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
+import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
 import fs from "fs";
 import path from "path";
 
@@ -88,6 +89,11 @@ interface LiveStatus {
       fastEligible?: number;
       swingEligible?: number;
     };
+  };
+  tradeReviewDigest?: {
+    totalReviewed?: number;
+    latestLessons?: unknown[];
+    byOutcome?: Record<string, number>;
   };
 }
 
@@ -359,6 +365,60 @@ function auditExitSafety(): AuditResult[] {
   return checks;
 }
 
+function auditTradeReviewMemory(): AuditResult[] {
+  const checks: AuditResult[] = [];
+
+  const protectedWin = classifyTradeReview({
+    pnl: 65,
+    peakOpenPnl: 90,
+    plannedRiskUsd: 45,
+    exitReason: "TRAILING_STOP_PROFIT",
+    thesisStatus: "VALID",
+  });
+
+  checks.push(result(
+    protectedWin.outcome === "PROFIT_PROTECTED" && protectedWin.nextAction === "KEEP_NORMAL" ? "PASS" : "FAIL",
+    "trade review protected winner",
+    protectedWin.outcome === "PROFIT_PROTECTED"
+      ? "A trailed green close is classified as protected profit, not as a failed trade."
+      : `Expected PROFIT_PROTECTED, got ${protectedWin.outcome}.`
+  ));
+
+  const riskBreach = classifyTradeReview({
+    pnl: -70,
+    peakOpenPnl: 0,
+    plannedRiskUsd: 50,
+    exitReason: "STOP_LOSS",
+    thesisStatus: "WEAKENING",
+  });
+
+  checks.push(result(
+    riskBreach.outcome === "RISK_BREACH" && riskBreach.nextAction === "WATCH_ONLY" ? "PASS" : "FAIL",
+    "trade review risk breach",
+    riskBreach.outcome === "RISK_BREACH"
+      ? "An oversized loss becomes watch-only evidence for future sizing."
+      : `Expected RISK_BREACH, got ${riskBreach.outcome}.`
+  ));
+
+  const thesisFailure = classifyTradeReview({
+    pnl: -12,
+    peakOpenPnl: 20,
+    plannedRiskUsd: 50,
+    exitReason: "SIGNAL_REVERSAL",
+    thesisStatus: "OPPOSITE_EDGE_CONFIRMED",
+  });
+
+  checks.push(result(
+    thesisFailure.outcome === "THESIS_FAILED" ? "PASS" : "FAIL",
+    "trade review thesis failure",
+    thesisFailure.outcome === "THESIS_FAILED"
+      ? "Signal reversals are stored as thesis failures for explainability."
+      : `Expected THESIS_FAILED, got ${thesisFailure.outcome}.`
+  ));
+
+  return checks;
+}
+
 function syntheticCandles(startPrice: number, drift: number, count = 260): Candle[] {
   const candles: Candle[] = [];
   let price = startPrice;
@@ -551,6 +611,14 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   ));
 
   checks.push(result(
+    status.tradeReviewDigest ? "PASS" : "WARN",
+    "trade review digest",
+    status.tradeReviewDigest
+      ? `${status.tradeReviewDigest.totalReviewed || 0} AI swing close review(s), ${status.tradeReviewDigest.latestLessons?.length || 0} latest lesson(s) exposed.`
+      : "No trade review digest found in live status."
+  ));
+
+  checks.push(result(
     badFeeds.length === 0 ? "PASS" : "WARN",
     "bad feed protection",
     badFeeds.length === 0 ? "No feed is currently marked BAD." : `${badFeeds.map((asset) => asset.asset).join(", ")} marked BAD; autonomous entries should stay blocked for those assets.`
@@ -582,6 +650,7 @@ async function main() {
     ...auditAssetSpecs(),
     ...auditAdmissionSizing(),
     ...auditExitSafety(),
+    ...auditTradeReviewMemory(),
     ...auditReplayEngine(),
   ];
 

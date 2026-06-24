@@ -105,6 +105,31 @@ function percentLabel(value?: number) {
   return `${((Number(value || 0)) * 100).toFixed(0)}%`;
 }
 
+function moneyLabel(value?: number) {
+  const parsed = Number(value || 0);
+  const sign = parsed > 0 ? "+" : "";
+  return `${sign}$${parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function plainTradeReviewOutcome(outcome?: string) {
+  switch (outcome) {
+    case "STRONG_WIN":
+      return "Strong win";
+    case "PROFIT_PROTECTED":
+      return "Profit protected";
+    case "SMALL_WIN":
+      return "Small win";
+    case "CONTROLLED_LOSS":
+      return "Controlled loss";
+    case "RISK_BREACH":
+      return "Risk breach";
+    case "THESIS_FAILED":
+      return "Thesis changed";
+    default:
+      return "Learning update";
+  }
+}
+
 function dataHealthBadgeClass(status?: string, isDark?: boolean) {
   if (status === "GOOD") {
     return isDark ? "text-emerald-300 border-emerald-900/50 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50";
@@ -1264,6 +1289,26 @@ function DashboardContent({ secret }: { secret: string }) {
                         <span>Updated: <b className={textPrimary}>{formatAge(data?.learningDigest?.lastUpdated)}</b></span>
                       </div>
                     </div>
+
+                    {data?.tradeReviewDigest?.latestLessons?.length > 0 && (
+                      <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Latest exit lesson</div>
+                            <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>
+                              {data.tradeReviewDigest.latestLessons[0].asset}: {data.tradeReviewDigest.latestLessons[0].lesson}
+                            </p>
+                          </div>
+                          <span className={`shrink-0 text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
+                            data.tradeReviewDigest.latestLessons[0].pnl >= 0
+                              ? "text-emerald-400 border-emerald-900/40 bg-emerald-950/20"
+                              : "text-red-400 border-red-900/40 bg-red-950/20"
+                          }`}>
+                            {plainTradeReviewOutcome(data.tradeReviewDigest.latestLessons[0].outcome)} {moneyLabel(data.tradeReviewDigest.latestLessons[0].pnl)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {showLearningDetails && (
                     <>
