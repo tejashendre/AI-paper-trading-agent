@@ -420,6 +420,53 @@ VWAP_RECLAIM: probe-only or watch-only until evidence improves.
 VWAP_REJECTION: allowed, but still subject to exit discipline.
 ```
 
+### Implementation Checkpoint - 26 June 2026: Reachable Target Sprint
+
+Status: **implemented locally as take-profit reachability control.**
+
+Problem found:
+
+```text
+The bot can create mathematically clean 2R targets that are too far from what
+the asset has recently travelled on the 1h timeframe.
+
+That causes a trade to be green, fail to reach the official take-profit line,
+and then exit later with a much smaller protected profit.
+```
+
+What was added:
+
+```text
+Before a swing entry is admitted, the swing engine now compares the raw
+take-profit distance against recent 1h favorable excursions.
+
+If the target is outside realistic recent movement, the target is compressed
+toward a reachable distance while preserving a minimum reward/risk structure.
+
+The bot records:
+  rawTakeProfit
+  adjusted takeProfit
+  targetReachabilityScore
+  targetAdjustedReason
+```
+
+Design rule:
+
+```text
+The bot should still let exceptional trades run through trailing logic, but the
+first official take-profit should not be a heroic price line that recent market
+movement does not support.
+```
+
+Safety:
+
+```text
+This does not guarantee profitable exits.
+It makes target placement more realistic and easier to audit.
+The admission controller also rejects take-profit values on the wrong side of
+entry, so future routes cannot accidentally create invalid target geometry.
+```
+
 ## Upgrade 2: Expected Value Gate
 
 ### Why It Is Necessary

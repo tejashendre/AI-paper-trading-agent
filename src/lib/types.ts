@@ -202,6 +202,9 @@ export interface OpenPosition {
   thesisReason?: string;
   lastThesisCheckTime?: string;
   scaleInBlockedReason?: string;
+  targetReachabilityScore?: number;
+  rawTakeProfit?: number;
+  targetAdjustedReason?: string;
 }
 
 export interface Portfolio {
@@ -257,6 +260,9 @@ export interface Trade {
   liquidityState?: string;
   paperSize?: string;
   entryMode?: 'STANDARD' | 'CONTROLLED_PROBE';
+  targetReachabilityScore?: number;
+  rawTakeProfit?: number;
+  targetAdjustedReason?: string;
   reasoning: string;
   // Filled when position is closed:
   pnl?: number;

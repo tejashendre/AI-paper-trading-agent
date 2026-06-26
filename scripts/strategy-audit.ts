@@ -302,7 +302,46 @@ function auditAdmissionSizing(): AuditResult[] {
     !duplicate.approved ? duplicate.reason : "Controller allowed a second BTC position while BTC was already open."
   ));
 
+  const invalidLongTarget = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 60_000,
+    stopLoss: 59_000,
+    takeProfit: 58_000,
+    signalScore: 18,
+    reasoning: "Audit invalid long take-profit side",
+    strategyType: "swing",
+    finalConviction: 85,
+  });
+
+  checks.push(result(
+    !invalidLongTarget.approved ? "PASS" : "FAIL",
+    "take-profit side guard",
+    !invalidLongTarget.approved
+      ? invalidLongTarget.reason
+      : "Controller allowed a LONG trade with take-profit below entry."
+  ));
+
   return checks;
+}
+
+function auditTargetReachability(): AuditResult[] {
+  const swingEnginePath = path.join(process.cwd(), "src", "lib", "swingEngine.ts");
+  const swingEngineSource = fs.readFileSync(swingEnginePath, "utf8");
+  const hasReachabilityModel = swingEngineSource.includes("function evaluateTargetReachability");
+  const hasCompressionTag = swingEngineSource.includes("TP_COMPRESSED_TO_RECENT_RANGE");
+  const hasAdjustedTarget = swingEngineSource.includes("const takeProfit = adjustedTakeProfit");
+
+  return [
+    result(
+      hasReachabilityModel && hasCompressionTag && hasAdjustedTarget ? "PASS" : "FAIL",
+      "take-profit reachability model",
+      hasReachabilityModel && hasCompressionTag && hasAdjustedTarget
+        ? "Swing targets are checked against recent 1h movement and unrealistic targets can be compressed before admission."
+        : "Swing engine does not clearly adjust unrealistic take-profit targets before admission."
+    ),
+  ];
 }
 
 function auditExitSafety(): AuditResult[] {
@@ -725,6 +764,7 @@ async function main() {
   const results: AuditResult[] = [
     ...auditAssetSpecs(),
     ...auditAdmissionSizing(),
+    ...auditTargetReachability(),
     ...auditExitSafety(),
     ...auditLearningConnections(),
     ...auditTradeReviewMemory(),
