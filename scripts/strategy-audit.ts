@@ -355,6 +355,7 @@ function auditExitSafety(): AuditResult[] {
   const repairIndex = lifecycleSource.indexOf("repairInvalidProtectiveStop(pos, currentLivePrice)");
   const weakLossGuardIndex = lifecycleSource.indexOf("shouldCloseWeakThesisLossCompression(asset, pos, currentLivePrice)");
   const thesisReviewIndex = lifecycleSource.indexOf("const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice)");
+  const signalInvalidationIndex = lifecycleSource.indexOf('"SIGNAL_INVALIDATION", result');
 
   checks.push(result(
     stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex ? "PASS" : "FAIL",
@@ -370,6 +371,14 @@ function auditExitSafety(): AuditResult[] {
     weakLossGuardIndex > thesisReviewIndex
       ? "Swing lifecycle can close a losing AI trade early after live thesis weakens."
       : "Weak-thesis loss compression is missing or runs before live thesis review."
+  ));
+
+  checks.push(result(
+    signalInvalidationIndex > weakLossGuardIndex ? "PASS" : "FAIL",
+    "loss compression exit reason",
+    signalInvalidationIndex > weakLossGuardIndex
+      ? "Weak-thesis loss compression records SIGNAL_INVALIDATION instead of disguising the exit as a hard stop."
+      : "Weak-thesis loss compression does not record an explicit signal invalidation exit reason."
   ));
 
   return checks;
@@ -448,6 +457,22 @@ function auditTradeReviewMemory(): AuditResult[] {
     thesisFailure.outcome === "THESIS_FAILED"
       ? "Signal reversals are stored as thesis failures for explainability."
       : `Expected THESIS_FAILED, got ${thesisFailure.outcome}.`
+  ));
+
+  const compressedLoss = classifyTradeReview({
+    pnl: -18,
+    peakOpenPnl: 0,
+    plannedRiskUsd: 50,
+    exitReason: "SIGNAL_INVALIDATION",
+    thesisStatus: "WEAKENING",
+  });
+
+  checks.push(result(
+    compressedLoss.outcome === "THESIS_FAILED" && compressedLoss.nextAction === "REDUCE_SIZE" ? "PASS" : "FAIL",
+    "trade review compressed loss",
+    compressedLoss.outcome === "THESIS_FAILED"
+      ? "Signal invalidation losses are recorded as thesis failures for future learning."
+      : `Expected THESIS_FAILED, got ${compressedLoss.outcome}.`
   ));
 
   return checks;

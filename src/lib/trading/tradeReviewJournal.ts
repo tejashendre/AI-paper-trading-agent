@@ -130,11 +130,15 @@ export function classifyTradeReview(input: {
   const retained = retainedPeakPercent(input.pnl, input.peakOpenPnl);
   const rMultiple = riskMultiple(input.pnl, input.plannedRiskUsd);
 
-  if (input.exitReason === "SIGNAL_REVERSAL" || input.thesisStatus === "OPPOSITE_EDGE_CONFIRMED") {
+  if (
+    input.exitReason === "SIGNAL_REVERSAL" ||
+    input.exitReason === "SIGNAL_INVALIDATION" ||
+    input.thesisStatus === "OPPOSITE_EDGE_CONFIRMED"
+  ) {
     return {
       outcome: "THESIS_FAILED",
       nextAction: input.pnl < 0 ? "REDUCE_SIZE" : "TIGHTEN_EXITS",
-      lesson: "The live thesis changed before the original trade fully completed. Future trades in this setup should react faster to opposite evidence.",
+      lesson: "The live thesis changed before the original trade fully completed. Future trades in this setup should react faster to weakening or opposite evidence.",
     };
   }
 

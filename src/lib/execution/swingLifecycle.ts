@@ -23,6 +23,8 @@ export interface SwingExitSweepResult {
   timestamp: string;
 }
 
+type SwingCloseReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "SIGNAL_INVALIDATION";
+
 function ensurePortfolioStats(portfolio: Portfolio) {
   portfolio.returns = portfolio.returns || [];
   portfolio.totalPnl = portfolio.totalPnl || 0;
@@ -96,8 +98,9 @@ function buildCloseTrade(
   };
 }
 
-function classifyExitReason(pos: OpenPosition, reason: "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL", netPnl: number): NonNullable<Trade["exitReason"]> {
+function classifyExitReason(pos: OpenPosition, reason: SwingCloseReason, netPnl: number): NonNullable<Trade["exitReason"]> {
   if (reason === "SIGNAL_REVERSAL") return "SIGNAL_REVERSAL";
+  if (reason === "SIGNAL_INVALIDATION") return "SIGNAL_INVALIDATION";
   if (reason === "TAKE_PROFIT") return "TAKE_PROFIT";
   if (netPnl >= 0 && pos.isTrailing) return "TRAILING_STOP_PROFIT";
   if (netPnl >= 0) return "BREAKEVEN_STOP";
@@ -366,7 +369,7 @@ async function closePosition(
   asset: string,
   pos: OpenPosition,
   exitPrice: number,
-  reason: "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL",
+  reason: SwingCloseReason,
   result: SwingExitSweepResult,
   setCooldown = true
 ) {
@@ -693,7 +696,7 @@ export async function sweepSwingExits(
             await Logger.warn(
               `[${source}] ${asset} weak-thesis loss compression closing. Net PnL $${weakLossGuard.netPnl.toFixed(2)} reached $${weakLossGuard.lossLimit.toFixed(2)} soft-loss limit before full planned loss $${weakLossGuard.plannedMaxLoss.toFixed(2)}.`
             );
-            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "STOP_LOSS", result);
+            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_INVALIDATION", result);
             continue;
           }
 
