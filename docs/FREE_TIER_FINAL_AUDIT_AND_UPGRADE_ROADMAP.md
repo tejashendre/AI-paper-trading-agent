@@ -1102,6 +1102,44 @@ controlled asset-book management.
 
 That is what makes it professional rather than reckless.
 
+### Implementation Checkpoint - 26 June 2026
+
+Status: **safe foundation implemented locally as Asset Book Observability Sprint.**
+
+Files:
+
+```text
+src/app/api/user/status/route.ts
+src/components/Dashboard.tsx
+scripts/strategy-audit.ts
+```
+
+What was added:
+
+```text
+The status API now derives an aiAssetBookDigest from existing portfolio, scan,
+feed-health, local-learning, and trade-review data.
+
+The dashboard now shows a compact Asset Book Monitor:
+  active asset books
+  ready / almost-ready books
+  caution / protecting / reversal-watch books
+  per-asset exposure, data score, margin, P&L, headline, and next action
+
+The strategy audit now checks that asset-book visibility exists on live status.
+```
+
+Important:
+
+```text
+This does not enable same-asset multi-position execution yet.
+Layering, hedge probes, and reversal books remain deliberately disabled until
+the data model and episode ledger are built in a separate high-risk sprint.
+
+This gives the system the professional "asset book" view without allowing
+uncontrolled stacking.
+```
+
 ## Upgrade 7: Public Spectator Mode Polish
 
 ### Why It Is Necessary

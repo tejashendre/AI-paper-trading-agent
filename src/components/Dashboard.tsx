@@ -172,6 +172,42 @@ function plainScanReason(result: any) {
   return result?.reason || "The bot is still evaluating this market.";
 }
 
+function assetBookStateLabel(state?: string) {
+  switch (state) {
+    case "MANAGING":
+      return "Managing";
+    case "PROTECTING":
+      return "Protecting";
+    case "REVERSAL_WATCH":
+      return "Reversal Watch";
+    case "READY":
+      return "Ready";
+    case "ALMOST_READY":
+      return "Almost Ready";
+    case "CAUTION":
+      return "Caution";
+    case "DATA_BLOCKED":
+      return "Data Blocked";
+    case "PAUSED":
+      return "Paused";
+    default:
+      return "Watching";
+  }
+}
+
+function assetBookStateClass(state: string | undefined, isDark: boolean) {
+  if (state === "MANAGING" || state === "READY") {
+    return isDark ? "text-emerald-300 border-emerald-900/40 bg-emerald-950/20" : "text-emerald-700 border-emerald-200 bg-emerald-50";
+  }
+  if (state === "PROTECTING" || state === "ALMOST_READY" || state === "CAUTION") {
+    return isDark ? "text-amber-300 border-amber-900/40 bg-amber-950/20" : "text-amber-700 border-amber-200 bg-amber-50";
+  }
+  if (state === "REVERSAL_WATCH" || state === "DATA_BLOCKED") {
+    return isDark ? "text-red-300 border-red-900/40 bg-red-950/20" : "text-red-700 border-red-200 bg-red-50";
+  }
+  return isDark ? "text-slate-300 border-slate-700 bg-slate-900/40" : "text-slate-600 border-slate-300 bg-slate-100";
+}
+
 export function Dashboard() {
   return (
     <AuthGate>
@@ -1233,6 +1269,65 @@ function DashboardContent({ secret }: { secret: string }) {
                       >
                         VIEW DATA HEALTH METRICS
                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {viewMode === "ai" && (
+                  <div className={`p-4 rounded-xl border ${bgCard}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Asset Book Monitor</div>
+                        <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                          {data?.aiAssetBookDigest?.headline || "The bot is mapping each market into a simple book state."}
+                        </p>
+                        <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                          Layering is not live yet. This panel is a safety map for exposure, thesis health, and next action.
+                        </p>
+                      </div>
+                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-cyan-900/40 text-cyan-300 bg-cyan-950/20" : "border-cyan-200 text-cyan-700 bg-cyan-50"}`}>
+                        READ ONLY
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Active Books</div>
+                        <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data?.aiAssetBookDigest?.activeBooks || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Ready / Close</div>
+                        <div className={`text-sm font-bold font-mono text-blue-400`}>{data?.aiAssetBookDigest?.readyBooks || 0}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg border ${bgSubCard}`}>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Needs Care</div>
+                        <div className={`text-sm font-bold font-mono ${(data?.aiAssetBookDigest?.cautionBooks || 0) > 0 ? "text-amber-400" : textPrimary}`}>
+                          {data?.aiAssetBookDigest?.cautionBooks || 0}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {(data?.aiAssetBookDigest?.topWatchlist || []).slice(0, 4).map((book: any) => (
+                        <div key={book.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={`text-xs font-bold font-mono ${textPrimary}`}>{book.asset}</div>
+                              <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>{book.headline}</p>
+                            </div>
+                            <span className={`shrink-0 text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${assetBookStateClass(book.state, isDark)}`}>
+                              {assetBookStateLabel(book.state)}
+                            </span>
+                          </div>
+                          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-2 text-[8px] font-mono ${textMuted}`}>
+                            <span>Exposure: <b className={textPrimary}>{book.netExposure}</b></span>
+                            <span>Data: <b className={textPrimary}>{book.dataQuality || 0}</b></span>
+                            <span>Margin: <b className={textPrimary}>${Number(book.usedMargin || 0).toFixed(0)}</b></span>
+                            <span>PnL: <b className={Number(book.totalPnl || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{moneyLabel(book.totalPnl)}</b></span>
+                          </div>
+                          <p className={`mt-1.5 text-[9px] font-mono leading-snug ${textMuted}`}>{book.nextAction}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

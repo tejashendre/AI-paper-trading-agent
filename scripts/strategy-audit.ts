@@ -95,6 +95,13 @@ interface LiveStatus {
     latestLessons?: unknown[];
     byOutcome?: Record<string, number>;
   };
+  aiAssetBookDigest?: {
+    activeBooks?: number;
+    readyBooks?: number;
+    cautionBooks?: number;
+    topWatchlist?: unknown[];
+    books?: unknown[];
+  };
 }
 
 const REQUIRED_ASSETS = ["BTC", "ETH", "SOL", "EURUSD", "GBPUSD", "USDJPY", "GOLD", "OIL", "SILVER"];
@@ -675,6 +682,16 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     status.tradeReviewDigest
       ? `${status.tradeReviewDigest.totalReviewed || 0} AI swing close review(s), ${status.tradeReviewDigest.latestLessons?.length || 0} latest lesson(s) exposed.`
       : "No trade review digest found in live status."
+  ));
+
+  const assetBooks = status.aiAssetBookDigest;
+  const assetBookRows = Array.isArray(assetBooks?.books) ? assetBooks.books.length : 0;
+  checks.push(result(
+    assetBooks && assetBookRows >= REQUIRED_ASSETS.length ? "PASS" : "WARN",
+    "asset-book visibility",
+    assetBooks
+      ? `${assetBookRows} asset book row(s), ${assetBooks.activeBooks || 0} active, ${assetBooks.readyBooks || 0} ready/close, ${assetBooks.cautionBooks || 0} needing care.`
+      : "No asset-book digest found in live status."
   ));
 
   checks.push(result(
