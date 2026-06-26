@@ -4,6 +4,7 @@ import { getRedis } from "@/lib/redis";
 import { PortfolioManager } from "@/lib/portfolio";
 import { OpportunityJournal } from "./opportunityJournal";
 import { SetupPerformance, SetupPerformanceBucket } from "./setupPerformance";
+import { TradeReviewJournal, TradeReviewAssetSignal } from "./tradeReviewJournal";
 
 const RULES_KEY = "learning:localRules";
 
@@ -98,6 +99,24 @@ function ruleFromPerformanceBucket(
   };
 }
 
+function ruleFromTradeReviewSignal(signal: TradeReviewAssetSignal): LocalLearningRule | null {
+  if (signal.action === "NEUTRAL" || signal.confidenceAdjustment === 0) return null;
+  if (signal.reviews < 3) return null;
+
+  return {
+    id: `review:asset:${signal.asset}`,
+    scope: "asset",
+    key: signal.asset,
+    action: signal.action,
+    confidenceAdjustment: Math.max(-8, Math.min(4, signal.confidenceAdjustment)),
+    message: signal.message,
+    sampleSize: signal.reviews,
+    favorableRate: signal.winRate,
+    avgMove: signal.avgPnl,
+    updatedAt: signal.updatedAt,
+  };
+}
+
 export class LocalLearningMemory {
   static async rebuildRules() {
     const summary = await OpportunityJournal.getSummary();
@@ -121,6 +140,12 @@ export class LocalLearningMemory {
     }
     for (const bucket of setupPerformance.bySetup) {
       const rule = ruleFromPerformanceBucket("setup", bucket);
+      if (rule) ruleMap.set(rule.id, rule);
+    }
+
+    const tradeReviewSignals = await TradeReviewJournal.getAssetSignals().catch(() => []);
+    for (const signal of tradeReviewSignals) {
+      const rule = ruleFromTradeReviewSignal(signal);
       if (rule) ruleMap.set(rule.id, rule);
     }
 

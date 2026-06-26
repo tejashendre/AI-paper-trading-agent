@@ -63,6 +63,24 @@ export interface TradeReviewDigest {
   lastUpdated: string | null;
 }
 
+export interface TradeReviewAssetSignal {
+  asset: string;
+  reviews: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgPnl: number;
+  avgRetainedPeakPercent: number | null;
+  protectedWins: number;
+  controlledLosses: number;
+  riskBreaches: number;
+  thesisFailures: number;
+  confidenceAdjustment: number;
+  action: "BOOST" | "REDUCE" | "NEUTRAL";
+  message: string;
+  updatedAt: string;
+}
+
 function dataPath(filename: string) {
   return path.join(process.cwd(), "data", filename);
 }
@@ -273,6 +291,73 @@ function buildDigest(reviews: TradeReviewRecord[]): TradeReviewDigest {
   return digest;
 }
 
+function buildAssetSignals(reviews: TradeReviewRecord[]): TradeReviewAssetSignal[] {
+  const grouped = new Map<string, TradeReviewRecord[]>();
+  for (const review of reviews) {
+    const existing = grouped.get(review.asset) || [];
+    existing.push(review);
+    grouped.set(review.asset, existing);
+  }
+
+  return Array.from(grouped.entries()).map(([asset, rows]) => {
+    const recent = rows.slice(0, 12);
+    const wins = recent.filter((review) => review.pnl > 0).length;
+    const losses = recent.filter((review) => review.pnl < 0).length;
+    const pnlSum = recent.reduce((sum, review) => sum + review.pnl, 0);
+    const retainedRows = recent.filter((review) => typeof review.retainedPeakPercent === "number");
+    const retainedSum = retainedRows.reduce((sum, review) => sum + Number(review.retainedPeakPercent || 0), 0);
+    const protectedWins = recent.filter((review) => review.outcome === "PROFIT_PROTECTED" || review.outcome === "STRONG_WIN").length;
+    const controlledLosses = recent.filter((review) => review.outcome === "CONTROLLED_LOSS").length;
+    const riskBreaches = recent.filter((review) => review.outcome === "RISK_BREACH").length;
+    const thesisFailures = recent.filter((review) => review.outcome === "THESIS_FAILED").length;
+    const winRate = recent.length > 0 ? wins / recent.length : 0;
+    const avgPnl = recent.length > 0 ? pnlSum / recent.length : 0;
+    const avgRetainedPeakPercent = retainedRows.length > 0 ? retainedSum / retainedRows.length : null;
+
+    let confidenceAdjustment = 0;
+    let action: TradeReviewAssetSignal["action"] = "NEUTRAL";
+    let message = `${asset} has too little reviewed exit evidence to change confidence.`;
+
+    if (recent.length >= 4 && winRate >= 0.65 && avgPnl > 0 && protectedWins >= 2) {
+      confidenceAdjustment = 3;
+      action = "BOOST";
+      message = `${asset} has recently protected profitable exits well. The bot can trust clean setups slightly more.`;
+    }
+
+    if (
+      recent.length >= 3 &&
+      (
+        avgPnl < 0 ||
+        riskBreaches > 0 ||
+        thesisFailures >= 2 ||
+        controlledLosses >= Math.max(2, Math.ceil(recent.length * 0.45))
+      )
+    ) {
+      confidenceAdjustment = riskBreaches > 0 || avgPnl < -15 ? -8 : -5;
+      action = "REDUCE";
+      message = `${asset} has weak recent exit reviews. The bot should require stronger proof or smaller size.`;
+    }
+
+    return {
+      asset,
+      reviews: recent.length,
+      wins,
+      losses,
+      winRate,
+      avgPnl,
+      avgRetainedPeakPercent,
+      protectedWins,
+      controlledLosses,
+      riskBreaches,
+      thesisFailures,
+      confidenceAdjustment,
+      action,
+      message,
+      updatedAt: recent[0]?.reviewedAt || new Date().toISOString(),
+    };
+  }).sort((a, b) => Math.abs(b.confidenceAdjustment) - Math.abs(a.confidenceAdjustment));
+}
+
 export class TradeReviewJournal {
   static async recordSwingClose(trade: Trade, position: OpenPosition): Promise<TradeReviewRecord | null> {
     const review = buildReview(trade, position);
@@ -303,5 +388,10 @@ export class TradeReviewJournal {
     const digest = buildDigest(recent);
     if (recent.length > 0) await redis.set(DIGEST_KEY, digest);
     return digest;
+  }
+
+  static async getAssetSignals(limit = MAX_REVIEWS): Promise<TradeReviewAssetSignal[]> {
+    const recent = await this.getRecent(limit);
+    return buildAssetSignals(recent).filter((signal) => signal.action !== "NEUTRAL");
   }
 }
