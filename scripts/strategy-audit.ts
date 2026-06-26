@@ -365,6 +365,30 @@ function auditExitSafety(): AuditResult[] {
   return checks;
 }
 
+function auditLearningConnections(): AuditResult[] {
+  const checks: AuditResult[] = [];
+  const localLearningPath = path.join(process.cwd(), "src", "lib", "trading", "localLearning.ts");
+  const localLearningSource = fs.readFileSync(localLearningPath, "utf8");
+
+  checks.push(result(
+    localLearningSource.includes("TradeReviewJournal.getAssetSignals") ? "PASS" : "FAIL",
+    "trade review feeds local learning",
+    localLearningSource.includes("TradeReviewJournal.getAssetSignals")
+      ? "Closed-trade review memory can create mild asset-level learning rules."
+      : "Trade review memory is visible but not connected to local learning rules."
+  ));
+
+  checks.push(result(
+    localLearningSource.includes("review:asset:") ? "PASS" : "FAIL",
+    "review rule identity",
+    localLearningSource.includes("review:asset:")
+      ? "Trade-review rules use a distinct id namespace from opportunity/setup rules."
+      : "Trade-review rules may collide with existing learning rule ids."
+  ));
+
+  return checks;
+}
+
 function auditTradeReviewMemory(): AuditResult[] {
   const checks: AuditResult[] = [];
 
@@ -650,6 +674,7 @@ async function main() {
     ...auditAssetSpecs(),
     ...auditAdmissionSizing(),
     ...auditExitSafety(),
+    ...auditLearningConnections(),
     ...auditTradeReviewMemory(),
     ...auditReplayEngine(),
   ];
