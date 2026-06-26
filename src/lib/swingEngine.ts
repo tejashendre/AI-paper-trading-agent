@@ -76,6 +76,17 @@ export interface SwingSignal {
   slippagePercent: number;
   oldScoreOverride: boolean;
   entryGate: EntryGateDiagnostics;
+  targetReachability?: {
+    score: number;
+    rawTakeProfit: number;
+    adjustedTakeProfit: number;
+    rawDistance: number;
+    adjustedDistance: number;
+    recentP90Move: number;
+    recentMaxMove: number;
+    compressed: boolean;
+    reason: string;
+  };
 }
 
 function emptySignal(assetKey: string, reason: string): SwingSignal {
@@ -307,6 +318,94 @@ function slope(values: number[]): number {
   const first = values[0];
   const last = values[values.length - 1];
   return first !== 0 ? (last - first) / first : 0;
+}
+
+function percentile(values: number[], p: number): number {
+  const clean = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  if (clean.length === 0) return 0;
+  const index = Math.min(clean.length - 1, Math.max(0, Math.floor((clean.length - 1) * p)));
+  return clean[index];
+}
+
+function evaluateTargetReachability(input: {
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  entryPrice: number;
+  stopLoss: number;
+  rawTakeProfit: number;
+  candles1h: Candle[];
+  assetMode: SwingSignal["assetMode"];
+}) {
+  const rawDistance = Math.abs(input.rawTakeProfit - input.entryPrice);
+  const stopDistance = Math.abs(input.entryPrice - input.stopLoss);
+  const fallback = {
+    score: 70,
+    rawTakeProfit: input.rawTakeProfit,
+    adjustedTakeProfit: input.rawTakeProfit,
+    rawDistance,
+    adjustedDistance: rawDistance,
+    recentP90Move: rawDistance,
+    recentMaxMove: rawDistance,
+    compressed: false,
+    reason: "Target reachability is neutral because recent movement history is limited.",
+  };
+
+  if (
+    input.direction === "NEUTRAL" ||
+    !Number.isFinite(input.entryPrice) ||
+    !Number.isFinite(input.stopLoss) ||
+    !Number.isFinite(input.rawTakeProfit) ||
+    input.entryPrice <= 0 ||
+    stopDistance <= 0 ||
+    rawDistance <= 0 ||
+    input.candles1h.length < 36
+  ) {
+    return fallback;
+  }
+
+  const lookaheadBars = input.assetMode === "REALTIME_FAST" ? 8 : 12;
+  const sample = input.candles1h.slice(-120);
+  const excursions: number[] = [];
+
+  for (let i = 0; i < sample.length - lookaheadBars; i++) {
+    const start = sample[i];
+    const future = sample.slice(i + 1, i + lookaheadBars + 1);
+    if (!start || future.length === 0 || !Number.isFinite(start.close) || start.close <= 0) continue;
+    const futureHigh = Math.max(...future.map((candle) => candle.high));
+    const futureLow = Math.min(...future.map((candle) => candle.low));
+    const favorableMove = input.direction === "LONG"
+      ? futureHigh - start.close
+      : start.close - futureLow;
+    if (Number.isFinite(favorableMove) && favorableMove > 0) excursions.push(favorableMove);
+  }
+
+  if (excursions.length < 12) return fallback;
+
+  const recentP90Move = percentile(excursions, 0.9);
+  const recentMaxMove = Math.max(...excursions);
+  const feasibleDistance = Math.max(stopDistance * 1.15, recentP90Move * 1.05);
+  const hardCeiling = Math.max(feasibleDistance, recentMaxMove * 1.05);
+  const adjustedDistance = rawDistance > hardCeiling ? hardCeiling : rawDistance;
+  const adjustedTakeProfit = input.direction === "LONG"
+    ? input.entryPrice + adjustedDistance
+    : input.entryPrice - adjustedDistance;
+  const ratioToP90 = recentP90Move > 0 ? rawDistance / recentP90Move : 999;
+  const score = Math.max(0, Math.min(100, Math.round(100 - Math.max(0, ratioToP90 - 1) * 35)));
+  const compressed = Math.abs(adjustedDistance - rawDistance) > input.entryPrice * 0.0001;
+  const reason = compressed
+    ? `Take-profit was compressed from ${rawDistance.toFixed(4)} to ${adjustedDistance.toFixed(4)} price-distance because recent 1h moves rarely travelled that far.`
+    : `Take-profit distance is realistic versus recent 1h movement history.`;
+
+  return {
+    score,
+    rawTakeProfit: input.rawTakeProfit,
+    adjustedTakeProfit,
+    rawDistance,
+    adjustedDistance,
+    recentP90Move,
+    recentMaxMove,
+    compressed,
+    reason,
+  };
 }
 
 function scoreMarketStructureLiquidity(
@@ -675,6 +774,21 @@ export class SwingEngine {
         : bestDirection === "SHORT"
           ? currentPrice - takeProfitDistance
           : 0;
+      const targetReachability = evaluateTargetReachability({
+        direction: bestDirection,
+        entryPrice: currentPrice,
+        stopLoss: plannedStopLoss,
+        rawTakeProfit: plannedTakeProfit,
+        candles1h,
+        assetMode,
+      });
+      const adjustedTakeProfit = targetReachability.adjustedTakeProfit;
+      if (targetReachability.compressed) {
+        setupTags.push("TP_COMPRESSED_TO_RECENT_RANGE");
+        finalConviction = Math.max(0, Math.min(100, finalConviction + 2));
+      } else if (targetReachability.score >= 75 && bestDirection !== "NEUTRAL") {
+        setupTags.push("REACHABLE_TARGET");
+      }
 
       // Require strong HTF alignment (score >= 14)
       if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
@@ -699,8 +813,8 @@ export class SwingEngine {
           action: "HOLD",
           entryPrice: livePrice,
           stopLoss: plannedStopLoss,
-          takeProfit: plannedTakeProfit,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
+          takeProfit: adjustedTakeProfit,
+          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
           expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
           htfScore,
@@ -743,13 +857,14 @@ export class SwingEngine {
           slippagePercent,
           oldScoreOverride: false,
           entryGate,
+          targetReachability,
         };
       }
 
       // 5. Dynamic Wide HTF Stops
       // In swing trading, ATR is larger, and we use a 1.5x / 3.0x multiplier.
       const stopLoss = plannedStopLoss;
-      const takeProfit = plannedTakeProfit;
+      const takeProfit = adjustedTakeProfit;
 
       return {
         asset: assetKey,
@@ -757,7 +872,7 @@ export class SwingEngine {
         entryPrice: currentPrice,
         stopLoss,
         takeProfit,
-          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
+          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
         score: finalScore,
         expectedMove: expectedMovePercent,
         htfScore,
@@ -794,6 +909,7 @@ export class SwingEngine {
         slippagePercent,
         oldScoreOverride: exceptionEntry,
         entryGate,
+        targetReachability,
       };
     } catch (err) {
       return emptySignal(assetKey, `Swing scan failed: ${err instanceof Error ? err.message : String(err)}`);

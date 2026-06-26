@@ -72,6 +72,7 @@ interface SwingScanResult {
   learningRules?: string[];
   entryGate?: unknown;
   portfolioGuard?: unknown;
+  targetReachability?: unknown;
   timestamp: string;
 }
 
@@ -469,6 +470,7 @@ async function runEntryScan() {
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
             entryGate: swingSignal.entryGate,
+            targetReachability: swingSignal.targetReachability,
             timestamp,
           });
           continue;
@@ -520,6 +522,7 @@ async function runEntryScan() {
             learningRules: swingSignal.learningRules,
             entryGate: swingSignal.entryGate,
             portfolioGuard,
+            targetReachability: swingSignal.targetReachability,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
@@ -576,6 +579,7 @@ async function runEntryScan() {
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
             entryGate: swingSignal.entryGate,
+            targetReachability: swingSignal.targetReachability,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
@@ -626,6 +630,9 @@ async function runEntryScan() {
           thesisStatus: "VALID",
           thesisReason: "Initial entry thesis is active and awaiting live follow-through.",
           lastThesisCheckTime: new Date().toISOString(),
+          targetReachabilityScore: swingSignal.targetReachability?.score,
+          rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
+          targetAdjustedReason: swingSignal.targetReachability?.reason,
         };
 
         portfolio.openPositions[asset] = newPos;
@@ -657,6 +664,9 @@ async function runEntryScan() {
           liquidityState: swingSignal.liquidityState,
           paperSize: swingSignal.paperSize,
           entryMode: swingSignal.entryMode,
+          targetReachabilityScore: swingSignal.targetReachability?.score,
+          rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
+          targetAdjustedReason: swingSignal.targetReachability?.reason,
           reasoning: newPos.reasoning,
         };
 
@@ -699,6 +709,7 @@ async function runEntryScan() {
           learningAdjustment: swingSignal.learningAdjustment,
           learningRules: swingSignal.learningRules,
           entryGate: swingSignal.entryGate,
+          targetReachability: swingSignal.targetReachability,
           timestamp,
         });
 

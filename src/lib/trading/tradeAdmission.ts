@@ -149,6 +149,18 @@ export class TradeAdmissionController {
       return emptyResult("SHORT stop loss must be above entry price.");
     }
 
+    if (!Number.isFinite(input.takeProfit) || input.takeProfit <= 0) {
+      return emptyResult("Invalid take profit.");
+    }
+
+    if (input.direction === "LONG" && input.takeProfit <= input.entryPrice) {
+      return emptyResult("LONG take profit must be above entry price.");
+    }
+
+    if (input.direction === "SHORT" && input.takeProfit >= input.entryPrice) {
+      return emptyResult("SHORT take profit must be below entry price.");
+    }
+
     if (remainingTotalMarginRoom < spec.minMarginUsd) {
       return emptyResult("Total portfolio margin cap reached.");
     }

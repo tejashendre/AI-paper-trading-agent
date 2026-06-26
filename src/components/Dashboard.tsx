@@ -1984,6 +1984,11 @@ function DashboardContent({ secret }: { secret: string }) {
                                   Scale-in paused: {pos.scaleInBlockedReason}
                                 </p>
                               )}
+                              {pos.targetAdjustedReason && (
+                                <p className={`mt-1 text-[9px] font-mono leading-snug ${textMuted}`}>
+                                  Target check: {pos.targetAdjustedReason}
+                                </p>
+                              )}
                             </div>
                           )}
                           <div className={`flex justify-between items-center pt-1 border-t ${borderCol}`}>
