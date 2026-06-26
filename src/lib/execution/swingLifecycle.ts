@@ -244,6 +244,30 @@ function shouldCloseWeakThesisProfitDecay(asset: string, pos: OpenPosition, curr
   };
 }
 
+function shouldCloseWeakThesisLossCompression(asset: string, pos: OpenPosition, currentPrice: number) {
+  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
+  const plannedMaxLoss = Number(pos.maxLossUsd || 0);
+  const thesisWeak = (
+    pos.thesisStatus === "WEAKENING" ||
+    pos.thesisStatus === "INVALID" ||
+    pos.thesisStatus === "OPPOSITE_EDGE_CONFIRMED"
+  );
+
+  if (!thesisWeak || !Number.isFinite(plannedMaxLoss) || plannedMaxLoss <= 0) {
+    return { triggered: false, netPnl, plannedMaxLoss, lossLimit: Infinity };
+  }
+
+  const weakDataPenalty = Number(pos.dataQuality || 100) < 70 ? 0.45 : 0.55;
+  const lossLimit = Math.max(8, plannedMaxLoss * weakDataPenalty);
+
+  return {
+    triggered: netPnl < 0 && Math.abs(netPnl) >= lossLimit,
+    netPnl,
+    plannedMaxLoss,
+    lossLimit,
+  };
+}
+
 function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
   const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
   const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
@@ -664,6 +688,15 @@ export async function sweepSwingExits(
           );
           await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_REVERSAL", result, false);
         } else {
+          const weakLossGuard = shouldCloseWeakThesisLossCompression(asset, pos, currentLivePrice);
+          if (portfolioType === "ai" && weakLossGuard.triggered) {
+            await Logger.warn(
+              `[${source}] ${asset} weak-thesis loss compression closing. Net PnL $${weakLossGuard.netPnl.toFixed(2)} reached $${weakLossGuard.lossLimit.toFixed(2)} soft-loss limit before full planned loss $${weakLossGuard.plannedMaxLoss.toFixed(2)}.`
+            );
+            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "STOP_LOSS", result);
+            continue;
+          }
+
           const weakProfitGuard = shouldCloseWeakThesisProfitDecay(asset, pos, currentLivePrice);
           if (portfolioType === "ai" && weakProfitGuard.triggered) {
             await Logger.info(

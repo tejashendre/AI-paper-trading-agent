@@ -353,6 +353,8 @@ function auditExitSafety(): AuditResult[] {
   const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
   const stopCheckIndex = lifecycleSource.indexOf("RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice)");
   const repairIndex = lifecycleSource.indexOf("repairInvalidProtectiveStop(pos, currentLivePrice)");
+  const weakLossGuardIndex = lifecycleSource.indexOf("shouldCloseWeakThesisLossCompression(asset, pos, currentLivePrice)");
+  const thesisReviewIndex = lifecycleSource.indexOf("const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice)");
 
   checks.push(result(
     stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex ? "PASS" : "FAIL",
@@ -360,6 +362,14 @@ function auditExitSafety(): AuditResult[] {
     stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex
       ? "Swing lifecycle checks hard stop/target before repairing protective stops."
       : "Swing lifecycle may repair a crossed stop before closing it."
+  ));
+
+  checks.push(result(
+    weakLossGuardIndex > thesisReviewIndex && thesisReviewIndex >= 0 ? "PASS" : "FAIL",
+    "weak-thesis loss compression",
+    weakLossGuardIndex > thesisReviewIndex
+      ? "Swing lifecycle can close a losing AI trade early after live thesis weakens."
+      : "Weak-thesis loss compression is missing or runs before live thesis review."
   ));
 
   return checks;
