@@ -18,6 +18,7 @@ export interface TradeAdmissionInput {
   strategyType: "swing" | "manual" | "scalp";
   requestedMarginUsd?: number;
   finalConviction?: number;
+  learningAdjustment?: number;
 }
 
 export interface TradeAdmissionResult {
@@ -31,6 +32,7 @@ export interface TradeAdmissionResult {
   riskAmountUsd: number;
   maxLossUsd: number;
   admissionScore: number;
+  learningRiskMultiplier: number;
   maxTradeMarginUsd: number;
   maxTotalMarginUsd: number;
 }
@@ -101,12 +103,21 @@ function riskMultiplierFromConviction(finalConviction?: number): number {
   return 0.5;
 }
 
+function learningRiskMultiplier(learningAdjustment?: number): number {
+  const adjustment = learningAdjustment ?? 0;
+  if (adjustment <= -12) return 0.45;
+  if (adjustment <= -8) return 0.6;
+  if (adjustment <= -4) return 0.8;
+  return 1;
+}
+
 export class TradeAdmissionController {
   static evaluate(input: TradeAdmissionInput): TradeAdmissionResult {
     const spec = getAssetSpec(input.asset);
     const equity = estimateEquity(input.portfolio);
     const currentActiveMargin = activeMarginUsd(input.portfolio);
-    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction);
+    const learningMultiplier = learningRiskMultiplier(input.learningAdjustment);
+    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction) * learningMultiplier;
     const maxTotalMarginUsd = equity * MAX_TOTAL_MARGIN_PERCENT;
     const remainingTotalMarginRoom = Math.max(0, maxTotalMarginUsd - currentActiveMargin);
 
@@ -121,6 +132,7 @@ export class TradeAdmissionController {
       riskAmountUsd: 0,
       maxLossUsd: 0,
       admissionScore: 0,
+      learningRiskMultiplier: learningMultiplier,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     });
@@ -165,7 +177,7 @@ export class TradeAdmissionController {
       return emptyResult("Total portfolio margin cap reached.");
     }
 
-    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction);
+    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction) * learningMultiplier;
     const riskAmountUsd = equity * riskPercent;
     const usdMovePerUnit = getUsdMovePerUnit(input.asset, input.entryPrice, input.stopLoss);
 
@@ -218,7 +230,9 @@ export class TradeAdmissionController {
 
     return {
       approved: true,
-      reason: rawNotionalUsd > notionalUsd
+      reason: learningMultiplier < 1
+        ? `Approved with local-learning risk reduction (${Math.round(learningMultiplier * 100)}% size). Recent evidence is weaker, so margin is deliberately smaller.`
+        : rawNotionalUsd > notionalUsd
         ? `Approved with conviction-based capped margin. Requested risk size exceeded ${spec.assetClass} risk limits.`
         : "Approved by conviction and risk controller.",
       amount,
@@ -229,6 +243,7 @@ export class TradeAdmissionController {
       riskAmountUsd,
       maxLossUsd,
       admissionScore,
+      learningRiskMultiplier: learningMultiplier,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     };

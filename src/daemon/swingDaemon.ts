@@ -538,6 +538,7 @@ async function runEntryScan() {
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
           finalConviction: swingSignal.finalConviction,
+          learningAdjustment: swingSignal.learningAdjustment,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd: swingSignal.entryMode === "CONTROLLED_PROBE"
@@ -626,6 +627,7 @@ async function runEntryScan() {
           riskAmountUsd: admission.riskAmountUsd,
           maxLossUsd: admission.maxLossUsd,
           admissionScore: admission.admissionScore,
+          learningRiskMultiplier: admission.learningRiskMultiplier,
           strategyType: "swing",
           thesisStatus: "VALID",
           thesisReason: "Initial entry thesis is active and awaiting live follow-through.",
@@ -667,6 +669,7 @@ async function runEntryScan() {
           targetReachabilityScore: swingSignal.targetReachability?.score,
           rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
           targetAdjustedReason: swingSignal.targetReachability?.reason,
+          learningRiskMultiplier: admission.learningRiskMultiplier,
           reasoning: newPos.reasoning,
         };
 

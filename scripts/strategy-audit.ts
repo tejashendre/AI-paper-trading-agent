@@ -213,6 +213,47 @@ function auditAdmissionSizing(): AuditResult[] {
     ));
   }
 
+  const normalLearning = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 60_000,
+    stopLoss: 59_000,
+    takeProfit: 62_000,
+    signalScore: 18,
+    reasoning: "Audit normal learning risk",
+    strategyType: "swing",
+    finalConviction: 85,
+    learningAdjustment: 0,
+  });
+  const reducedLearning = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 60_000,
+    stopLoss: 59_000,
+    takeProfit: 62_000,
+    signalScore: 18,
+    reasoning: "Audit reduced learning risk",
+    strategyType: "swing",
+    finalConviction: 85,
+    learningAdjustment: -8,
+  });
+
+  checks.push(result(
+    normalLearning.approved &&
+    reducedLearning.approved &&
+    reducedLearning.learningRiskMultiplier === 0.6 &&
+    reducedLearning.requiredMarginUsd < normalLearning.requiredMarginUsd &&
+    reducedLearning.maxLossUsd < normalLearning.maxLossUsd
+      ? "PASS"
+      : "FAIL",
+    "local learning risk reduction",
+    reducedLearning.approved
+      ? `A -8 learning adjustment reduced margin from $${normalLearning.requiredMarginUsd.toFixed(2)} to $${reducedLearning.requiredMarginUsd.toFixed(2)} and planned max loss from $${normalLearning.maxLossUsd.toFixed(2)} to $${reducedLearning.maxLossUsd.toFixed(2)}.`
+      : `Learning-reduced trade was rejected: ${reducedLearning.reason}`
+  ));
+
   const portfolioWithExposure = basePortfolio({
     usd: 6_500,
     openPositions: {
