@@ -73,6 +73,7 @@ async function handleSwingTrade(request: Request) {
             takeProfit: swingSignal.takeProfit,
             signalScore: swingSignal.score,
             finalConviction: swingSignal.finalConviction,
+            learningAdjustment: swingSignal.learningAdjustment,
             reasoning: swingSignal.reasoning,
             strategyType: "swing",
           });
@@ -110,6 +111,7 @@ async function handleSwingTrade(request: Request) {
             riskAmountUsd: admission.riskAmountUsd,
             maxLossUsd: admission.maxLossUsd,
             admissionScore: admission.admissionScore,
+            learningRiskMultiplier: admission.learningRiskMultiplier,
             strategyType: "swing"
           };
 
@@ -135,6 +137,7 @@ async function handleSwingTrade(request: Request) {
             dataQuality: swingSignal.dataQuality,
             triggerScore: swingSignal.triggerScore,
             paperSize: swingSignal.paperSize,
+            learningRiskMultiplier: admission.learningRiskMultiplier,
             reasoning: newPos.reasoning
           };
 

@@ -174,6 +174,7 @@ export interface OpenPosition {
   riskAmountUsd?: number;
   maxLossUsd?: number;
   admissionScore?: number;
+  learningRiskMultiplier?: number;
   finalConviction?: number;
   decisionState?: string;
   setupTags?: string[];
@@ -260,6 +261,7 @@ export interface Trade {
   liquidityState?: string;
   paperSize?: string;
   entryMode?: 'STANDARD' | 'CONTROLLED_PROBE';
+  learningRiskMultiplier?: number;
   targetReachabilityScore?: number;
   rawTakeProfit?: number;
   targetAdjustedReason?: string;
