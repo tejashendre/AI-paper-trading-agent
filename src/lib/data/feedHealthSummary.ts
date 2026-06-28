@@ -62,14 +62,15 @@ function fallbackReport(asset: string, category: AssetFeedHealthSummary["categor
 
 function summarizeReport(asset: string, category: AssetFeedHealthSummary["category"], health: FeedHealthReport): AssetFeedHealthSummary {
   const mode = assetMode(asset, category, health);
+  const displayStatus = health.stale && health.status === "GOOD" ? "DEGRADED" : health.status;
   const safeForSwingExecution = health.status !== "BAD" && !health.stale && health.score >= 50;
-  const safeForFastExecution = mode === "REALTIME_FAST" && health.status === "GOOD" && health.score >= 80 && !health.stale;
+  const safeForFastExecution = mode === "REALTIME_FAST" && displayStatus === "GOOD" && health.score >= 80 && !health.stale;
 
   return {
     asset,
     category,
     mode,
-    status: health.status,
+    status: displayStatus,
     score: health.score,
     source: health.primarySource,
     stale: health.stale,

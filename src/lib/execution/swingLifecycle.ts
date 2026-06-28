@@ -716,8 +716,10 @@ export async function sweepSwingExits(
             if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
             if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
             await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-            await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
-            result.trailed++;
+            if (sltp.newStopLoss || sltp.newTakeProfit) {
+              await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
+              result.trailed++;
+            }
             await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
           } else if (thesisReview.updated) {
             await PortfolioManager.updatePortfolio(portfolio, portfolioType);
@@ -728,8 +730,10 @@ export async function sweepSwingExits(
         if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
         if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-        await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
-        result.trailed++;
+        if (sltp.newStopLoss || sltp.newTakeProfit) {
+          await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
+          result.trailed++;
+        }
         await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
       } else {
         await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);

@@ -491,7 +491,8 @@ function scoreMarketStructureLiquidity(
   const permittedState =
     state === "SELL_SIDE_SWEEP_RECLAIM" ||
     state === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
-    state === "BUY_SIDE_SWEEP_REJECTION";
+    state === "BUY_SIDE_SWEEP_REJECTION" ||
+    state === "SELL_SIDE_BREAKDOWN_CONTINUATION";
   const aligned = permittedState && boundedScore >= 2;
   const reason = aligned
     ? `Market structure is ${state === "NEUTRAL" ? "neutral" : state.toLowerCase().replace(/_/g, " ")} with liquidity score ${boundedScore}.`
