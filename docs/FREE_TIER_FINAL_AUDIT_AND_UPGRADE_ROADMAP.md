@@ -1670,3 +1670,41 @@ Let winners continue, but make repeated losers smaller and harder to approve.
 ```
 
 That is how the system becomes more professional without becoming frozen or black-boxed.
+
+---
+
+## Kaggle Layer Final Hardening - June 30, 2026
+
+This pass focused only on the Kaggle/public evidence layer. The trading core was intentionally left untouched.
+
+### Fixes Completed
+
+- Hardened the read-only MCP server against current live API shapes.
+- Allowed MCP scan summaries and paper sizing values to accept object/string values instead of crashing on strict types.
+- Fixed MCP realized PnL calculation to read either `realizedPnl` or `pnl`, matching the dashboard trade records.
+- Fixed MCP data-health filtering so uppercase statuses such as `GOOD`, `DEGRADED`, and `BAD` are handled correctly.
+- Hardened the ADK-style reviewer agent so it can read the current object-shaped `aiPortfolio` structure, including `openPositions`, `swingPositions`, `scalpPositions`, and keyed position maps.
+- Fixed reviewer feed-health checks so uppercase `BAD` statuses are detected.
+- Rewrote the Kaggle submission workspace README in clean ASCII with direct evidence mapping.
+- Rewrote the final Kaggle submission checklist with the real GitHub link, live demo link, video tasks, screenshot tasks, and DuckDNS fallback warning.
+- Removed unresolved placeholders from the video script.
+
+### Current Kaggle Readiness
+
+The project now clearly demonstrates all six listed concepts:
+
+1. Agent / multi-agent system through the read-only reviewer agent.
+2. MCP Server through the read-only JSON-RPC server.
+3. Antigravity through the planned video segment.
+4. Security features through paper-only operation, read-only tools, env examples, and admin/spectator separation.
+5. Deployability through the live VPS dashboard and repository deployment files.
+6. Agent skills through the CLI commands for status, scan explanation, and strategy audit.
+
+### Remaining Human-Only Work
+
+- Record and upload the YouTube video.
+- Take screenshots for the Kaggle media gallery.
+- Paste the writeup into Kaggle.
+- Verify the final public GitHub and live demo links from a fresh browser.
+
+The DuckDNS URL is acceptable as a live prototype link, but strict school or corporate networks may block dynamic DNS domains. For judging reliability, the YouTube video and GitHub repository should be treated as the primary evidence, with the live dashboard as an additional demo link.

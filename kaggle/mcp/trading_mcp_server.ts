@@ -66,7 +66,7 @@ interface ScanResult {
   marketStructureScore?: number;
   dataQuality?: number;
   finalConviction?: number;
-  paperSize?: number;
+  paperSize?: string | number | null;
   liquidityState?: string;
   entryGate?: {
     primaryBlocker?: string;
@@ -77,7 +77,7 @@ interface ScanResult {
 interface SwingScan {
   scanId: string;
   completedAt: string;
-  summary?: string;
+  summary?: unknown;
   results: ScanResult[];
   exitSweep?: unknown;
   opportunitySweep?: unknown;
@@ -105,7 +105,7 @@ interface LearningDigest {
   boostCount?: number;
   cautionCount?: number;
   bestSetup?: string;
-  plainFindings?: string;
+  plainFindings?: string | string[];
 }
 
 interface StatusResponse {
@@ -137,6 +137,15 @@ function asNumber(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function statusEquals(value: unknown, expected: string): boolean {
+  return typeof value === 'string' && value.toUpperCase() === expected.toUpperCase();
+}
+
+function tradePnl(value: unknown): number {
+  const trade = asRecord(value);
+  return asNumber(trade.realizedPnl) ?? asNumber(trade.pnl) ?? 0;
 }
 
 function normalizePosition(value: unknown): PortfolioEntry | null {
@@ -237,13 +246,9 @@ async function getPortfolioStatus(): Promise<Record<string, unknown>> {
   const aiTrades = status.aiTrades || [];
   const userTrades = status.userTrades || [];
 
-  // Calculate realized PnL from closed trades
-  let aiRealizedPnl = 0;
-  for (const trade of aiTrades as Array<Record<string, unknown>>) {
-    if (trade.realizedPnl && typeof trade.realizedPnl === 'number') {
-      aiRealizedPnl += trade.realizedPnl;
-    }
-  }
+  const aiRealizedPnl = Array.isArray(aiTrades)
+    ? aiTrades.reduce<number>((sum, trade) => sum + tradePnl(trade), 0)
+    : 0;
 
   return {
     btcPrice: status.btcPrice ?? null,
@@ -324,8 +329,8 @@ async function getDataHealth(): Promise<Record<string, unknown>> {
     return { error: 'No feed health data available' };
   }
 
-  const degradedAssets = (health.assets || []).filter((a) => a.status === 'degraded');
-  const badAssets = (health.assets || []).filter((a) => a.status === 'bad');
+  const degradedAssets = (health.assets || []).filter((a) => statusEquals(a.status, 'DEGRADED'));
+  const badAssets = (health.assets || []).filter((a) => statusEquals(a.status, 'BAD'));
 
   return {
     summary: health.summary,
