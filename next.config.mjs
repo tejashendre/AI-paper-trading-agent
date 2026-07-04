@@ -2,16 +2,24 @@
 const nextConfig = {
     reactStrictMode: true,
     async redirects() {
+        const canonicalHost = 'trader.tejashendre.com';
+        const allowedHosts = [
+            canonicalHost.replace(/\./g, '\\.'),
+            'localhost',
+            '127\\.0\\.0\\.1',
+            '.*\\.trycloudflare\\.com',
+        ].join('|');
+
         return [
             {
                 source: '/:path*',
                 has: [
                     {
                         type: 'host',
-                        value: '(?!(ai-quant-trader\\.duckdns\\.org|localhost|.*\\.trycloudflare\\.com)).*',
+                        value: `(?!(?:${allowedHosts})$).*`,
                     },
                 ],
-                destination: 'https://ai-quant-trader.duckdns.org/:path*',
+                destination: `https://${canonicalHost}/:path*`,
                 permanent: true,
             },
         ];
