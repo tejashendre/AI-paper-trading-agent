@@ -17,6 +17,7 @@ export interface PortfolioGuardDecision {
   approved: boolean;
   reason: string;
   mode: PortfolioExposureMode;
+  recoveryProbe: boolean;
   activeSwingCount: number;
   sameDirectionCount: number;
   weakDataCount: number;
@@ -93,6 +94,7 @@ function emptyDecision(input: PortfolioGuardInput, reason: string): PortfolioGua
     approved: false,
     reason,
     mode,
+    recoveryProbe: false,
     activeSwingCount: positions.length,
     sameDirectionCount: positions.filter((position) => position.direction === input.direction).length,
     weakDataCount: positions.filter((position) => Number(position.dataQuality || 0) < 80).length,
@@ -122,6 +124,7 @@ export class PortfolioGuards {
       approved: true,
       reason: "Portfolio exposure allows this new swing attempt.",
       mode,
+      recoveryProbe: false,
       activeSwingCount,
       sameDirectionCount,
       weakDataCount,
@@ -162,10 +165,11 @@ export class PortfolioGuards {
       }
 
       if (Number(input.finalConviction || 0) < 82) {
-        return emptyDecision(
-          input,
-          `Local learning says this asset/setup has been weak recently; it now needs 82+ conviction to trade.`
-        );
+        return {
+          ...decision,
+          recoveryProbe: true,
+          reason: "Local learning is cautious on this asset/setup, so the bot may only take a smaller recovery probe instead of blocking the trade completely.",
+        };
       }
     }
 

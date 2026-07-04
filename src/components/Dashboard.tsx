@@ -130,6 +130,43 @@ function plainTradeReviewOutcome(outcome?: string) {
   }
 }
 
+function exitReasonLabel(reason?: string) {
+  switch (String(reason || "").toUpperCase()) {
+    case "STOP_LOSS":
+      return "SL HIT";
+    case "TAKE_PROFIT":
+      return "TP HIT";
+    case "TRAILING_STOP_PROFIT":
+    case "PROFIT_TRAIL":
+      return "TRAILING PROFIT";
+    case "BREAKEVEN_STOP":
+      return "BREAKEVEN EXIT";
+    case "SIGNAL_INVALIDATION":
+      return "THESIS INVALID";
+    case "SIGNAL_REVERSAL":
+      return "REVERSAL EXIT";
+    default:
+      return "CLOSED";
+  }
+}
+
+function readableTradeAction(t: any, rawAction: string, hasClosedPnl: boolean) {
+  const action = rawAction.toUpperCase();
+  const direction = String(t?.direction || "").toUpperCase();
+  const isShort = direction === "SHORT" || action === "SHORT" || action === "SCALP_SHORT" || action === "COVER";
+  const isExit = hasClosedPnl || Boolean(t?.exitReason) || action === "SELL" || action === "COVER";
+
+  if (isExit) {
+    return `EXIT - ${exitReasonLabel(t?.exitReason)}`;
+  }
+
+  if (action.startsWith("SCALP_")) {
+    return isShort ? "SCALP SHORT" : "SCALP LONG";
+  }
+
+  return isShort ? "SHORT ENTRY" : "LONG ENTRY";
+}
+
 function dataHealthBadgeClass(status?: string, isDark?: boolean) {
   if (status === "GOOD") {
     return isDark ? "text-emerald-300 border-emerald-900/50 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50";
@@ -887,8 +924,11 @@ function DashboardContent({ secret }: { secret: string }) {
                       const amount = Number(t?.amount || 0);
                       const usdValue = Number(t?.usdValue || amount * price || 0);
                       const pnl = t?.pnl === undefined || t?.pnl === null ? null : Number(t.pnl);
+                      const hasClosedPnl = pnl !== null && Number.isFinite(pnl);
                       const pnlPercent = t?.pnlPercent === undefined || t?.pnlPercent === null ? null : Number(t.pnlPercent);
                       const isScalp = action.startsWith("SCALP_");
+                      const displayAction = readableTradeAction(t, action, hasClosedPnl);
+                      const actionIsPositive = hasClosedPnl ? Number(pnl) >= 0 : displayAction.includes("LONG") || action.includes("BUY") || action.includes("COVER");
                       const date = new Date(t?.timestamp || Date.now());
                       const validDate = Number.isFinite(date.getTime());
                       const dateStr = validDate ? date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }) : "--";
@@ -916,11 +956,11 @@ function DashboardContent({ secret }: { secret: string }) {
                           <div className="flex justify-between items-center text-[10px] font-mono">
                             <div className="flex items-center gap-1.5">
                               <span className={`font-bold px-1 py-0.5 rounded text-[8px] border ${
-                                action.includes("BUY") || action.includes("COVER")
+                                actionIsPositive
                                   ? (isDark ? 'bg-emerald-950/40 text-emerald-400 border-emerald-900/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200')
                                   : (isDark ? 'bg-rose-950/40 text-rose-400 border-rose-900/30' : 'bg-rose-50 text-rose-700 border-rose-200')
                               }`}>
-                                {action}
+                                {displayAction}
                               </span>
                               <span className={textSub}>${price.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
                               <span className="text-[9px] text-slate-500 font-semibold">
@@ -937,8 +977,8 @@ function DashboardContent({ secret }: { secret: string }) {
 
                           {/* Bottom Row: Outcome P&L (if closed) or "Opened" state */}
                           <div className="flex justify-between items-center text-[10px]">
-                            <span className={textMuted}>Outcome:</span>
-                            {pnl !== null && Number.isFinite(pnl) ? (
+                            <span className={textMuted}>{hasClosedPnl ? "Exit Result:" : "Plan:"}</span>
+                            {hasClosedPnl ? (
                               <span className={`font-bold font-mono ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
                                 {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{Number.isFinite(pnlPercent) ? pnlPercent?.toFixed(2) : "0.00"}%)
                               </span>
