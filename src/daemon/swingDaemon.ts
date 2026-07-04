@@ -529,6 +529,18 @@ async function runEntryScan() {
           continue;
         }
 
+        const recoveryProbe = portfolioGuard.recoveryProbe === true;
+        const requestedMarginUsd = recoveryProbe
+          ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
+          : swingSignal.entryMode === "CONTROLLED_PROBE"
+            ? Math.max(150, Math.min(1_000, portfolio.usd * 0.10))
+            : undefined;
+        const effectiveEntryMode = recoveryProbe ? "CONTROLLED_PROBE" : swingSignal.entryMode;
+        const effectivePaperSize = recoveryProbe ? "Probe" : swingSignal.paperSize;
+        const recoveryProbeReason = recoveryProbe
+          ? `Local learning is cautious, so this is a smaller recovery probe instead of a full-size retry. ${portfolioGuard.reason}`
+          : "";
+
         const admission = TradeAdmissionController.evaluate({
           portfolio,
           asset,
@@ -541,9 +553,7 @@ async function runEntryScan() {
           learningAdjustment: swingSignal.learningAdjustment,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
-          requestedMarginUsd: swingSignal.entryMode === "CONTROLLED_PROBE"
-            ? Math.max(150, Math.min(1_000, portfolio.usd * 0.10))
-            : undefined,
+          requestedMarginUsd,
         });
 
         if (!admission.approved) {
@@ -572,7 +582,7 @@ async function runEntryScan() {
             slippagePercent: swingSignal.slippagePercent,
             stopLoss: swingSignal.stopLoss,
             takeProfit: swingSignal.takeProfit,
-            paperSize: swingSignal.paperSize,
+            paperSize: effectivePaperSize,
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
@@ -616,9 +626,9 @@ async function runEntryScan() {
           openInterest: swingSignal.openInterest,
           orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
-          paperSize: swingSignal.paperSize,
-          entryMode: swingSignal.entryMode,
-          reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${admission.reason}`,
+          paperSize: effectivePaperSize,
+          entryMode: effectiveEntryMode,
+          reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${recoveryProbeReason ? `${recoveryProbeReason} | ` : ""}${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
           isScalp: false,
           entryFeePaid: admission.entryFeeUsd,
@@ -664,8 +674,8 @@ async function runEntryScan() {
           openInterest: swingSignal.openInterest,
           orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           liquidityState: swingSignal.liquidityState,
-          paperSize: swingSignal.paperSize,
-          entryMode: swingSignal.entryMode,
+          paperSize: effectivePaperSize,
+          entryMode: effectiveEntryMode,
           targetReachabilityScore: swingSignal.targetReachability?.score,
           rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
           targetAdjustedReason: swingSignal.targetReachability?.reason,
@@ -703,8 +713,8 @@ async function runEntryScan() {
           takeProfit: swingSignal.takeProfit,
           margin: admission.requiredMarginUsd,
           leverage: admission.leverage,
-          paperSize: swingSignal.paperSize,
-          entryMode: swingSignal.entryMode,
+          paperSize: effectivePaperSize,
+          entryMode: effectiveEntryMode,
           riskMode: swingSignal.riskMode,
           assetMode: swingSignal.assetMode,
           setupTags: swingSignal.setupTags,
