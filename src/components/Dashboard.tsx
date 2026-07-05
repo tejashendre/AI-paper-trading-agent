@@ -2197,6 +2197,7 @@ function DashboardContent({ secret }: { secret: string }) {
 
         {/* Subtle Secure Admin Controls Footer */}
         <div className={`mt-12 pt-6 border-t border-dashed ${borderCol} flex flex-col sm:flex-row justify-between items-center text-[10px] font-mono gap-4`}>
+          {!isSpectator && (
           <div>
             <button 
               onClick={handleReset} 
@@ -2208,6 +2209,7 @@ function DashboardContent({ secret }: { secret: string }) {
               ⚠️ RESET ARENA DATABASE
             </button>
           </div>
+          )}
           <div className={textMuted}>
             QUANT TRADING TERMINAL • SECURED SIMULATION ENVIRONMENT
           </div>
