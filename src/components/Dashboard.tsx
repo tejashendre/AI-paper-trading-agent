@@ -622,11 +622,22 @@ function DashboardContent({ secret }: { secret: string }) {
                 </span>
               </div>
             </div>
-            <span className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase ${
-              isDark ? "border-blue-900/40 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"
-            }`}>
-              Public Dashboard
-            </span>
+            <div className="flex items-center gap-2">
+              <span className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase ${
+                isDark ? "border-blue-900/40 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"
+              }`}>
+                Public Dashboard
+              </span>
+              <button
+                onClick={() => { window.location.href = "/?login=1"; }}
+                className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase transition ${
+                  isDark ? "border-slate-800 text-slate-400 bg-[#07070a] hover:text-slate-200 hover:border-slate-600" : "border-slate-200 text-slate-600 bg-white hover:text-slate-900 hover:border-slate-300"
+                }`}
+                title="Open private admin login"
+              >
+                Admin Login
+              </button>
+            </div>
           </div>
         )}
 
@@ -1774,6 +1785,7 @@ function DashboardContent({ secret }: { secret: string }) {
             )}
 
             {/* Expanded AI Confluence Analysis Panel with Tooltips */}
+            {!isSpectator && (
             <div className={`border rounded-2xl p-5 space-y-4 relative ${bgCard}`}>
               <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
                 <h2 className={`text-[10px] font-bold font-mono flex items-center gap-1.5 ${textSub}`}>
@@ -1888,6 +1900,7 @@ function DashboardContent({ secret }: { secret: string }) {
                 <p className={`text-xs font-mono italic ${textMuted}`}>Awaiting live scan data to compile signals...</p>
               )}
             </div>
+            )}
             </div>
 </div>
 
@@ -2116,6 +2129,62 @@ function DashboardContent({ secret }: { secret: string }) {
                 );
               })()}
             </div>
+
+            {/* Compact AI Confluence Summary placed near positions for fast reading */}
+            {viewMode === "ai" && (
+              <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
+                <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
+                  <h2 className={`text-[10px] font-bold font-mono uppercase tracking-wider ${textSub}`}>
+                    AI Confluence Now
+                  </h2>
+                  <span className={`text-[9px] px-2 py-0.5 border rounded font-mono uppercase ${
+                    signals?.composite
+                      ? (isDark ? "bg-blue-950/20 border-blue-900/40 text-blue-300" : "bg-blue-50 border-blue-200 text-blue-700")
+                      : (isDark ? "bg-neutral-900 border-[#1c1c24] text-slate-400" : "bg-neutral-100 border-[#e2e8f0] text-[#475569]")
+                  }`}>
+                    {signals?.composite ? "Live Read" : "Waiting"}
+                  </span>
+                </div>
+
+                {signals?.composite ? (
+                  <div className="space-y-3 font-mono">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className={`p-2.5 rounded-xl border ${bgSubCard}`}>
+                        <div className={`text-[8px] uppercase ${textMuted}`}>Action</div>
+                        <div className={`mt-1 text-xs font-bold ${
+                          signals.composite.action === "BUY" ? "text-emerald-500" :
+                          signals.composite.action === "SHORT" ? "text-red-500" :
+                          signals.composite.action === "SELL" || signals.composite.action === "COVER" ? "text-amber-500" :
+                          textPrimary
+                        }`}>
+                          {signals.composite.action}
+                        </div>
+                      </div>
+                      <div className={`p-2.5 rounded-xl border ${bgSubCard}`}>
+                        <div className={`text-[8px] uppercase ${textMuted}`}>Score</div>
+                        <div className={`mt-1 text-xs font-bold ${textPrimary}`}>
+                          {signals.composite.totalScore.toFixed(0)}
+                        </div>
+                      </div>
+                      <div className={`p-2.5 rounded-xl border ${bgSubCard}`}>
+                        <div className={`text-[8px] uppercase ${textMuted}`}>Market</div>
+                        <div className={`mt-1 text-[10px] font-bold ${textPrimary}`}>
+                          {signals.composite.regime === "CHOPPY" ? "NO CLEAR TREND" : signals.composite.regime.replaceAll("_", " ")}
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`rounded-xl border p-3 ${bgSubCard}`}>
+                      <div className={`text-[8px] uppercase font-bold mb-1 ${textMuted}`}>Plain reason</div>
+                      <p className={`text-[10px] leading-relaxed ${textSub}`}>
+                        {signals.composite.reasoning || "The bot is waiting for enough evidence before opening or changing a position."}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className={`text-xs font-mono italic ${textMuted}`}>Waiting for the next live scan to publish a clear buy, sell, or hold read.</p>
+                )}
+              </div>
+            )}
 
             
           </div>
