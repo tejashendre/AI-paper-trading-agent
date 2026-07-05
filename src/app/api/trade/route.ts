@@ -74,6 +74,7 @@ async function handleSwingTrade(request: Request) {
             signalScore: swingSignal.score,
             finalConviction: swingSignal.finalConviction,
             learningAdjustment: swingSignal.learningAdjustment,
+            setupTags: swingSignal.setupTags,
             reasoning: swingSignal.reasoning,
             strategyType: "swing",
           });
@@ -108,6 +109,8 @@ async function handleSwingTrade(request: Request) {
             isScalp: false,
             notionalUsd: admission.notionalUsd,
             leverageUsed: admission.leverage,
+            setupRiskMultiplier: admission.setupRiskMultiplier,
+            setupRiskReason: admission.setupRiskReason,
             riskAmountUsd: admission.riskAmountUsd,
             maxLossUsd: admission.maxLossUsd,
             admissionScore: admission.admissionScore,

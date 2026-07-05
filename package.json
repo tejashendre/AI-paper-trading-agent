@@ -16,7 +16,6 @@
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.106.2",
-        "@vercel/analytics": "^1.6.1",
         "ccxt": "^4.5.56",
         "date-fns": "^3.6.0",
         "ioredis": "^5.11.0",

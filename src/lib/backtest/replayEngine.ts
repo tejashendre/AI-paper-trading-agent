@@ -471,6 +471,7 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
     takeProfit: 104,
     signalScore: 14,
     finalConviction: 14,
+    setupTags: ["VWAP_RECLAIM", "LIVE_BREAK_CONFIRMATION"],
     reasoning: "Replay weak-score admission guard",
     strategyType: "swing",
   });
@@ -620,6 +621,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
           takeProfit,
           signalScore: signal.htfScore,
           finalConviction: signal.finalConviction,
+          setupTags: signal.setupTags,
           reasoning: "Replay strategy admission",
           strategyType: "swing",
         });

@@ -18,6 +18,9 @@ export interface SetupPerformanceBucket {
   favorableOpportunities: number;
   opportunityFavorableRate: number;
   avgOpportunityMove: number;
+  avgOpportunityNetPnlUsd: number;
+  avgOpportunityNetReturnPercent: number;
+  opportunityProfitFactor: number | null;
   confidenceAdjustment: number;
   evidence: PerformanceSide[];
 }
@@ -35,7 +38,11 @@ export interface SetupPerformanceSummary {
   plainFindings: string[];
 }
 
-interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "opportunityFavorableRate" | "evidence"> {
+interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
+  grossOpportunityProfitUsd: number;
+  grossOpportunityLossUsd: number;
+  opportunityNetPnlTotalUsd: number;
+  opportunityNetReturnTotalPercent: number;
   evidence: Set<PerformanceSide>;
 }
 
@@ -52,6 +59,10 @@ function emptyBucket(key: string): MutableBucket {
     opportunityCount: 0,
     favorableOpportunities: 0,
     avgOpportunityMove: 0,
+    grossOpportunityProfitUsd: 0,
+    grossOpportunityLossUsd: 0,
+    opportunityNetPnlTotalUsd: 0,
+    opportunityNetReturnTotalPercent: 0,
     confidenceAdjustment: 0,
     evidence: new Set(),
   };
@@ -97,14 +108,20 @@ function addTrade(bucket: MutableBucket, trade: Trade) {
   }
 }
 
-function addOpportunity(bucket: MutableBucket, stats: { total?: number; favorable?: number; avgMove?: number }) {
+function addOpportunity(bucket: MutableBucket, stats: { total?: number; favorable?: number; avgMove?: number; avgNetPnlUsd?: number; avgNetReturnPercent?: number; grossProfitUsd?: number; grossLossUsd?: number }) {
   const total = Number(stats.total || 0);
   const favorable = Number(stats.favorable || 0);
   const avgMove = Number(stats.avgMove || 0);
+  const avgNetPnlUsd = Number.isFinite(Number(stats.avgNetPnlUsd)) ? Number(stats.avgNetPnlUsd) : avgMove;
+  const avgNetReturnPercent = Number.isFinite(Number(stats.avgNetReturnPercent)) ? Number(stats.avgNetReturnPercent) : avgMove;
 
   bucket.opportunityCount += total;
   bucket.favorableOpportunities += favorable;
   bucket.avgOpportunityMove += avgMove * total;
+  bucket.opportunityNetPnlTotalUsd += avgNetPnlUsd * total;
+  bucket.opportunityNetReturnTotalPercent += avgNetReturnPercent * total;
+  bucket.grossOpportunityProfitUsd += Number(stats.grossProfitUsd || 0);
+  bucket.grossOpportunityLossUsd += Number(stats.grossLossUsd || 0);
   bucket.evidence.add("opportunity");
 }
 
@@ -118,12 +135,19 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
       : 0;
   const opportunityFavorableRate = bucket.opportunityCount > 0 ? bucket.favorableOpportunities / bucket.opportunityCount : 0;
   const avgOpportunityMove = bucket.opportunityCount > 0 ? bucket.avgOpportunityMove / bucket.opportunityCount : 0;
+  const avgOpportunityNetPnlUsd = bucket.opportunityCount > 0 ? bucket.opportunityNetPnlTotalUsd / bucket.opportunityCount : 0;
+  const avgOpportunityNetReturnPercent = bucket.opportunityCount > 0 ? bucket.opportunityNetReturnTotalPercent / bucket.opportunityCount : 0;
+  const opportunityProfitFactor = bucket.grossOpportunityLossUsd > 0
+    ? bucket.grossOpportunityProfitUsd / bucket.grossOpportunityLossUsd
+    : bucket.grossOpportunityProfitUsd > 0
+      ? null
+      : 0;
 
   let confidenceAdjustment = 0;
   if (bucket.tradeCount >= 3 && winRate >= 0.6 && avgPnl > 0) confidenceAdjustment += 5;
   if (bucket.tradeCount >= 3 && (winRate <= 0.35 || avgPnl < 0)) confidenceAdjustment -= 8;
-  if (bucket.opportunityCount >= 6 && opportunityFavorableRate >= 0.62 && avgOpportunityMove > 0.05) confidenceAdjustment += 3;
-  if (bucket.opportunityCount >= 6 && (opportunityFavorableRate <= 0.35 || avgOpportunityMove < -0.05)) confidenceAdjustment -= 4;
+  if (bucket.opportunityCount >= 6 && opportunityFavorableRate >= 0.62 && avgOpportunityNetPnlUsd > 0) confidenceAdjustment += 3;
+  if (bucket.opportunityCount >= 6 && (opportunityFavorableRate <= 0.35 || avgOpportunityNetPnlUsd < 0)) confidenceAdjustment -= 4;
 
   return {
     ...bucket,
@@ -132,6 +156,9 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
     avgPnl,
     opportunityFavorableRate,
     avgOpportunityMove,
+    avgOpportunityNetPnlUsd,
+    avgOpportunityNetReturnPercent,
+    opportunityProfitFactor,
     confidenceAdjustment,
     evidence: Array.from(bucket.evidence),
   };
@@ -147,8 +174,8 @@ function upsert(map: Map<string, MutableBucket>, key: string) {
 
 function sortBuckets(buckets: SetupPerformanceBucket[]) {
   return buckets.sort((a, b) => {
-    const scoreA = a.realizedPnl + a.avgOpportunityMove * Math.min(a.opportunityCount, 20);
-    const scoreB = b.realizedPnl + b.avgOpportunityMove * Math.min(b.opportunityCount, 20);
+    const scoreA = a.realizedPnl + a.avgOpportunityNetPnlUsd * Math.min(a.opportunityCount, 20);
+    const scoreB = b.realizedPnl + b.avgOpportunityNetPnlUsd * Math.min(b.opportunityCount, 20);
     return scoreB - scoreA;
   });
 }
@@ -202,7 +229,7 @@ export class SetupPerformance {
     const bucketsWithEvidence = setupBuckets.filter((bucket) => bucket.tradeCount > 0 || bucket.opportunityCount > 0);
     const bestSetup = bucketsWithEvidence[0] || null;
     const worstSetup = bucketsWithEvidence.length > 1
-      ? [...bucketsWithEvidence].sort((a, b) => (a.realizedPnl + a.avgOpportunityMove) - (b.realizedPnl + b.avgOpportunityMove))[0]
+      ? [...bucketsWithEvidence].sort((a, b) => (a.realizedPnl + a.avgOpportunityNetPnlUsd) - (b.realizedPnl + b.avgOpportunityNetPnlUsd))[0]
       : null;
 
     const summaryWithoutFindings = {

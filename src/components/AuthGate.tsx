@@ -14,10 +14,25 @@ export function createAuthFetch(secret: string) {
 export function AuthGate({ children }: { children: (secret: string) => React.ReactNode }) {
   const [secret, setSecret] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const adminRequested = params.has("login") || params.has("admin");
+    if (adminRequested) {
+      localStorage.removeItem("dashboard_secret");
+      setShowLogin(true);
+      return;
+    }
+
     const saved = localStorage.getItem("dashboard_secret");
-    if (saved) setSecret(saved);
+    if (saved) {
+      setSecret(saved);
+      return;
+    }
+
+    localStorage.setItem("dashboard_secret", "SPECTATOR");
+    setSecret("SPECTATOR");
   }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -35,6 +50,16 @@ export function AuthGate({ children }: { children: (secret: string) => React.Rea
 
   if (secret) {
     return <>{children(secret)}</>;
+  }
+
+  if (!showLogin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#050505] p-4 text-white">
+        <div className="text-center font-mono text-xs text-neutral-500">
+          Opening read-only spectator view...
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -74,6 +74,70 @@ function buildEquityCurveTrades(trades: any[]) {
         }));
 }
 
+function buildClosedTradeStats(trades: any[], initialCapital = 10_000) {
+    const closedTrades = (trades || [])
+        .filter((trade) => typeof trade?.pnl === "number" && Number.isFinite(Number(trade.pnl)))
+        .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+
+    const totalTrades = closedTrades.length;
+    const winningTrades = closedTrades.filter((trade) => Number(trade.pnl) >= 0).length;
+    const losingTrades = totalTrades - winningTrades;
+    const grossProfit = closedTrades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl || 0)), 0);
+    const grossLoss = closedTrades.reduce((sum, trade) => sum + Math.abs(Math.min(0, Number(trade.pnl || 0))), 0);
+    const totalPnl = grossProfit - grossLoss;
+    const winRate = totalTrades > 0 ? winningTrades / totalTrades : 0;
+    const averageWin = winningTrades > 0 ? grossProfit / winningTrades : 0;
+    const averageLoss = losingTrades > 0 ? grossLoss / losingTrades : 0;
+    const expectancy = totalTrades > 0 ? totalPnl / totalTrades : 0;
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0;
+
+    let equity = initialCapital;
+    let peak = initialCapital;
+    let maxDrawdown = 0;
+    let maxDrawdownPercent = 0;
+
+    for (const trade of closedTrades) {
+        equity += Number(trade.pnl || 0);
+        if (equity > peak) peak = equity;
+        const drawdown = Math.max(0, peak - equity);
+        const drawdownPercent = peak > 0 ? (drawdown / peak) * 100 : 0;
+        maxDrawdown = Math.max(maxDrawdown, drawdown);
+        maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdownPercent);
+    }
+
+    return {
+        source: "closed_trade_history",
+        totalTrades,
+        winningTrades,
+        losingTrades,
+        winRate,
+        grossProfit,
+        grossLoss,
+        profitFactor,
+        totalPnl,
+        averageWin,
+        averageLoss,
+        expectancy,
+        maxDrawdown,
+        maxDrawdownPercent,
+        latestClosedAt: closedTrades[closedTrades.length - 1]?.timestamp || null,
+    };
+}
+
+function portfolioWithClosedStats(portfolio: any, stats: ReturnType<typeof buildClosedTradeStats>) {
+    return {
+        ...portfolio,
+        totalTrades: stats.totalTrades,
+        winningTrades: stats.winningTrades,
+        losingTrades: stats.losingTrades,
+        totalPnl: stats.totalPnl,
+        grossProfit: stats.grossProfit,
+        grossLoss: stats.grossLoss,
+        maxDrawdown: stats.maxDrawdown,
+        maxDrawdownPercent: stats.maxDrawdownPercent,
+    };
+}
+
 function buildAssetBookDigest(input: {
     portfolio: any;
     profitByAsset: Record<string, { realized: number; unrealized: number; total: number }>;
@@ -361,6 +425,10 @@ export async function GET(request: Request) {
         const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
         const userEquityTrades = buildEquityCurveTrades(userTrades);
         const aiEquityTrades = buildEquityCurveTrades(aiTrades);
+        const userClosedStats = buildClosedTradeStats(userTrades, Number(userPortfolio?.initialCapital || 10_000));
+        const aiClosedStats = buildClosedTradeStats(aiTrades, Number(aiPortfolio?.initialCapital || 10_000));
+        const userPortfolioDisplay = portfolioWithClosedStats(userPortfolio, userClosedStats);
+        const aiPortfolioDisplay = portfolioWithClosedStats(aiPortfolio, aiClosedStats);
         const aiAssetBookDigest = buildAssetBookDigest({
             portfolio: aiPortfolio,
             profitByAsset: aiProfitByAsset,
@@ -414,20 +482,21 @@ export async function GET(request: Request) {
 
         return NextResponse.json({
             // User (Human) Data
-            portfolio: userPortfolio,
-            userPortfolio: userPortfolio,
+            portfolio: userPortfolioDisplay,
+            userPortfolio: userPortfolioDisplay,
             userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades, // Keep restored history visible while bounded
             userEquityTrades,
             userTotalValue: userSync.totalValue,
             userProfitByAsset,
 
             // AI Data
-            aiPortfolio: aiPortfolio,
+            aiPortfolio: aiPortfolioDisplay,
             aiTrades: isSpectator ? aiTrades.slice(0, 100) : aiTrades, // Keep restored history visible while bounded
             aiEquityTrades,
             aiTotalValue: aiSync.totalValue,
             aiProfitByAsset,
             aiDetailedStats,
+            aiClosedStats,
 
             // AI Brain Intelligence (Sanitized)
             aiReflection: isSpectator ? null : aiReflection,
@@ -438,6 +507,7 @@ export async function GET(request: Request) {
             btcPrice,
             totalValue: userSync.totalValue,
             profitByAsset: userProfitByAsset,
+            userClosedStats,
             swingScan,
             lastExitSweep,
             opportunitySummary,
