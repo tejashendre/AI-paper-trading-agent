@@ -3,6 +3,7 @@ import path from "path";
 import { getRedis } from "@/lib/redis";
 import { MarketService } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
+import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
 
 const HISTORY_KEY = "opportunity:history";
 const PENDING_KEY = "opportunity:pending";
@@ -55,6 +56,11 @@ export interface OpportunityEvaluation {
   firstHit: "TAKE_PROFIT" | "STOP_LOSS" | "NONE";
   hypotheticalOutcome: HypotheticalOutcome;
   favorable: boolean;
+  hypotheticalExitPrice?: number;
+  grossPnlUsd?: number;
+  feeDragUsd?: number;
+  netPnlUsd?: number;
+  netReturnPercent?: number;
   decision: OpportunityDecision;
   decisionState?: string;
   setupTags: string[];
@@ -212,6 +218,60 @@ function evaluateCandles(record: OpportunityRecord, candles: Candle[], currentPr
   };
 }
 
+function simulatedNetOutcome(
+  record: Pick<OpportunityRecord, "asset" | "direction" | "entryPrice" | "stopLoss" | "takeProfit">,
+  path: Pick<OpportunityEvaluation, "firstHit" | "currentPrice"> | { firstHit: OpportunityEvaluation["firstHit"]; currentPrice?: number },
+  fallbackCurrentPrice: number
+) {
+  const notionalUsd = 1_000;
+  const entryPrice = Number(record.entryPrice || 0);
+  const currentPrice = Number(path.currentPrice || fallbackCurrentPrice || 0);
+
+  if (record.direction === "NEUTRAL" || !Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return {
+      hypotheticalExitPrice: currentPrice || entryPrice,
+      grossPnlUsd: 0,
+      feeDragUsd: 0,
+      netPnlUsd: 0,
+      netReturnPercent: 0,
+    };
+  }
+
+  const stopLoss = Number(record.stopLoss || 0);
+  const takeProfit = Number(record.takeProfit || 0);
+  let hypotheticalExitPrice = currentPrice;
+
+  if (path.firstHit === "TAKE_PROFIT" && takeProfit > 0) {
+    hypotheticalExitPrice = takeProfit;
+  } else if (path.firstHit === "STOP_LOSS" && stopLoss > 0) {
+    hypotheticalExitPrice = stopLoss;
+  }
+
+  try {
+    const amount = amountFromNotionalUsd(record.asset, notionalUsd, entryPrice);
+    const grossPnlUsd = calculatePnlUsd(record.asset, entryPrice, hypotheticalExitPrice, amount, record.direction);
+    const entryFeeUsd = estimateFeeUsd(record.asset, amount, entryPrice);
+    const exitFeeUsd = estimateFeeUsd(record.asset, amount, hypotheticalExitPrice);
+    const feeDragUsd = entryFeeUsd + exitFeeUsd;
+    const netPnlUsd = grossPnlUsd - feeDragUsd;
+    return {
+      hypotheticalExitPrice,
+      grossPnlUsd,
+      feeDragUsd,
+      netPnlUsd,
+      netReturnPercent: (netPnlUsd / notionalUsd) * 100,
+    };
+  } catch {
+    return {
+      hypotheticalExitPrice,
+      grossPnlUsd: 0,
+      feeDragUsd: 0,
+      netPnlUsd: 0,
+      netReturnPercent: 0,
+    };
+  }
+}
+
 async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizon, currentPrice: number) {
   if (record.direction === "NEUTRAL") {
     return evaluateCandles(record, [], currentPrice);
@@ -297,6 +357,7 @@ export class OpportunityJournal {
 
       for (const horizon of due) {
         const path = await evaluatePath(record, horizon, currentPrice);
+        const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice }, currentPrice);
         evaluations.push({
           id: `${record.id}-${horizon}`,
           opportunityId: record.id,
@@ -314,7 +375,12 @@ export class OpportunityJournal {
           hitStopLoss: path.hitStopLoss,
           firstHit: path.firstHit,
           hypotheticalOutcome: path.hypotheticalOutcome,
-          favorable: path.favorable,
+          favorable: netOutcome.netPnlUsd > 0,
+          hypotheticalExitPrice: netOutcome.hypotheticalExitPrice,
+          grossPnlUsd: netOutcome.grossPnlUsd,
+          feeDragUsd: netOutcome.feeDragUsd,
+          netPnlUsd: netOutcome.netPnlUsd,
+          netReturnPercent: netOutcome.netReturnPercent,
           decision: record.decision,
           decisionState: record.decisionState,
           setupTags: record.setupTags,
@@ -367,43 +433,69 @@ export class OpportunityJournal {
     const redis = getRedis();
     const rows = await redis.lrange(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1);
     const evaluations = rows.map(parseEvaluation).filter(Boolean) as OpportunityEvaluation[];
-    const byAsset: Record<string, { total: number; favorable: number; avgMove: number }> = {};
-    const bySetup: Record<string, { total: number; favorable: number; avgMove: number; avgMfe: number; avgMae: number; takeProfitHits: number; stopLossHits: number }> = {};
+    const byAsset: Record<string, { total: number; favorable: number; avgMove: number; avgNetPnlUsd: number; avgNetReturnPercent: number; grossProfitUsd: number; grossLossUsd: number; profitFactor: number | null }> = {};
+    const bySetup: Record<string, { total: number; favorable: number; avgMove: number; avgMfe: number; avgMae: number; avgNetPnlUsd: number; avgNetReturnPercent: number; grossProfitUsd: number; grossLossUsd: number; profitFactor: number | null; takeProfitHits: number; stopLossHits: number }> = {};
     let bestMissed: OpportunityEvaluation | null = null;
 
     for (const evaluation of evaluations) {
-      const asset = byAsset[evaluation.asset] || { total: 0, favorable: 0, avgMove: 0 };
+      const net = Number.isFinite(Number(evaluation.netPnlUsd))
+        ? {
+          netPnlUsd: Number(evaluation.netPnlUsd),
+          netReturnPercent: Number(evaluation.netReturnPercent || 0),
+        }
+        : simulatedNetOutcome(evaluation, evaluation, Number(evaluation.currentPrice || 0));
+
+      const asset = byAsset[evaluation.asset] || { total: 0, favorable: 0, avgMove: 0, avgNetPnlUsd: 0, avgNetReturnPercent: 0, grossProfitUsd: 0, grossLossUsd: 0, profitFactor: null };
       asset.total++;
-      asset.favorable += evaluation.favorable ? 1 : 0;
+      asset.favorable += net.netPnlUsd > 0 ? 1 : 0;
       asset.avgMove += evaluation.movePercent;
+      asset.avgNetPnlUsd += net.netPnlUsd;
+      asset.avgNetReturnPercent += net.netReturnPercent;
+      if (net.netPnlUsd > 0) asset.grossProfitUsd += net.netPnlUsd;
+      else asset.grossLossUsd += Math.abs(net.netPnlUsd);
       byAsset[evaluation.asset] = asset;
 
       for (const tag of evaluation.setupTags.length ? evaluation.setupTags : ["UNTAGGED"]) {
-        const setup = bySetup[tag] || { total: 0, favorable: 0, avgMove: 0, avgMfe: 0, avgMae: 0, takeProfitHits: 0, stopLossHits: 0 };
+        const setup = bySetup[tag] || { total: 0, favorable: 0, avgMove: 0, avgMfe: 0, avgMae: 0, avgNetPnlUsd: 0, avgNetReturnPercent: 0, grossProfitUsd: 0, grossLossUsd: 0, profitFactor: null, takeProfitHits: 0, stopLossHits: 0 };
         setup.total++;
-        setup.favorable += evaluation.favorable ? 1 : 0;
+        setup.favorable += net.netPnlUsd > 0 ? 1 : 0;
         setup.avgMove += evaluation.movePercent;
         setup.avgMfe += evaluation.maxFavorableExcursion || 0;
         setup.avgMae += evaluation.maxAdverseExcursion || 0;
+        setup.avgNetPnlUsd += net.netPnlUsd;
+        setup.avgNetReturnPercent += net.netReturnPercent;
+        if (net.netPnlUsd > 0) setup.grossProfitUsd += net.netPnlUsd;
+        else setup.grossLossUsd += Math.abs(net.netPnlUsd);
         setup.takeProfitHits += evaluation.hitTakeProfit ? 1 : 0;
         setup.stopLossHits += evaluation.hitStopLoss ? 1 : 0;
         bySetup[tag] = setup;
       }
 
-      if (evaluation.decision !== "ENTRY" && (!bestMissed || evaluation.movePercent > bestMissed.movePercent)) {
+      const bestMissedNet = bestMissed ? Number(bestMissed.netPnlUsd || 0) : -Infinity;
+      if (evaluation.decision !== "ENTRY" && net.netPnlUsd > bestMissedNet) {
+        evaluation.netPnlUsd = net.netPnlUsd;
+        evaluation.netReturnPercent = net.netReturnPercent;
         bestMissed = evaluation;
       }
     }
 
-    for (const value of Object.values(byAsset)) value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
+    for (const value of Object.values(byAsset)) {
+      value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
+      value.avgNetPnlUsd = value.total > 0 ? value.avgNetPnlUsd / value.total : 0;
+      value.avgNetReturnPercent = value.total > 0 ? value.avgNetReturnPercent / value.total : 0;
+      value.profitFactor = value.grossLossUsd > 0 ? value.grossProfitUsd / value.grossLossUsd : value.grossProfitUsd > 0 ? null : 0;
+    }
     for (const value of Object.values(bySetup)) {
       value.avgMove = value.total > 0 ? value.avgMove / value.total : 0;
       value.avgMfe = value.total > 0 ? value.avgMfe / value.total : 0;
       value.avgMae = value.total > 0 ? value.avgMae / value.total : 0;
+      value.avgNetPnlUsd = value.total > 0 ? value.avgNetPnlUsd / value.total : 0;
+      value.avgNetReturnPercent = value.total > 0 ? value.avgNetReturnPercent / value.total : 0;
+      value.profitFactor = value.grossLossUsd > 0 ? value.grossProfitUsd / value.grossLossUsd : value.grossProfitUsd > 0 ? null : 0;
     }
 
     const totalEvaluated = evaluations.length;
-    const favorable = evaluations.filter((evaluation) => evaluation.favorable).length;
+    const favorable = Object.values(byAsset).reduce((sum, stats) => sum + stats.favorable, 0);
     const summary = {
       totalEvaluated,
       favorableRate: totalEvaluated > 0 ? favorable / totalEvaluated : 0,

@@ -276,7 +276,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [manualTrading, setManualTrading] = useState(false);
 
   // Competition & Countdown States
-  const [viewMode, setViewMode] = useState<"user" | "ai">("user");
+  const [viewMode, setViewMode] = useState<"user" | "ai">("ai");
   const [timeLeft, setTimeLeft] = useState("");
 
   // Client-Side Simulation States
@@ -288,6 +288,8 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
+  const [showActivityDetails, setShowActivityDetails] = useState(false);
+  const [showAssetBookDetails, setShowAssetBookDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fetcher = useCallback(async (url: string, init?: RequestInit) => {
@@ -363,16 +365,20 @@ function DashboardContent({ secret }: { secret: string }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [statusRes, chartRes, signalRes, pricesRes] = await Promise.all([
-        fetcher("/api/user/status"),
-        fetcher(`/api/chart?interval=${chartInterval}&limit=720&asset=${activeAsset}&portfolio=${viewMode}`),
-        fetcher(`/api/signals?asset=${activeAsset}`),
-        fetcher("/api/prices")
-      ]);
-      if (statusRes.ok) setData(await statusRes.json());
-      if (chartRes.ok) setChartData(await chartRes.json());
-      if (signalRes.ok) setSignals(await signalRes.json());
-      if (pricesRes.ok) { const pricesJson = await pricesRes.json(); setLivePrices(pricesJson.prices); }
+      const statusPromise = fetcher("/api/user/status")
+        .then(async (res) => { if (res.ok) setData(await res.json()); });
+      const chartPromise = fetcher(`/api/chart?interval=${chartInterval}&limit=520&asset=${activeAsset}&portfolio=${viewMode}`)
+        .then(async (res) => { if (res.ok) setChartData(await res.json()); });
+      const signalPromise = fetcher(`/api/signals?asset=${activeAsset}`)
+        .then(async (res) => { if (res.ok) setSignals(await res.json()); });
+      const pricesPromise = fetcher("/api/prices")
+        .then(async (res) => {
+          if (res.ok) {
+            const pricesJson = await res.json();
+            setLivePrices(pricesJson.prices);
+          }
+        });
+      await Promise.allSettled([statusPromise, chartPromise, signalPromise, pricesPromise]);
     } catch (e) {
       console.error(e);
     } finally {
@@ -463,6 +469,7 @@ function DashboardContent({ secret }: { secret: string }) {
     : (data?.userEquityTrades || []);
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
   const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
+  const closedStats = viewMode === "ai" ? data?.aiClosedStats : data?.userClosedStats;
   const activeLivePrice = livePrices?.[activeAsset];
 
   const handleTrade = async () => {
@@ -600,7 +607,7 @@ function DashboardContent({ secret }: { secret: string }) {
             isDark 
               ? "bg-[#0b0f19]/70 border-blue-500/25 shadow-lg shadow-blue-950/20" 
               : "bg-blue-500/5 border-blue-200 shadow-xs"
-          } rounded-xl p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3 animate-pulse`}>
+          } rounded-xl p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3`}>
             <div className="flex items-center gap-3">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
@@ -611,16 +618,15 @@ function DashboardContent({ secret }: { secret: string }) {
                   👁️ Spectator Mode Active
                 </span>
                 <span className={`text-[9px] ${isDark ? "text-slate-400" : "text-slate-600"} font-mono mt-0.5`}>
-                  You are viewing the live trading arena in secure, read-only mode.
+                  Read-only public view. Admin access is separate from the demo surface.
                 </span>
               </div>
             </div>
-            <button 
-              onClick={() => { localStorage.removeItem("dashboard_secret"); window.location.reload(); }}
-              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-mono text-[9px] uppercase font-bold rounded-lg border border-indigo-400/25 transition-all shadow-xs"
-            >
-              EXIT SPECTATOR & LOG IN
-            </button>
+            <span className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase ${
+              isDark ? "border-blue-900/40 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"
+            }`}>
+              Public Dashboard
+            </span>
           </div>
         )}
 
@@ -663,9 +669,11 @@ function DashboardContent({ secret }: { secret: string }) {
             >
               {isDark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
+            {!isSpectator && (
             <button onClick={() => { localStorage.removeItem("dashboard_secret"); window.location.reload(); }} className={`px-3.5 py-2 border rounded-xl transition-all font-mono text-[10px] font-bold ${
               isDark ? "bg-red-950/20 border-red-900/30 text-red-400 hover:bg-red-900/30" : "bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
             }`}>LOGOUT</button>
+            )}
             <button 
               onClick={refresh} 
               className={`p-2.5 rounded-xl border transition-all ${
@@ -676,8 +684,8 @@ function DashboardContent({ secret }: { secret: string }) {
             </button>
             <button 
               onClick={handleTrade} 
-              disabled={running || isSpectator} 
-              className={`flex items-center gap-2 px-5 py-2 font-bold rounded-xl shadow-lg transition-all font-mono text-xs ${
+              disabled={running}
+              className={`${isSpectator ? "hidden" : "flex"} items-center gap-2 px-5 py-2 font-bold rounded-xl shadow-lg transition-all font-mono text-xs ${
                 isSpectator 
                   ? "bg-indigo-800/40 text-indigo-400/50 border border-indigo-900/40 cursor-not-allowed" 
                   : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-950/20"
@@ -705,9 +713,15 @@ function DashboardContent({ secret }: { secret: string }) {
               {viewMode === "user" && <span className={`text-[8px] bg-indigo-500/10 text-indigo-500 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold`}>ACTIVE</span>}
             </div>
             <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.userTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            <p className={`text-[10px] font-mono font-bold mt-1 ${(data?.userPortfolio?.totalPnl || 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-              {(data?.userPortfolio?.totalPnl || 0) >= 0 ? "+" : ""}${(data?.userPortfolio?.totalPnl || 0).toFixed(2)}
-            </p>
+            {(() => {
+              const initial = Number(data?.userPortfolio?.initialCapital || 10000);
+              const pnl = Number(data?.userTotalValue || initial) - initial;
+              return (
+                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                </p>
+              );
+            })()}
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
@@ -733,9 +747,15 @@ function DashboardContent({ secret }: { secret: string }) {
               {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
             </div>
             <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.aiTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            <p className={`text-[10px] font-mono font-bold mt-1 ${(data?.aiPortfolio?.totalPnl || 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-              {(data?.aiPortfolio?.totalPnl || 0) >= 0 ? "+" : ""}${(data?.aiPortfolio?.totalPnl || 0).toFixed(2)}
-            </p>
+            {(() => {
+              const initial = Number(data?.aiPortfolio?.initialCapital || 10000);
+              const pnl = Number(data?.aiTotalValue || initial) - initial;
+              return (
+                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                </p>
+              );
+            })()}
           </button>
         </div>
 
@@ -910,7 +930,21 @@ function DashboardContent({ secret }: { secret: string }) {
             </div>
             
             {/* Logs & Execution details */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className={`border rounded-2xl p-4 ${bgCard}`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Live Activity</h2>
+                  <p className={`text-[10px] mt-1 ${textMuted}`}>Latest trades and engine messages are available on demand.</p>
+                </div>
+                <button
+                  onClick={() => setShowActivityDetails((value) => !value)}
+                  className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                >
+                  {showActivityDetails ? "HIDE ACTIVITY" : "VIEW ACTIVITY"}
+                </button>
+              </div>
+              {showActivityDetails && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
               <div className={`border rounded-2xl p-5 ${bgCard}`}>
                 <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Trade Activity Log</h2>
                 <div className={`max-h-60 overflow-y-auto space-y-2.5 font-mono text-xs ${isDark ? "custom-scroll" : ""}`}>
@@ -1043,6 +1077,8 @@ function DashboardContent({ secret }: { secret: string }) {
                   )}
                 </div>
               </div>
+              </div>
+              )}
             </div>
 
             {/* Optional Strategy Diagnostics */}
@@ -1351,6 +1387,16 @@ function DashboardContent({ secret }: { secret: string }) {
                       </div>
                     </div>
 
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        onClick={() => setShowAssetBookDetails((value) => !value)}
+                        className={`px-3 py-1.5 border text-[10px] font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                      >
+                        {showAssetBookDetails ? "HIDE ASSET BOOK" : "VIEW ASSET BOOK"}
+                      </button>
+                    </div>
+
+                    {showAssetBookDetails && (
                     <div className="mt-3 space-y-2">
                       {(data?.aiAssetBookDigest?.topWatchlist || []).slice(0, 4).map((book: any) => (
                         <div key={book.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
@@ -1367,12 +1413,13 @@ function DashboardContent({ secret }: { secret: string }) {
                             <span>Exposure: <b className={textPrimary}>{book.netExposure}</b></span>
                             <span>Data: <b className={textPrimary}>{book.dataQuality || 0}</b></span>
                             <span>Margin: <b className={textPrimary}>${Number(book.usedMargin || 0).toFixed(0)}</b></span>
-                            <span>PnL: <b className={Number(book.totalPnl || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{moneyLabel(book.totalPnl)}</b></span>
+                            <span>Hist P&L: <b className={Number(book.totalPnl || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{moneyLabel(book.totalPnl)}</b></span>
                           </div>
                           <p className={`mt-1.5 text-[9px] font-mono leading-snug ${textMuted}`}>{book.nextAction}</p>
                         </div>
                       ))}
                     </div>
+                    )}
                   </div>
                 )}
 
@@ -1382,7 +1429,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div>
                         <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Opportunity Radar</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-                          The bot now records watched setups and checks later whether they would have worked.
+                          The bot records watched setups and checks later whether they would have worked after estimated fees.
                         </p>
                       </div>
                       <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-blue-900/30 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"}`}>
@@ -1396,7 +1443,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data?.opportunitySummary?.totalEvaluated || 0}</div>
                       </div>
                       <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Helpful Moves</div>
+                        <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Net Winners</div>
                         <div className={`text-sm font-bold font-mono ${(data?.opportunitySummary?.favorableRate || 0) >= 0.5 ? "text-emerald-400" : "text-amber-400"}`}>
                           {(((data?.opportunitySummary?.favorableRate || 0) * 100)).toFixed(0)}%
                         </div>
@@ -1453,9 +1500,9 @@ function DashboardContent({ secret }: { secret: string }) {
                     <>
                     {data?.opportunitySummary?.bestMissed ? (
                       <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
-                        <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Best missed move so far</div>
+                        <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Best missed net setup</div>
                         <p className={`text-[10px] mt-1 ${textSub}`}>
-                          {data.opportunitySummary.bestMissed.asset} moved {data.opportunitySummary.bestMissed.movePercent?.toFixed?.(2)}% after the bot watched or skipped it.
+                          {data.opportunitySummary.bestMissed.asset} had a hypothetical net result of {moneyLabel(data.opportunitySummary.bestMissed.netPnlUsd)} after the bot watched or skipped it.
                           {data.opportunitySummary.bestMissed.hypotheticalOutcome
                             ? ` Outcome check: ${String(data.opportunitySummary.bestMissed.hypotheticalOutcome).replaceAll("_", " ").toLowerCase()}.`
                             : ""}
@@ -1512,7 +1559,7 @@ function DashboardContent({ secret }: { secret: string }) {
                               <span>Closed: <b className={textPrimary}>{data.setupPerformance.bestSetup.tradeCount}</b></span>
                               <span>Wins: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.winRate)}</b></span>
                               <span>Watched: <b className={textPrimary}>{data.setupPerformance.bestSetup.opportunityCount}</b></span>
-                              <span>Follow-through: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.opportunityFavorableRate)}</b></span>
+                              <span>Net wins: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.opportunityFavorableRate)}</b></span>
                             </div>
                             {(data.setupPerformance.plainFindings || []).slice(0, 2).map((finding: string) => (
                               <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
@@ -1682,6 +1729,8 @@ function DashboardContent({ secret }: { secret: string }) {
             </div>
             )}
 
+            {!isSpectator && (
+            <>
             {/* Manual Trade Input Module with absolute-positioned lock screen */}
             <div className={`border rounded-2xl p-5 space-y-4 relative overflow-hidden ${bgCard}`}>
               {isSpectator && (
@@ -1721,6 +1770,8 @@ function DashboardContent({ secret }: { secret: string }) {
                 <button onClick={() => handleManualTrade('COVER')} className={`px-3 py-2 rounded-lg text-xs font-bold font-mono border ${btnGreyStyle}`}>COVER SHORT</button>
               </div>
             </div>
+            </>
+            )}
 
             {/* Expanded AI Confluence Analysis Panel with Tooltips */}
             <div className={`border rounded-2xl p-5 space-y-4 relative ${bgCard}`}>
@@ -1886,14 +1937,15 @@ function DashboardContent({ secret }: { secret: string }) {
               <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>
                 Performance Statistics
               </h2>
+              <p className={`text-[9px] font-mono ${textMuted}`}>Closed trade history only. Active trade P&L is shown in Active Positions.</p>
               <div className="grid grid-cols-2 gap-3">
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
                   <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Win Rate</span>
                   <span className={`text-md font-bold font-mono mt-1 ${textPrimary}`}>
-                    {(portfolio?.totalTrades > 0 ? (portfolio.winningTrades / portfolio.totalTrades) * 100 : 0).toFixed(1)}%
+                    {(((closedStats?.winRate || 0) * 100)).toFixed(1)}%
                   </span>
                   <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
-                    {portfolio?.winningTrades || 0}W - {portfolio?.losingTrades || 0}L
+                    {closedStats?.winningTrades || 0}W - {closedStats?.losingTrades || 0}L
                   </span>
                 </div>
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
@@ -2036,7 +2088,7 @@ function DashboardContent({ secret }: { secret: string }) {
                             </div>
                           )}
                           <div className={`flex justify-between items-center pt-1 border-t ${borderCol}`}>
-                            <span className={`text-[10px] font-mono ${textMuted}`}>PnL:</span>
+                            <span className={`text-[10px] font-mono ${textMuted}`}>Active P&L:</span>
                             <span className={`font-mono text-xs font-bold ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
                               {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)
                             </span>

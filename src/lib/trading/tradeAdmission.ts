@@ -19,6 +19,7 @@ export interface TradeAdmissionInput {
   requestedMarginUsd?: number;
   finalConviction?: number;
   learningAdjustment?: number;
+  setupTags?: string[];
 }
 
 export interface TradeAdmissionResult {
@@ -33,6 +34,8 @@ export interface TradeAdmissionResult {
   maxLossUsd: number;
   admissionScore: number;
   learningRiskMultiplier: number;
+  setupRiskMultiplier: number;
+  setupRiskReason: string;
   maxTradeMarginUsd: number;
   maxTotalMarginUsd: number;
 }
@@ -111,13 +114,65 @@ function learningRiskMultiplier(learningAdjustment?: number): number {
   return 1;
 }
 
+function setupRiskProfile(input: TradeAdmissionInput): { multiplier: number; reason: string } {
+  const tags = (input.setupTags || []).map((tag) => String(tag).toUpperCase());
+  const hasTag = (...needles: string[]) => tags.some((tag) => needles.some((needle) => tag.includes(needle)));
+  const conviction = Number(input.finalConviction || 0);
+  const learningAdjustment = Number(input.learningAdjustment || 0);
+  const reasons: string[] = [];
+  let multiplier = 1;
+
+  const longContinuation =
+    input.direction === "LONG" &&
+    hasTag(
+      "VWAP_RECLAIM",
+      "LIVE_BREAK_CONFIRMATION",
+      "5M_DIRECTIONAL_BODY",
+      "BUY_SIDE_BREAKOUT_CONTINUATION",
+      "MOMENTUM_CONTINUATION",
+      "STRUCTURAL UPTREND"
+    );
+
+  if (longContinuation) {
+    const haircut = conviction >= 88 && learningAdjustment >= 0 ? 0.8 : 0.65;
+    multiplier *= haircut;
+    reasons.push("long-continuation/reclaim evidence is sized smaller until its closed-trade expectancy improves");
+  }
+
+  const provenRejection =
+    input.direction === "SHORT" &&
+    hasTag(
+      "VWAP_REJECTION",
+      "BUY_SIDE_LIQUIDITY_REJECTION",
+      "SELL_SIDE_BREAKDOWN_CONTINUATION",
+      "STRUCTURAL DOWNTREND",
+      "ASK_PRESSURE_SUPPORTS_SHORT"
+    );
+
+  if (provenRejection && conviction >= 78 && learningAdjustment >= 0) {
+    const boost = learningAdjustment > 0 || conviction >= 88 ? 1.25 : 1.15;
+    multiplier *= boost;
+    reasons.push("rejection/downtrend setup has enough conviction to receive controlled extra size");
+  }
+
+  const bounded = Math.max(0.45, Math.min(1.35, multiplier));
+  return {
+    multiplier: bounded,
+    reason: reasons.length > 0
+      ? reasons.join("; ")
+      : "no setup-specific size adjustment",
+  };
+}
+
 export class TradeAdmissionController {
   static evaluate(input: TradeAdmissionInput): TradeAdmissionResult {
     const spec = getAssetSpec(input.asset);
     const equity = estimateEquity(input.portfolio);
     const currentActiveMargin = activeMarginUsd(input.portfolio);
     const learningMultiplier = learningRiskMultiplier(input.learningAdjustment);
-    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction) * learningMultiplier;
+    const setupProfile = setupRiskProfile(input);
+    const combinedRiskMultiplier = learningMultiplier * setupProfile.multiplier;
+    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction) * combinedRiskMultiplier;
     const maxTotalMarginUsd = equity * MAX_TOTAL_MARGIN_PERCENT;
     const remainingTotalMarginRoom = Math.max(0, maxTotalMarginUsd - currentActiveMargin);
 
@@ -133,6 +188,8 @@ export class TradeAdmissionController {
       maxLossUsd: 0,
       admissionScore: 0,
       learningRiskMultiplier: learningMultiplier,
+      setupRiskMultiplier: setupProfile.multiplier,
+      setupRiskReason: setupProfile.reason,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     });
@@ -177,7 +234,7 @@ export class TradeAdmissionController {
       return emptyResult("Total portfolio margin cap reached.");
     }
 
-    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction) * learningMultiplier;
+    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction) * combinedRiskMultiplier;
     const riskAmountUsd = equity * riskPercent;
     const usdMovePerUnit = getUsdMovePerUnit(input.asset, input.entryPrice, input.stopLoss);
 
@@ -230,7 +287,9 @@ export class TradeAdmissionController {
 
     return {
       approved: true,
-      reason: learningMultiplier < 1
+      reason: setupProfile.multiplier !== 1
+        ? `Approved with setup-specific sizing (${Math.round(setupProfile.multiplier * 100)}%). ${setupProfile.reason}.`
+        : learningMultiplier < 1
         ? `Approved with local-learning risk reduction (${Math.round(learningMultiplier * 100)}% size). Recent evidence is weaker, so margin is deliberately smaller.`
         : rawNotionalUsd > notionalUsd
         ? `Approved with conviction-based capped margin. Requested risk size exceeded ${spec.assetClass} risk limits.`
@@ -244,6 +303,8 @@ export class TradeAdmissionController {
       maxLossUsd,
       admissionScore,
       learningRiskMultiplier: learningMultiplier,
+      setupRiskMultiplier: setupProfile.multiplier,
+      setupRiskReason: setupProfile.reason,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     };

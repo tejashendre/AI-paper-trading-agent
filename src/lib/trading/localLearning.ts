@@ -32,39 +32,45 @@ function writeJsonBackup(filename: string, value: unknown) {
 function classifyRule(
   scope: LocalLearningRule["scope"],
   key: string,
-  stats: { total: number; favorable: number; avgMove: number; avgMfe?: number; avgMae?: number; takeProfitHits?: number; stopLossHits?: number }
+  stats: { total: number; favorable: number; avgMove: number; avgNetPnlUsd?: number; avgNetReturnPercent?: number; avgMfe?: number; avgMae?: number; takeProfitHits?: number; stopLossHits?: number }
 ): LocalLearningRule | null {
   if (stats.total < 4) return null;
   const favorableRate = stats.favorable / stats.total;
   const takeProfitRate = (stats.takeProfitHits || 0) / stats.total;
   const stopLossRate = (stats.stopLossHits || 0) / stats.total;
+  const netReturn = Number.isFinite(Number(stats.avgNetReturnPercent))
+    ? Number(stats.avgNetReturnPercent)
+    : Number(stats.avgMove || 0);
+  const netPnl = Number.isFinite(Number(stats.avgNetPnlUsd))
+    ? Number(stats.avgNetPnlUsd)
+    : netReturn;
 
-  if ((favorableRate >= 0.65 && stats.avgMove > 0.005) || takeProfitRate >= 0.45) {
+  if ((favorableRate >= 0.65 && netReturn > 0.005) || (takeProfitRate >= 0.45 && netPnl > 0)) {
     return {
       id: `${scope}:${key}`,
       scope,
       key,
       action: "BOOST",
       confidenceAdjustment: 5,
-      message: `${key} has recently produced favorable follow-through. The bot may slightly trust this pattern more.`,
+      message: `${key} has recently produced positive net expectancy after estimated fees. The bot may slightly trust this pattern more.`,
       sampleSize: stats.total,
       favorableRate,
-      avgMove: stats.avgMove,
+      avgMove: netReturn,
       updatedAt: new Date().toISOString(),
     };
   }
 
-  if (favorableRate <= 0.35 || stats.avgMove < -0.005 || stopLossRate >= 0.45) {
+  if (favorableRate <= 0.35 || netReturn < -0.005 || stopLossRate >= 0.45) {
     return {
       id: `${scope}:${key}`,
       scope,
       key,
       action: "REDUCE",
       confidenceAdjustment: -8,
-      message: `${key} has recently failed too often. The bot should be more selective here.`,
+      message: `${key} has recently failed net-expectancy checks. The bot should use smaller size or require stronger proof here.`,
       sampleSize: stats.total,
       favorableRate,
-      avgMove: stats.avgMove,
+      avgMove: netReturn,
       updatedAt: new Date().toISOString(),
     };
   }
