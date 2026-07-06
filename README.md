@@ -36,7 +36,7 @@ The system evaluates **multi-timeframe technical confluence** (1m, 5m, 15m, 1h, 
 
 ## Live Demo
 
-> 🌐 **[https://ai-quant-trader.duckdns.org](https://ai-quant-trader.duckdns.org)**
+> 🌐 **[https://trader.tejashendre.com](https://trader.tejashendre.com)**
 >
 > Public spectator dashboard — no login required. Read-only access to portfolio state, scan results, trade history, equity curve, and opportunity radar.
 
@@ -185,7 +185,7 @@ docker logs quant-swing-daemon --tail=100
 docker logs quant-dashboard --tail=100
 
 # Run deploy verifier
-STATUS_URL=https://ai-quant-trader.duckdns.org/api/user/status \
+STATUS_URL=https://trader.tejashendre.com/api/user/status \
 STATUS_AUTH_TOKEN=SPECTATOR \
 sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
 ```
