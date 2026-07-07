@@ -24,7 +24,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   ETH: {
     asset: "ETH",
@@ -34,7 +34,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   SOL: {
     asset: "SOL",
@@ -44,7 +44,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   EURUSD: {
     asset: "EURUSD",
@@ -54,7 +54,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   GBPUSD: {
     asset: "GBPUSD",
@@ -64,7 +64,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   USDJPY: {
     asset: "USDJPY",
@@ -74,7 +74,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 5,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   GOLD: {
     asset: "GOLD",
@@ -84,7 +84,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 3,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   OIL: {
     asset: "OIL",
@@ -94,7 +94,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 3,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
   SILVER: {
     asset: "SILVER",
@@ -104,7 +104,7 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     maxLeverage: 3,
     maxMarginPercent: 0.1,
     feeRate: DEFAULT_FEE_RATE,
-    minMarginUsd: 10,
+    minMarginUsd: 50,
   },
 };
 

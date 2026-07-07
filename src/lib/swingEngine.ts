@@ -762,9 +762,12 @@ export class SwingEngine {
       });
       const htfAtr = snap1h.atr;
       const currentPrice = livePrice;
-      const expectedMovePercent = currentPrice > 0 ? (htfAtr / currentPrice) * 100 : 0;
-      const stopDistance = htfAtr * 1.5;
-      const takeProfitDistance = htfAtr * 3.0;
+      const minAtrPercent = assetMode === "REALTIME_FAST" ? 0.002 : 0.001;
+      const minAtr = currentPrice * minAtrPercent;
+      const safeAtr = Number.isFinite(htfAtr) && htfAtr >= minAtr ? htfAtr : minAtr;
+      const expectedMovePercent = currentPrice > 0 ? (safeAtr / currentPrice) * 100 : 0;
+      const stopDistance = safeAtr * 1.5;
+      const takeProfitDistance = safeAtr * 3.0;
       const plannedStopLoss = bestDirection === "LONG"
         ? currentPrice - stopDistance
         : bestDirection === "SHORT"

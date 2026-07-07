@@ -335,26 +335,6 @@ export async function GET(request: Request) {
                 }
             }
 
-            // Recalculate and update peakValue and drawdown dynamically to ensure synchronization
-            let updated = false;
-            if (!portfolio.peakValue || totalValue > portfolio.peakValue) {
-                portfolio.peakValue = totalValue;
-                updated = true;
-            }
-            const currentDrawdown = (portfolio.peakValue - totalValue) / portfolio.peakValue;
-            const currentDrawdownPercent = currentDrawdown * 100;
-            if (portfolio.maxDrawdownPercent === undefined || portfolio.maxDrawdownPercent === null || currentDrawdownPercent > portfolio.maxDrawdownPercent) {
-                portfolio.maxDrawdownPercent = currentDrawdownPercent;
-                updated = true;
-            }
-            if (updated) {
-                try {
-                    await PortfolioManager.updatePortfolio(portfolio, type);
-                } catch (e) {
-                    console.warn(`[Status API] Failed to update synchronized peakValue/drawdown for ${type}:`, e);
-                }
-            }
-
             return { totalValue, prices };
         };
 

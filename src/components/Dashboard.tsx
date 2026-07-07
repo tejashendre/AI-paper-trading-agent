@@ -288,7 +288,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
-  const [showActivityDetails, setShowActivityDetails] = useState(false);
+  const [showActivityDetails, setShowActivityDetails] = useState(true);
   const [showAssetBookDetails, setShowAssetBookDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
@@ -947,14 +947,8 @@ function DashboardContent({ secret }: { secret: string }) {
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Live Activity</h2>
                   <p className={`text-[10px] mt-1 ${textMuted}`}>Latest trades and engine messages are available on demand.</p>
                 </div>
-                <button
-                  onClick={() => setShowActivityDetails((value) => !value)}
-                  className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
-                >
-                  {showActivityDetails ? "HIDE ACTIVITY" : "VIEW ACTIVITY"}
-                </button>
               </div>
-              {showActivityDetails && (
+              {true && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
               <div className={`border rounded-2xl p-5 ${bgCard}`}>
                 <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>Trade Activity Log</h2>
@@ -1785,7 +1779,7 @@ function DashboardContent({ secret }: { secret: string }) {
             )}
 
             {/* Expanded AI Confluence Analysis Panel with Tooltips */}
-            {!isSpectator && (
+            {(
             <div className={`border rounded-2xl p-5 space-y-4 relative ${bgCard}`}>
               <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
                 <h2 className={`text-[10px] font-bold font-mono flex items-center gap-1.5 ${textSub}`}>

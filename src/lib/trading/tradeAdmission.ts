@@ -281,6 +281,11 @@ export class TradeAdmissionController {
       return emptyResult("Fee drag is too high compared with the planned max loss.");
     }
 
+    const expectedProfitUsd = Math.abs(input.takeProfit - input.entryPrice) * amount;
+    if (expectedProfitUsd < entryFeeUsd * 3) {
+      return emptyResult(`Expected profit ($${expectedProfitUsd.toFixed(2)}) is less than 3x entry fee ($${(entryFeeUsd * 3).toFixed(2)}). Trade is not viable.`);
+    }
+
     if (maxLossUsd > riskAmountUsd * 1.01) {
       return emptyResult("Calculated max loss exceeds approved risk budget.");
     }

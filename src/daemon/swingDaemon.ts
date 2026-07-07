@@ -335,6 +335,25 @@ async function runEntryScan() {
 
     exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
+    const swingMargin = Object.values(portfolio.openPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
+    const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
+    const estimatedEquity = portfolio.usd + swingMargin + scalpMargin;
+    let peakUpdated = false;
+    if (!portfolio.peakValue || estimatedEquity > portfolio.peakValue) {
+      portfolio.peakValue = estimatedEquity;
+      peakUpdated = true;
+    }
+    if (portfolio.peakValue > 0) {
+      const ddPct = ((portfolio.peakValue - estimatedEquity) / portfolio.peakValue) * 100;
+      if (portfolio.maxDrawdownPercent === undefined || portfolio.maxDrawdownPercent === null || ddPct > portfolio.maxDrawdownPercent) {
+        portfolio.maxDrawdownPercent = ddPct;
+        peakUpdated = true;
+      }
+    }
+    if (peakUpdated) {
+      await updateAIPortfolio(portfolio).catch((e: unknown) => Logger.warn(`Peak/drawdown sync failed: ${e}`));
+    }
+
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
 
@@ -526,6 +545,19 @@ async function runEntryScan() {
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
+          continue;
+        }
+
+        const invalidStop = (!isShort && swingSignal.stopLoss >= swingSignal.entryPrice) ||
+          (isShort && swingSignal.stopLoss <= swingSignal.entryPrice);
+        if (invalidStop) {
+          results.push({
+            asset, action: "BLOCKED", reason: "Stop loss is on wrong side of entry price",
+            simpleStatus: "Invalid stop loss", simpleReason: "Stop loss would trigger immediately — skipping.",
+            nextStep: "Waiting for better data quality.", decisionState: "BLOCKED_RISK",
+            score: swingSignal.score, timestamp,
+          });
+          await Logger.warn(`[SWING BLOCK] ${asset} invalid SL: entry=${swingSignal.entryPrice} SL=${swingSignal.stopLoss} dir=${isShort ? "SHORT" : "LONG"}`);
           continue;
         }
 
