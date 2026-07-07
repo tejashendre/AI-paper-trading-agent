@@ -10,7 +10,8 @@ export class WebsocketDataMesh {
     private binanceWs: WebSocket | null = null;
     private bybitWs: WebSocket | null = null;
     private isRunning = false;
-    private reconnectTimeout: NodeJS.Timeout | null = null;
+    private binanceReconnectTimeout: NodeJS.Timeout | null = null;
+    private bybitReconnectTimeout: NodeJS.Timeout | null = null;
 
     // We focus on Crypto assets for websocket feeds
     private getCryptoAssets() {
@@ -39,7 +40,8 @@ export class WebsocketDataMesh {
 
     public stop() {
         this.isRunning = false;
-        if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+        if (this.binanceReconnectTimeout) clearTimeout(this.binanceReconnectTimeout);
+        if (this.bybitReconnectTimeout) clearTimeout(this.bybitReconnectTimeout);
         if (this.binanceWs) {
             this.binanceWs.terminate();
             this.binanceWs = null;
@@ -184,10 +186,12 @@ export class WebsocketDataMesh {
 
     private scheduleReconnect(source: 'binance' | 'bybit') {
         if (!this.isRunning) return;
-        if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-        this.reconnectTimeout = setTimeout(() => {
-            if (source === 'binance') this.connectBinance();
-            if (source === 'bybit') this.connectBybit();
-        }, 5000);
+        if (source === 'binance') {
+            if (this.binanceReconnectTimeout) clearTimeout(this.binanceReconnectTimeout);
+            this.binanceReconnectTimeout = setTimeout(() => this.connectBinance(), 5000);
+        } else {
+            if (this.bybitReconnectTimeout) clearTimeout(this.bybitReconnectTimeout);
+            this.bybitReconnectTimeout = setTimeout(() => this.connectBybit(), 5000);
+        }
     }
 }

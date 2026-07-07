@@ -479,6 +479,11 @@ async function scaleIntoWinner(
   pos.usdInvested += addMarginUsd;
   pos.notionalUsd = (pos.notionalUsd || existingNotional) + addNotionalUsd;
   pos.entryFeePaid = (pos.entryFeePaid || 0) + entryFee;
+  if (pos.direction === "LONG" && pos.stopLoss >= pos.entryPrice) {
+    pos.stopLoss = pos.entryPrice * 0.995;
+  } else if (pos.direction === "SHORT" && pos.stopLoss <= pos.entryPrice) {
+    pos.stopLoss = pos.entryPrice * 1.005;
+  }
   pos.maxLossUsd = Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
   pos.scaleInCount = (pos.scaleInCount || 0) + 1;
   pos.lastScaleInTime = new Date().toISOString();
