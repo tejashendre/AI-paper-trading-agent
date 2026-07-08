@@ -281,9 +281,18 @@ export class TradeAdmissionController {
       return emptyResult("Fee drag is too high compared with the planned max loss.");
     }
 
-    const expectedProfitUsd = Math.abs(input.takeProfit - input.entryPrice) * amount;
-    if (expectedProfitUsd < entryFeeUsd * 3) {
-      return emptyResult(`Expected profit ($${expectedProfitUsd.toFixed(2)}) is less than 3x entry fee ($${(entryFeeUsd * 3).toFixed(2)}). Trade is not viable.`);
+    // Trailing stops and thesis-invalidation exits typically capture only a
+    // fraction of the full take-profit distance before closing. Sizing the
+    // fee guard off the full TP target let through trades whose *realistic*
+    // captured profit (what actually happens on a trailing-stop exit) was
+    // still smaller than the round-trip fee, netting near-zero or negative
+    // "wins". Use a conservative capture fraction instead of the full move.
+    const REALISTIC_CAPTURE_FRACTION = 0.5;
+    const fullMoveProfitUsd = Math.abs(input.takeProfit - input.entryPrice) * amount;
+    const realisticProfitUsd = fullMoveProfitUsd * REALISTIC_CAPTURE_FRACTION;
+    const roundTripFeeUsd = entryFeeUsd * 2;
+    if (realisticProfitUsd < roundTripFeeUsd * 3) {
+      return emptyResult(`Realistic captured profit ($${realisticProfitUsd.toFixed(2)}) is less than 3x round-trip fee ($${(roundTripFeeUsd * 3).toFixed(2)}). Position is too small to be fee-viable.`);
     }
 
     if (maxLossUsd > riskAmountUsd * 1.01) {
