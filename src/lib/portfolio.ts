@@ -139,6 +139,9 @@ export class PortfolioManager {
         const redis = getRedis();
         const keys = this.getKeys(type);
         await redis.lpush(keys.trades, JSON.stringify(trade));
+        // Trades are only ever read via lrange(0, 999); without a trim the
+        // list grows forever and slowly eats the free-tier Redis storage.
+        await redis.ltrim(keys.trades, 0, 999);
 
         // Save local backup to prevent total data loss if Redis crashes
         try {

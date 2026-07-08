@@ -95,6 +95,20 @@ wsMesh.start();
 
 let isEntryScanning = false;
 let isExitWatching = false;
+
+// The entry scan (60s) and exit watchdog (5s) both read the portfolio from
+// Redis, mutate it in memory, and write it back. The isEntryScanning /
+// isExitWatching flags only stop each loop from overlapping *itself* — they
+// do nothing about the two loops interleaving with each other. A long entry
+// scan holding a stale snapshot could overwrite an exit the watchdog just
+// performed, resurrecting the closed position and erasing its cash credit.
+// Serialize every portfolio read-mutate-write cycle through this mutex.
+let portfolioLock: Promise<unknown> = Promise.resolve();
+function withPortfolioLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = portfolioLock.then(fn, fn);
+  portfolioLock = run.catch(() => undefined);
+  return run;
+}
 let lastSummaryLogTime = 0;
 let scanSequence = 0;
 let lifetimeStatsBootstrapped = false;
@@ -298,9 +312,11 @@ async function runExitWatchdog() {
   isExitWatching = true;
 
   try {
-    const portfolio = await getAIPortfolio();
-    ensurePortfolioShape(portfolio);
-    await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+    await withPortfolioLock(async () => {
+      const portfolio = await getAIPortfolio();
+      ensurePortfolioShape(portfolio);
+      await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+    });
   } catch (error) {
     await Logger.error(`[EXIT_WATCHDOG] Failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -802,9 +818,14 @@ async function runEntryScan() {
 }
 
 console.log("Starting V6 Institutional HTF Swing Daemon...");
-runEntryScan();
+// The entry scan reads its portfolio snapshot at the very start and mutates
+// it for the rest of the cycle, so the whole scan must hold the lock — not
+// just the final write. Exit checks still run first inside the scan itself
+// (ENTRY_SCAN_PREFLIGHT sweep), so stops are not starved while it holds it.
+const runEntryScanLocked = () => withPortfolioLock(runEntryScan);
+runEntryScanLocked();
 
-const entryIntervalId = setInterval(runEntryScan, ENTRY_SCAN_INTERVAL_MS);
+const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
 const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
 
 const shutdown = async (signal: string) => {
