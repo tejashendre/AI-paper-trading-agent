@@ -26,13 +26,13 @@ interface CalendarEvent {
 // { name: "EIA Oil Report", utc: "2026-07-09T14:30:00Z", affectedAssets: ["OIL"] },
 
 const EVENTS: CalendarEvent[] = [
-  { name: "FOMC Decision",  utc: "2026-06-17T18:00:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD","SILVER"] },
-  { name: "US NFP",         utc: "2026-07-02T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
+  { name: "FOMC Decision",  utc: "2026-07-30T18:00:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD","SILVER"] },
+  { name: "US NFP",         utc: "2026-08-07T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
   { name: "US CPI",         utc: "2026-07-14T12:30:00Z", affectedAssets: ["EURUSD","GBPUSD","USDJPY","GOLD"] },
-  { name: "BOE Decision",   utc: "2026-06-25T11:00:00Z", affectedAssets: ["GBPUSD"] },
+  { name: "BOE Decision",   utc: "2026-08-07T11:00:00Z", affectedAssets: ["GBPUSD"] },
   { name: "ECB Decision",   utc: "2026-07-23T12:15:00Z", affectedAssets: ["EURUSD"] },
   { name: "BOJ Decision",   utc: "2026-07-31T03:00:00Z", affectedAssets: ["USDJPY"] },
-  { name: "EIA Oil Report", utc: "2026-06-18T14:30:00Z", affectedAssets: ["OIL"] },
+  { name: "EIA Oil Report", utc: "2026-07-09T14:30:00Z", affectedAssets: ["OIL"] },
 ];
 
 // ─── Blackout window configuration ────────────────────────────────────────────
