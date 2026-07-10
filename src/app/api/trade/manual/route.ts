@@ -4,7 +4,7 @@ import { Logger } from '@/lib/logger';
 import { MarketService, SUPPORTED_ASSETS } from '@/lib/market';
 import { PortfolioManager } from '@/lib/portfolio';
 import { Trade, OpenPosition } from '@/lib/types';
-import { amountFromNotionalUsd, calculatePnlUsd } from '@/lib/trading/assetSpecs';
+import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd } from '@/lib/trading/assetSpecs';
 import { getMarketSessionState } from '@/lib/trading/marketSession';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized: Admin/Dashboard access required for manual trading.' }, { status: 403 });
   }
 
+  let portfolioRelease: (() => Promise<void>) | null = null;
   try {
+    portfolioRelease = await PortfolioManager.acquireWriteLock("user");
+    if (!portfolioRelease) {
+      return NextResponse.json({ error: 'User portfolio is busy; retry after the active update completes.' }, { status: 409 });
+    }
     const body = await request.json();
     const { asset, action, amount: requestedAmount } = body;
 
@@ -41,19 +46,25 @@ export async function POST(request: Request) {
       if (currentPosition) {
         return NextResponse.json({ error: `Already have an open position in ${asset}` }, { status: 400 });
       }
-      const usdAmount = requestedAmount ? parseFloat(requestedAmount) : Math.min(portfolio.usd * 0.1, portfolio.usd);
-      if (usdAmount <= 0 || usdAmount > portfolio.usd) {
+      const usdAmount = requestedAmount !== undefined ? Number(requestedAmount) : Math.min(portfolio.usd * 0.1, portfolio.usd);
+      if (!Number.isFinite(usdAmount) || usdAmount <= 0 || usdAmount > portfolio.usd) {
         return NextResponse.json({ error: `Invalid amount. Available: $${portfolio.usd.toFixed(2)}` }, { status: 400 });
       }
 
       const units = amountFromNotionalUsd(asset, usdAmount, currentPrice);
-      portfolio.usd -= usdAmount;
+      const entryFee = estimateFeeUsd(asset, units, currentPrice);
+      if (usdAmount + entryFee > portfolio.usd) {
+        return NextResponse.json({ error: 'Insufficient free cash for amount plus entry fee' }, { status: 400 });
+      }
+      portfolio.usd -= usdAmount + entryFee;
+      portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
       if (portfolio.balances) portfolio.balances[asset] = (portfolio.balances[asset] || 0) + units;
 
       const pos: OpenPosition = {
         asset, entryPrice: currentPrice, amount: units, btcAmount: units,
         usdInvested: usdAmount, stopLoss: currentPrice * 0.95, takeProfit: currentPrice * 1.10,
-        entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual BUY order',
+        initialStopLoss: currentPrice * 0.95,
+        entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual BUY order', entryFeePaid: entryFee,
         direction: 'LONG'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
@@ -76,18 +87,24 @@ export async function POST(request: Request) {
       if (currentPosition) {
         return NextResponse.json({ error: `Already have an open position in ${asset}` }, { status: 400 });
       }
-      const usdAmount = requestedAmount ? parseFloat(requestedAmount) : Math.min(portfolio.usd * 0.1, portfolio.usd);
-      if (usdAmount <= 0 || usdAmount > portfolio.usd) {
+      const usdAmount = requestedAmount !== undefined ? Number(requestedAmount) : Math.min(portfolio.usd * 0.1, portfolio.usd);
+      if (!Number.isFinite(usdAmount) || usdAmount <= 0 || usdAmount > portfolio.usd) {
         return NextResponse.json({ error: `Invalid margin amount. Available: $${portfolio.usd.toFixed(2)}` }, { status: 400 });
       }
 
       const units = amountFromNotionalUsd(asset, usdAmount, currentPrice);
-      portfolio.usd -= usdAmount;
+      const entryFee = estimateFeeUsd(asset, units, currentPrice);
+      if (usdAmount + entryFee > portfolio.usd) {
+        return NextResponse.json({ error: 'Insufficient free cash for margin plus entry fee' }, { status: 400 });
+      }
+      portfolio.usd -= usdAmount + entryFee;
+      portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
 
       const pos: OpenPosition = {
         asset, entryPrice: currentPrice, amount: units, btcAmount: units,
         usdInvested: usdAmount, stopLoss: currentPrice * 1.05, takeProfit: currentPrice * 0.90,
-        entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual SHORT order',
+        initialStopLoss: currentPrice * 1.05,
+        entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual SHORT order', entryFeePaid: entryFee,
         direction: 'SHORT'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
@@ -111,19 +128,30 @@ export async function POST(request: Request) {
       }
       const pos = currentPosition;
       const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'LONG');
-      const proceeds = pos.usdInvested + pnl;
-      const pnlPercent = (pnl / pos.usdInvested) * 100;
+      const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+      const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+      const netPnl = pnl - entryFee - exitFee;
+      const proceeds = pos.usdInvested + entryFee + netPnl;
+      const pnlPercent = (netPnl / pos.usdInvested) * 100;
 
       portfolio.usd += proceeds;
+      portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
       if (portfolio.balances) portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
-      portfolio.totalPnl += pnl;
+      portfolio.totalPnl += netPnl;
       portfolio.totalTrades++;
       portfolio.returns.push(pnlPercent);
       if (portfolio.returns.length > 2000) {
         portfolio.returns.shift();
       }
-      if (pnl > 0) { portfolio.winningTrades++; portfolio.grossProfit += pnl; } 
-      else { portfolio.losingTrades++; portfolio.grossLoss += Math.abs(pnl); }
+      if (netPnl >= 0) {
+        portfolio.winningTrades++; portfolio.grossProfit += netPnl;
+        portfolio.consecutiveWins++; portfolio.consecutiveLosses = 0;
+        portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
+      } else {
+        portfolio.losingTrades++; portfolio.grossLoss += Math.abs(netPnl);
+        portfolio.consecutiveLosses++; portfolio.consecutiveWins = 0;
+        portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
+      }
 
       delete portfolio.openPositions[asset];
       if (asset === 'BTC') { portfolio.btc = 0; portfolio.openPosition = null; }
@@ -134,12 +162,13 @@ export async function POST(request: Request) {
         action: 'SELL', direction: 'LONG', amount: pos.amount, btcAmount: pos.amount,
         price: currentPrice, usdValue: proceeds, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0,
-        reasoning: 'Manual SELL order', pnl, pnlPercent, exitPrice: currentPrice,
+        reasoning: 'Manual SELL order', pnl: netPnl, pnlPercent, exitPrice: currentPrice,
+        entryPrice: pos.entryPrice, entryTime: pos.entryTime,
         exitTime: new Date().toISOString(), exitReason: 'MANUAL'
       };
       await PortfolioManager.logTrade(trade);
-      await Logger.info(`MANUAL SELL [${asset}]: PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
-      return NextResponse.json({ success: true, action: 'SELL', asset, price: currentPrice, pnl, pnlPercent });
+      await Logger.info(`MANUAL SELL [${asset}]: Net PnL: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`);
+      return NextResponse.json({ success: true, action: 'SELL', asset, price: currentPrice, pnl: netPnl, pnlPercent });
     }
 
     if (action === 'COVER') {
@@ -148,17 +177,28 @@ export async function POST(request: Request) {
       }
       const pos = currentPosition;
       const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'SHORT');
-      const pnlPercent = (pnl / pos.usdInvested) * 100;
+      const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+      const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+      const netPnl = pnl - entryFee - exitFee;
+      const pnlPercent = (netPnl / pos.usdInvested) * 100;
 
-      portfolio.usd += pos.usdInvested + pnl;
-      portfolio.totalPnl += pnl;
+      portfolio.usd += pos.usdInvested + entryFee + netPnl;
+      portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
+      portfolio.totalPnl += netPnl;
       portfolio.totalTrades++;
       portfolio.returns.push(pnlPercent);
       if (portfolio.returns.length > 2000) {
         portfolio.returns.shift();
       }
-      if (pnl > 0) { portfolio.winningTrades++; portfolio.grossProfit += pnl; }
-      else { portfolio.losingTrades++; portfolio.grossLoss += Math.abs(pnl); }
+      if (netPnl >= 0) {
+        portfolio.winningTrades++; portfolio.grossProfit += netPnl;
+        portfolio.consecutiveWins++; portfolio.consecutiveLosses = 0;
+        portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
+      } else {
+        portfolio.losingTrades++; portfolio.grossLoss += Math.abs(netPnl);
+        portfolio.consecutiveLosses++; portfolio.consecutiveWins = 0;
+        portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
+      }
 
       delete portfolio.openPositions[asset];
 
@@ -166,14 +206,15 @@ export async function POST(request: Request) {
       const trade: Trade = {
         id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset,
         action: 'COVER', direction: 'SHORT', amount: pos.amount, btcAmount: pos.amount,
-        price: currentPrice, usdValue: pos.usdInvested + pnl, stopLoss: pos.stopLoss,
+        price: currentPrice, usdValue: pos.usdInvested + entryFee + netPnl, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0,
-        reasoning: 'Manual COVER order', pnl, pnlPercent, exitPrice: currentPrice,
+        reasoning: 'Manual COVER order', pnl: netPnl, pnlPercent, exitPrice: currentPrice,
+        entryPrice: pos.entryPrice, entryTime: pos.entryTime,
         exitTime: new Date().toISOString(), exitReason: 'MANUAL'
       };
       await PortfolioManager.logTrade(trade);
-      await Logger.info(`MANUAL COVER [${asset}]: PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
-      return NextResponse.json({ success: true, action: 'COVER', asset, price: currentPrice, pnl, pnlPercent });
+      await Logger.info(`MANUAL COVER [${asset}]: Net PnL: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`);
+      return NextResponse.json({ success: true, action: 'COVER', asset, price: currentPrice, pnl: netPnl, pnlPercent });
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
@@ -181,5 +222,7 @@ export async function POST(request: Request) {
     const msg = error instanceof Error ? error.message : String(error);
     await Logger.error('Manual trade failed', { error: msg });
     return NextResponse.json({ error: msg }, { status: 500 });
+  } finally {
+    if (portfolioRelease) await portfolioRelease();
   }
 }

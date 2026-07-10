@@ -49,54 +49,39 @@ export function zScore(values: number[], lookback: number = 20): number {
 
 export function hurstExponent(series: number[], maxLag: number = 20): number {
   const valid = series.filter(Number.isFinite);
-  if (valid.length < maxLag * 2) return 0.5;
+  if (valid.length < Math.max(40, maxLag * 2)) return 0.5;
 
-  const lags: number[] = [];
-  const rsValues: number[] = [];
+  // Estimate H from how RMS log-price displacement scales with lag:
+  // E[(X(t+lag)-X(t))^2]^0.5 ~ lag^H. A random walk is near 0.5,
+  // persistent trends are above 0.5, and mean reversion is below 0.5.
+  // The previous block R/S calculation used raw price levels and pushed
+  // ordinary non-stationary market series toward 1.0.
+  const transformed = valid.every((value) => value > 0)
+    ? valid.map((value) => Math.log(value))
+    : valid;
+  const logLags: number[] = [];
+  const logDisplacements: number[] = [];
+  const maxUsableLag = Math.min(maxLag, Math.floor(transformed.length / 4));
 
-  for (let n = 10; n <= Math.min(maxLag, Math.floor(valid.length / 2)); n += 2) {
-    lags.push(n);
-    let rsSum = 0;
+  for (let lag = 2; lag <= maxUsableLag; lag++) {
+    let squaredSum = 0;
     let count = 0;
-    for (let i = 0; i <= valid.length - n; i += n) {
-      const sub = valid.slice(i, i + n);
-      let sum = 0;
-      for (const v of sub) sum += v;
-      const mean = sum / n;
-      let cumSum = 0;
-      let maxCum = -Infinity;
-      let minCum = Infinity;
-      let sumSq = 0;
-      for (const v of sub) {
-        const dev = v - mean;
-        cumSum += dev;
-        if (cumSum > maxCum) maxCum = cumSum;
-        if (cumSum < minCum) minCum = cumSum;
-        sumSq += dev * dev;
-      }
-      const r = maxCum - minCum;
-      const s = Math.sqrt(sumSq / n);
-      if (s > 0) {
-        rsSum += r / s;
-        count++;
-      }
+    for (let i = lag; i < transformed.length; i++) {
+      const difference = transformed[i] - transformed[i - lag];
+      if (!Number.isFinite(difference)) continue;
+      squaredSum += difference * difference;
+      count++;
     }
-    if (count > 0) rsValues.push(rsSum / count);
-    else rsValues.push(NaN);
-  }
-
-  const logLags = [];
-  const logRS = [];
-  for (let i = 0; i < lags.length; i++) {
-    if (Number.isFinite(rsValues[i])) {
-      logLags.push(Math.log(lags[i]));
-      logRS.push(Math.log(rsValues[i]));
+    const rms = count > 0 ? Math.sqrt(squaredSum / count) : 0;
+    if (rms > Number.EPSILON) {
+      logLags.push(Math.log(lag));
+      logDisplacements.push(Math.log(rms));
     }
   }
 
   if (logLags.length < 2) return 0.5;
 
-  const lr = linearRegressionParams(logLags, logRS);
+  const lr = linearRegressionParams(logLags, logDisplacements);
   return Math.max(0, Math.min(1, lr.slope));
 }
 
@@ -180,7 +165,7 @@ export function computeStatistics(
     logReturns: rets,
     realizedVolatility: realVol,
     priceZScore: zScore(closes, 20),
-    rsiZScore: zScore(closes, 20), // Should ideally be RSI z-score, but passing closes to zScore might be a bug in instruction. Will use close for now or RSI if I had RSI array. Let's pass 0 for rsiZScore as placeholder.
+    rsiZScore: 0,
     hurstExponent: h,
     regime,
     volatilityPercentile: percentile(indicators.atr, atrDist),

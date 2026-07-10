@@ -18,7 +18,27 @@ export interface AssetFeedHealthSummary {
   warnings: string[];
   safeForFastExecution: boolean;
   safeForSwingExecution: boolean;
+  freshWebsocketSources: number;
   updatedAt: string;
+}
+
+const WEBSOCKET_SOURCES = ["BINANCE_FUTURES_WS", "BYBIT_LINEAR_WS"] as const;
+const WEBSOCKET_FRESHNESS_MS = 30_000;
+
+function websocketTimestamp(meta: any): number {
+  const timestamp = new Date(meta?.updatedAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+async function freshWebsocketSourceCount(redis: ReturnType<typeof getRedis>, asset: string) {
+  const metadata = await Promise.all(WEBSOCKET_SOURCES.map((source) => (
+    redis.get<any>(`market:liveMeta:${source}:${asset}`).catch(() => null)
+  )));
+  const now = Date.now();
+  return metadata.filter((meta) => {
+    const timestamp = websocketTimestamp(meta);
+    return timestamp > 0 && now - timestamp <= WEBSOCKET_FRESHNESS_MS;
+  }).length;
 }
 
 export interface FeedHealthMatrix {
@@ -56,29 +76,50 @@ function fallbackReport(asset: string, category: AssetFeedHealthSummary["categor
     warnings: [`Feed health unavailable: ${message}`],
     safeForFastExecution: false,
     safeForSwingExecution: false,
+    freshWebsocketSources: 0,
     updatedAt: new Date().toISOString(),
   };
 }
 
-function summarizeReport(asset: string, category: AssetFeedHealthSummary["category"], health: FeedHealthReport): AssetFeedHealthSummary {
+function summarizeReport(
+  asset: string,
+  category: AssetFeedHealthSummary["category"],
+  health: FeedHealthReport,
+  freshWebsocketSources: number
+): AssetFeedHealthSummary {
   const mode = assetMode(asset, category, health);
-  const displayStatus = health.stale && health.status === "GOOD" ? "DEGRADED" : health.status;
-  const safeForSwingExecution = health.status !== "BAD" && !health.stale && health.score >= 50;
-  const safeForFastExecution = mode === "REALTIME_FAST" && displayStatus === "GOOD" && health.score >= 80 && !health.stale;
+  const websocketUnavailable = mode === "REALTIME_FAST" && freshWebsocketSources === 0;
+  const websocketDegraded = mode === "REALTIME_FAST" && freshWebsocketSources === 1;
+  const displayStatus = websocketUnavailable
+    ? "BAD"
+    : (health.stale || websocketDegraded) && health.status === "GOOD"
+      ? "DEGRADED"
+      : health.status;
+  const warnings = health.warnings.slice(0, 4);
+  if (websocketUnavailable) warnings.unshift("Both realtime WebSocket sources are stale or unavailable");
+  else if (websocketDegraded) warnings.unshift("Only one realtime WebSocket source is fresh");
+  const score = websocketUnavailable
+    ? Math.min(health.score, 40)
+    : websocketDegraded
+      ? Math.min(health.score, 75)
+      : health.score;
+  const safeForSwingExecution = !websocketUnavailable && health.status !== "BAD" && !health.stale && score >= 50;
+  const safeForFastExecution = mode === "REALTIME_FAST" && freshWebsocketSources === 2 && displayStatus === "GOOD" && score >= 80 && !health.stale;
 
   return {
     asset,
     category,
     mode,
     status: displayStatus,
-    score: health.score,
+    score,
     source: health.primarySource,
     stale: health.stale,
     cacheAgeSeconds: health.cacheAgeSeconds,
     sourceAgreementPercent: Math.round(health.sourceAgreementScore * 1000) / 10,
-    warnings: health.warnings.slice(0, 4),
+    warnings: warnings.slice(0, 4),
     safeForFastExecution,
     safeForSwingExecution,
+    freshWebsocketSources,
     updatedAt: health.lastUpdated,
   };
 }
@@ -119,7 +160,10 @@ export class FeedHealthSummary {
       try {
         const frame = await buildMarketFrame(asset, "15m", 120, false);
         if (!frame) return fallbackReport(asset, config.category, "No market frame returned");
-        return summarizeReport(asset, config.category, frame.feedHealth);
+        const websocketSources = config.category === "crypto"
+          ? await freshWebsocketSourceCount(redis, asset)
+          : 0;
+        return summarizeReport(asset, config.category, frame.feedHealth, websocketSources);
       } catch (error) {
         return fallbackReport(asset, config.category, error);
       }

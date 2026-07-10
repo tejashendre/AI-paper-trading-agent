@@ -12,8 +12,7 @@ COPY . .
 # Build the Next.js app (which compiles the UI and API routes)
 # We also compile the daemon using tsc if needed, but we can run it via ts-node or compile it.
 RUN npm run build
-RUN npm install -g typescript tsx
-RUN tsc --noEmit
+RUN npm exec tsc -- --noEmit
 
 # Production image
 FROM node:20-alpine AS runner
@@ -30,8 +29,13 @@ COPY --from=builder /app/src ./src
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/tsconfig.json ./
 
+# Keep the runtime image within free-tier disk limits. The dashboard only
+# needs production packages; the daemon's TypeScript loader is installed
+# globally below.
+RUN npm prune --omit=dev
+
 # Install tsx for the background daemon
-RUN npm install -g typescript tsx
+RUN npm install -g tsx@4.19.1
 
 EXPOSE 3000
 CMD ["npm", "run", "start"]

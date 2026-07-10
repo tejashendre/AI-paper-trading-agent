@@ -5,12 +5,17 @@ import { MarketService } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
 
-const HISTORY_KEY = "opportunity:history";
-const PENDING_KEY = "opportunity:pending";
-const EVALUATIONS_KEY = "opportunity:evaluations";
-const SUMMARY_KEY = "opportunity:summary";
+// V2 starts a clean derived-learning window after fixing duplicate sampling
+// and contract-aware net outcome calculations. V1 data remains preserved in
+// Redis for audit purposes but no longer controls current trade decisions.
+const HISTORY_KEY = "opportunity:v2:history";
+const PENDING_KEY = "opportunity:v2:pending";
+const EVALUATIONS_KEY = "opportunity:v2:evaluations";
+const SUMMARY_KEY = "opportunity:v2:summary";
+const DEDUPE_KEY_PREFIX = "opportunity:v2:last:";
 const MAX_HISTORY = 500;
 const MAX_EVALUATIONS = 1000;
+const DEDUPE_SECONDS = 15 * 60;
 
 type OpportunityDirection = "LONG" | "SHORT" | "NEUTRAL";
 type OpportunityDecision = "ENTRY" | "WATCH" | "BLOCKED" | "SKIPPED" | "ERROR";
@@ -116,6 +121,15 @@ function parseEvaluation(raw: unknown): OpportunityEvaluation | null {
     }
   }
   return raw as OpportunityEvaluation;
+}
+
+function observationFingerprint(record: OpportunityRecord): string {
+  return [
+    record.direction,
+    record.decision,
+    record.decisionState || "",
+    [...record.setupTags].sort().join("|"),
+  ].join(":");
 }
 
 function dueHorizons(record: OpportunityRecord, now = Date.now()): EvaluationHorizon[] {
@@ -326,6 +340,15 @@ export class OpportunityJournal {
 
     const redis = getRedis();
     for (const record of records) {
+      const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}`;
+      const previous = await redis.get<{ fingerprint: string; entryPrice: number }>(dedupeKey).catch(() => null);
+      const fingerprint = observationFingerprint(record);
+      const priceMovePercent = previous?.entryPrice
+        ? Math.abs(record.entryPrice - previous.entryPrice) / previous.entryPrice * 100
+        : Infinity;
+      if (previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
+
+      await redis.set(dedupeKey, { fingerprint, entryPrice: record.entryPrice }, { ex: DEDUPE_SECONDS });
       await redis.lpush(HISTORY_KEY, JSON.stringify(record));
       if (record.direction !== "NEUTRAL") await redis.lpush(PENDING_KEY, JSON.stringify(record));
     }

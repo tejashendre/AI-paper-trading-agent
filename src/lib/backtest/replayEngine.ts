@@ -25,6 +25,9 @@ export interface ReplayTrade {
   marginUsd: number;
   notionalUsd: number;
   leverage: number;
+  grossPnlUsd: number;
+  entryFeeUsd: number;
+  exitFeeUsd: number;
   pnlUsd: number;
   pnlPercent: number;
   holdCandles: number;
@@ -58,6 +61,7 @@ export interface ReplayAssetStats {
 
 export interface ReplayAcceptance {
   passed: boolean;
+  hasExecutableTrades: boolean;
   errorsZero: boolean;
   noStaleDataTrades: boolean;
   allEntriesHaveExecutionPrice: boolean;
@@ -264,7 +268,8 @@ function scoreReplayMarketStructure(direction: ReplayDirection, window: Candle[]
   const hasPermittedEvent = tags.some((tag) =>
     tag === "SELL_SIDE_LIQUIDITY_RECLAIM" ||
     tag === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
-    tag === "BUY_SIDE_LIQUIDITY_REJECTION"
+    tag === "BUY_SIDE_LIQUIDITY_REJECTION" ||
+    tag === "SELL_SIDE_BREAKDOWN_CONTINUATION"
   );
   return { score: boundedScore, aligned: hasPermittedEvent && boundedScore >= 4 && !tags.includes("LIQUIDITY_TRAP_RISK") && !tags.includes("STRUCTURE_AGAINST_TREND"), tags };
 }
@@ -390,11 +395,13 @@ function clearOpenPosition(portfolio: Portfolio, asset: string) {
   delete portfolio.openPositions[asset];
 }
 
-function updatePortfolioAfterTrade(portfolio: Portfolio, trade: ReplayTrade, exitFeeUsd: number) {
-  portfolio.usd += trade.marginUsd + trade.pnlUsd - exitFeeUsd;
-  portfolio.totalPnl += trade.pnlUsd - exitFeeUsd;
+function updatePortfolioAfterTrade(portfolio: Portfolio, trade: ReplayTrade) {
+  // Entry margin and fee were removed when the position opened. Restore the
+  // margin, then settle gross PnL and the exit fee exactly once.
+  portfolio.usd += trade.marginUsd + trade.grossPnlUsd - trade.exitFeeUsd;
+  portfolio.totalPnl += trade.pnlUsd;
   portfolio.totalTrades++;
-  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFeeUsd;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + trade.exitFeeUsd;
   portfolio.returns.push(trade.pnlPercent / 100);
   if (trade.pnlUsd > 0) {
     portfolio.winningTrades++;
@@ -416,7 +423,9 @@ function updatePortfolioAfterTrade(portfolio: Portfolio, trade: ReplayTrade, exi
 }
 
 function closePosition(position: ActiveReplayPosition, candle: Candle, index: number, exitPrice: number, reason: ReplayExitReason): ReplayTrade {
-  const pnlUsd = calculatePnlUsd(position.asset, position.entryPrice, exitPrice, position.amount, position.direction);
+  const grossPnlUsd = calculatePnlUsd(position.asset, position.entryPrice, exitPrice, position.amount, position.direction);
+  const exitFeeUsd = estimateFeeUsd(position.asset, position.amount, exitPrice);
+  const pnlUsd = grossPnlUsd - position.entryFeeUsd - exitFeeUsd;
   return {
     asset: position.asset,
     direction: position.direction,
@@ -428,6 +437,9 @@ function closePosition(position: ActiveReplayPosition, candle: Candle, index: nu
     marginUsd: position.marginUsd,
     notionalUsd: position.notionalUsd,
     leverage: position.leverage,
+    grossPnlUsd,
+    entryFeeUsd: position.entryFeeUsd,
+    exitFeeUsd,
     pnlUsd,
     pnlPercent: position.marginUsd > 0 ? (pnlUsd / position.marginUsd) * 100 : 0,
     holdCandles: index - position.entryIndex,
@@ -455,6 +467,7 @@ function futureFavorableMove(candles: Candle[], index: number, direction: Replay
 
 function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAcceptance {
   const messages: string[] = [];
+  const hasExecutableTrades = report.totalTrades > 0;
   const errorsZero = report.errors.length === 0;
   const noStaleDataTrades = report.staleDataTrades === 0;
   const allEntriesHaveExecutionPrice = report.trades.every((trade) => trade.entryPrice > 0 && trade.executionPriceSource === "candle.close");
@@ -477,6 +490,7 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
   });
   const score14CannotCreateNormalSize = !weakAdmission.approved || weakAdmission.requiredMarginUsd <= INITIAL_CAPITAL * 0.05;
 
+  if (!hasExecutableTrades) messages.push("Replay produced no executable trades, so entry, exit, and fee accounting were not validated.");
   if (!errorsZero) messages.push(`${report.errors.length} replay error(s) detected.`);
   if (!noStaleDataTrades) messages.push(`${report.staleDataTrades} stale-data trade(s) detected.`);
   if (!allEntriesHaveExecutionPrice) messages.push("At least one entry lacked a candle-close execution price.");
@@ -485,7 +499,8 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
   if (!setupCategoryStatsRecorded) messages.push("No setup category stats were recorded.");
   if (messages.length === 0) messages.push("Replay acceptance checks passed.");
 
-  const passed = errorsZero
+  const passed = hasExecutableTrades
+    && errorsZero
     && noStaleDataTrades
     && allEntriesHaveExecutionPrice
     && scoreDistributionVisible
@@ -494,6 +509,7 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
 
   return {
     passed,
+    hasExecutableTrades,
     errorsZero,
     noStaleDataTrades,
     allEntriesHaveExecutionPrice,
@@ -585,9 +601,8 @@ export function runReplay(input: ReplayInput): ReplayReport {
 
         if (exitReason) {
           const trade = closePosition(active, candle, i, exitPrice, exitReason);
-          const exitFeeUsd = estimateFeeUsd(asset, trade.amount, trade.exitPrice);
           trades.push(trade);
-          updatePortfolioAfterTrade(portfolio, trade, exitFeeUsd);
+          updatePortfolioAfterTrade(portfolio, trade);
           clearOpenPosition(portfolio, asset);
           for (const setup of active.setupTags) {
             const stat = ensureSetup(setup);
@@ -657,9 +672,8 @@ export function runReplay(input: ReplayInput): ReplayReport {
     if (active) {
       const finalCandle = candles[candles.length - 1];
       const trade = closePosition(active, finalCandle, candles.length - 1, finalCandle.close, "END_REPLAY");
-      const exitFeeUsd = estimateFeeUsd(asset, trade.amount, trade.exitPrice);
       trades.push(trade);
-      updatePortfolioAfterTrade(portfolio, trade, exitFeeUsd);
+      updatePortfolioAfterTrade(portfolio, trade);
       clearOpenPosition(portfolio, asset);
     }
   }

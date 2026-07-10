@@ -16,11 +16,21 @@ export async function POST(request: Request) {
         );
     }
 
+    let aiRelease: (() => Promise<void>) | null = null;
+    let userRelease: (() => Promise<void>) | null = null;
     try {
+        aiRelease = await PortfolioManager.acquireWriteLock("ai");
+        if (!aiRelease) {
+            return NextResponse.json({ success: false, error: "AI portfolio is busy; retry after the active scan completes." }, { status: 409 });
+        }
+        userRelease = await PortfolioManager.acquireWriteLock("user");
+        if (!userRelease) {
+            return NextResponse.json({ success: false, error: "User portfolio is busy; retry after the active update completes." }, { status: 409 });
+        }
         let capital = 10000;
         try {
             const body = await request.json();
-            if (body && typeof body.capital === "number" && body.capital > 0) {
+            if (body && typeof body.capital === "number" && Number.isFinite(body.capital) && body.capital >= 100 && body.capital <= 1_000_000) {
                 capital = body.capital;
             }
         } catch {
@@ -35,5 +45,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, message: `Competition reset! Both Human and AI portfolios set to $${capital.toLocaleString()} USD.` });
     } catch (error) {
         return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
+    } finally {
+        if (userRelease) await userRelease();
+        if (aiRelease) await aiRelease();
     }
 }

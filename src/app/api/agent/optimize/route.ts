@@ -2,26 +2,15 @@ import { NextResponse } from 'next/server';
 import { getEnv } from '@/lib/env';
 import { HyperbolicTimeChamber } from '@/lib/ai/hyperbolicTimeChamber';
 import { DatabasePruner } from '@/lib/database/databasePruner';
+import { verifyAuth } from '@/lib/auth';
 
 export const maxDuration = 30; // Vercel timeout
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const env = getEnv();
-    
-    // Read authorization credentials from the Authorization header
-    const authHeader = req.headers.get('authorization');
-    let token = searchParams.get('token');
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7);
-    }
-
-    // In a real cron, use a secure header or pre-shared key. 
-    // For Vercel cron, we can use CRON_SECRET if configured.
-    if (token !== env.ADMIN_SECRET && token !== env.CRON_SECRET) {
+    const auth = verifyAuth(req);
+    if (!auth.authorized || (auth.source !== "dashboard" && auth.source !== "cron")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

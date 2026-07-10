@@ -4,7 +4,7 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { calculatePnlUsd } from "@/lib/trading/assetSpecs";
+import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -319,7 +319,8 @@ export async function GET(request: Request) {
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
                         const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
-                        return pos.usdInvested + pnl;
+                        const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+                        return pos.usdInvested + pnl - exitFee;
                     };
 
                     if (portfolio.openPositions?.[asset]) {
@@ -382,7 +383,10 @@ export async function GET(request: Request) {
                 const calculateUnrealized = (pos: any) => {
                     if (!pos) return 0;
                     const currentPrice = prices[asset] || pos.entryPrice;
-                    return calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
+                    const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
+                    const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+                    const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+                    return grossPnl - entryFee - exitFee;
                 };
 
                 const openUnrealized = calculateUnrealized(portfolio.openPositions?.[asset]);

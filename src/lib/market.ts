@@ -234,9 +234,10 @@ export class MarketService {
       console.error(`Yahoo Finance fallback also failed for ${assetKey}:`, yahooError);
     }
 
+    // Never silently feed stale candles into signal generation. Callers can
+    // decide how to present the unavailable feed, but trading must fail closed.
     if (staleCandidate && staleCandidate.length > 0) {
-      await redis.set(cacheKey, JSON.stringify(staleCandidate), { ex: 15 });
-      return staleCandidate.slice(-limit);
+      throw new Error(`Market data for ${assetKey}/${timeframe} is stale after all feed attempts.`);
     }
 
     throw new Error(`Failed to fetch candles for asset ${assetKey} from all data feeds.`);

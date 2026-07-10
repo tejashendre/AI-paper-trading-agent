@@ -7,6 +7,10 @@ import { PortfolioManager as OriginalPortfolioManager } from "@/lib/portfolio";
 import { Trade, OpenPosition } from "@/lib/types";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 import { getMarketSessionState } from "@/lib/trading/marketSession";
+import { isEventBlackout } from "@/lib/trading/eventCalendar";
+import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { PortfolioGuards } from "@/lib/trading/portfolioGuards";
+import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
 
 // Proxy PortfolioManager calls to the 'ai' portfolio context for parallel execution
 const PortfolioManager = {
@@ -34,8 +38,14 @@ async function handleSwingTrade(request: Request) {
     return NextResponse.json({ error: `Asset ${targetAsset} is not supported` }, { status: 400 });
   }
 
+  let portfolioRelease: (() => Promise<void>) | null = null;
   try {
+    portfolioRelease = await OriginalPortfolioManager.acquireWriteLock("ai");
+    if (!portfolioRelease) return NextResponse.json({ error: "AI portfolio is busy; retry after the active scan completes." }, { status: 409 });
     const portfolio = await PortfolioManager.getPortfolio();
+    const learningRules = await LocalLearningMemory.getRules().catch(() => []);
+    const feedHealth = await FeedHealthSummary.build().catch(() => null);
+    const feedByAsset = new Map((feedHealth?.assets || []).map((row) => [row.asset, row]));
 
     if (!portfolio.openPositions) {
       portfolio.openPositions = {};
@@ -46,6 +56,11 @@ async function handleSwingTrade(request: Request) {
 
     for (const asset of assetsToScan) {
       try {
+        const assetFeed = feedByAsset.get(asset);
+        if (assetFeed && !assetFeed.safeForSwingExecution) {
+          scanResults.push({ asset, action: "SKIPPED", reason: `Feed health blocked autonomous entry: ${assetFeed.warnings[0] || assetFeed.status}.` });
+          continue;
+        }
         const currentPrice = await MarketService.getCurrentPrice(asset);
         
         // Skip if a position is already active for this asset
@@ -59,24 +74,59 @@ async function handleSwingTrade(request: Request) {
           continue;
         }
 
+        if (SUPPORTED_ASSETS[asset]?.category !== "crypto") {
+          const eventCheck = isEventBlackout(asset);
+          if (eventCheck.blocked) {
+            scanResults.push({ asset, action: "SKIPPED", reason: eventCheck.reason });
+            continue;
+          }
+        }
+
         const swingSignal = await SwingEngine.analyze(asset);
 
         if (swingSignal.action === 'SWING_BUY' || swingSignal.action === 'SWING_SHORT') {
           const isShort = swingSignal.action === 'SWING_SHORT';
+          const allowedSlippage = SUPPORTED_ASSETS[asset]?.category === "crypto" ? 0.15 : 0.08;
+          const executionSlippage = swingSignal.entryPrice > 0
+            ? Math.abs(currentPrice - swingSignal.entryPrice) / swingSignal.entryPrice * 100
+            : Infinity;
+          if (executionSlippage > allowedSlippage) {
+            scanResults.push({ asset, action: "BLOCKED", reason: `Execution price moved ${executionSlippage.toFixed(3)}% from the signal; maximum is ${allowedSlippage}%.`, score: swingSignal.score });
+            continue;
+          }
+
+          const executionStopLoss = currentPrice + (swingSignal.stopLoss - swingSignal.entryPrice);
+          const executionTakeProfit = currentPrice + (swingSignal.takeProfit - swingSignal.entryPrice);
+          const portfolioGuard = PortfolioGuards.evaluateNewSwing({
+            portfolio,
+            asset,
+            direction: isShort ? "SHORT" : "LONG",
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            setupTags: swingSignal.setupTags,
+            learningRules,
+          });
+          if (!portfolioGuard.approved) {
+            scanResults.push({ asset, action: "BLOCKED", reason: portfolioGuard.reason, score: swingSignal.score });
+            continue;
+          }
 
           const admission = TradeAdmissionController.evaluate({
             portfolio,
             asset,
             direction: isShort ? "SHORT" : "LONG",
             entryPrice: currentPrice,
-            stopLoss: swingSignal.stopLoss,
-            takeProfit: swingSignal.takeProfit,
+            stopLoss: executionStopLoss,
+            takeProfit: executionTakeProfit,
             signalScore: swingSignal.score,
             finalConviction: swingSignal.finalConviction,
             learningAdjustment: swingSignal.learningAdjustment,
             setupTags: swingSignal.setupTags,
             reasoning: swingSignal.reasoning,
             strategyType: "swing",
+            requestedMarginUsd: portfolioGuard.recoveryProbe
+              ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
+              : undefined,
           });
 
           if (!admission.approved) {
@@ -94,8 +144,9 @@ async function handleSwingTrade(request: Request) {
             btcAmount: admission.amount,
             usdInvested: admission.requiredMarginUsd,
             entryFeePaid: admission.entryFeeUsd,
-            stopLoss: swingSignal.stopLoss,
-            takeProfit: swingSignal.takeProfit,
+            stopLoss: executionStopLoss,
+            initialStopLoss: executionStopLoss,
+            takeProfit: executionTakeProfit,
             entryTime: new Date().toISOString(),
             signalScore: swingSignal.score,
             finalConviction: swingSignal.finalConviction,
@@ -131,8 +182,8 @@ async function handleSwingTrade(request: Request) {
             btcAmount: admission.amount,
             price: currentPrice,
             usdValue: admission.requiredMarginUsd,
-            stopLoss: swingSignal.stopLoss,
-            takeProfit: swingSignal.takeProfit,
+            stopLoss: executionStopLoss,
+            takeProfit: executionTakeProfit,
             signalScore: swingSignal.score,
             finalConviction: swingSignal.finalConviction,
             decisionState: swingSignal.decisionState,
@@ -159,5 +210,7 @@ async function handleSwingTrade(request: Request) {
     const errorMsg = e instanceof Error ? e.message : String(e);
     await Logger.error(`Swing execution run failed: ${errorMsg}`);
     return NextResponse.json({ error: errorMsg }, { status: 500 });
+  } finally {
+    if (portfolioRelease) await portfolioRelease();
   }
 }

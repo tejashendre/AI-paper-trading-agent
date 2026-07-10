@@ -162,6 +162,8 @@ export interface OpenPosition {
   btcAmount: number;      // Deprecated/Compatibility helper
   usdInvested: number;
   stopLoss: number;
+  /** Immutable protective stop basis used for trailing calculations. */
+  initialStopLoss?: number;
   takeProfit: number;
   entryTime: string;
   signalScore: number;
@@ -270,6 +272,7 @@ export interface Trade {
   rawTakeProfit?: number;
   targetAdjustedReason?: string;
   reasoning: string;
+  isPartialExit?: boolean;
   // Filled when position is closed:
   pnl?: number;
   pnlPercent?: number;

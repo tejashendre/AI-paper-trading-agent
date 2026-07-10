@@ -4,6 +4,10 @@ import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
 import { Candle, Portfolio } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
+import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
+import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/trading/localLearning";
+import { hurstExponent } from "../src/lib/statistics";
+import { isEventBlackout } from "../src/lib/trading/eventCalendar";
 import fs from "fs";
 import path from "path";
 
@@ -175,6 +179,40 @@ function auditAssetSpecs(): AuditResult[] {
   checks.push(result(forexOk ? "PASS" : "WARN", "forex slower-risk treatment", forexOk ? "Forex starts from conservative margin caps in free-data mode." : "Forex margin caps are aggressive; verify live feed quality first."));
 
   return checks;
+}
+
+function auditStatisticalRegimes(): AuditResult[] {
+  const trend = Array.from({ length: 160 }, (_, index) => 100 * Math.exp(index * 0.001));
+  let seed = 123456789;
+  let randomWalk = 100;
+  const walk = [randomWalk];
+  for (let index = 1; index < 240; index++) {
+    seed = (1664525 * seed + 1013904223) >>> 0;
+    const step = (seed / 0x100000000 - 0.5) * 0.02;
+    randomWalk *= Math.exp(step);
+    walk.push(randomWalk);
+  }
+  const trendHurst = hurstExponent(trend, 20);
+  const walkHurst = hurstExponent(walk, 20);
+
+  return [result(
+    trendHurst > 0.8 && walkHurst > 0.3 && walkHurst < 0.75 ? "PASS" : "FAIL",
+    "Hurst regime calibration",
+    `Deterministic trend H=${trendHurst.toFixed(3)}; deterministic random walk H=${walkHurst.toFixed(3)}. Random walks must not be forced to 1.0.`
+  )];
+}
+
+function auditEventCalendar(): AuditResult[] {
+  const fomc = isEventBlackout("GOLD", new Date("2026-07-29T17:45:00Z"));
+  const boe = isEventBlackout("GBPUSD", new Date("2026-07-30T10:45:00Z"));
+  const eia = isEventBlackout("OIL", new Date("2026-07-15T14:15:00Z"));
+  const normalOil = isEventBlackout("OIL", new Date("2026-07-16T14:15:00Z"));
+
+  return [result(
+    fomc.blocked && boe.blocked && eia.blocked && !normalOil.blocked ? "PASS" : "FAIL",
+    "current macro release guards",
+    "FOMC, BOE, and recurring Wednesday EIA release windows are protected without blocking an ordinary OIL session."
+  )];
 }
 
 function auditAdmissionSizing(): AuditResult[] {
@@ -364,6 +402,24 @@ function auditAdmissionSizing(): AuditResult[] {
       : "Controller allowed a LONG trade with take-profit below entry."
   ));
 
+  const jpyFeeGuard = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "USDJPY",
+    direction: "LONG",
+    entryPrice: 160,
+    stopLoss: 159,
+    takeProfit: 160.1,
+    signalScore: 18,
+    reasoning: "Audit JPY-denominated fee guard",
+    strategyType: "swing",
+    finalConviction: 85,
+  });
+  checks.push(result(
+    !jpyFeeGuard.approved && jpyFeeGuard.reason.includes("fee-viable") ? "PASS" : "FAIL",
+    "JPY fee guard uses USD PnL",
+    !jpyFeeGuard.approved ? jpyFeeGuard.reason : "USDJPY trade was admitted using an unconverted JPY price move."
+  ));
+
   return checks;
 }
 
@@ -495,6 +551,180 @@ function auditLearningConnections(): AuditResult[] {
   return checks;
 }
 
+function auditProductionRegressions(): AuditResult[] {
+  const read = (...segments: string[]) => fs.readFileSync(path.join(process.cwd(), ...segments), "utf8");
+  const portfolioSource = read("src", "lib", "portfolio.ts");
+  const redisSource = read("src", "lib", "redis.ts");
+  const learningSource = read("src", "lib", "trading", "localLearning.ts");
+  const opportunitySource = read("src", "lib", "trading", "opportunityJournal.ts");
+  const feedSource = read("src", "lib", "data", "feedHealthSummary.ts");
+  const daemonSource = read("src", "daemon", "swingDaemon.ts");
+  const tradeSource = read("src", "app", "api", "trade", "route.ts");
+  const swingTradeSource = read("src", "app", "api", "trade", "swing", "route.ts");
+  const manualSource = read("src", "app", "api", "trade", "manual", "route.ts");
+  const backtestSource = read("src", "app", "api", "backtest", "route.ts");
+  const chartSource = read("src", "app", "api", "chart", "route.ts");
+  const composeSource = read("docker-compose.yml");
+
+  const lockSafe = redisSource.includes("compareAndDelete") && portfolioSource.includes("redis.compareAndDelete(key, token)");
+  const learningVersioned = learningSource.includes('learning:v2:localRules');
+  const opportunityVersioned = opportunitySource.includes('opportunity:v2:') && opportunitySource.includes("DEDUPE_SECONDS");
+  const feedEnforced = feedSource.includes("BINANCE_FUTURES_WS") &&
+    feedSource.includes("BYBIT_LINEAR_WS") &&
+    [daemonSource, tradeSource, swingTradeSource].every((source) => source.includes("safeForSwingExecution"));
+  const publicBounds = [backtestSource, chartSource].every((source) => source.includes("parsedLimit > 1_000"));
+  const manualFeeSafe = manualSource.includes("Number.isFinite(usdAmount)") &&
+    manualSource.includes("const netPnl = pnl - entryFee - exitFee");
+  const daemonHealth = composeSource.includes("quant-swing-daemon") && composeSource.includes("swing:lastScan:ai");
+  const recoverySafe = portfolioSource.includes("function isValidPortfolio") &&
+    portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
+    portfolioSource.includes("if (Array.isArray(backup))");
+
+  return [
+    result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
+      ? "Redis releases a write lock only when the caller still owns its token."
+      : "Portfolio lock release can delete a replacement lock after TTL expiry."),
+    result(learningVersioned && opportunityVersioned ? "PASS" : "FAIL", "derived-learning state migration", learningVersioned && opportunityVersioned
+      ? "Polluted learning/opportunity aggregates use versioned keys and observations are deduplicated."
+      : "Derived learning state may reuse polluted production aggregates."),
+    result(feedEnforced ? "PASS" : "FAIL", "dual WebSocket admission gate", feedEnforced
+      ? "Both exchange freshness signals feed the daemon and API entry gates."
+      : "Autonomous entry can proceed without verified realtime feed health."),
+    result(publicBounds ? "PASS" : "FAIL", "public historical request bounds", publicBounds
+      ? "Spectator chart and backtest requests are capped at 1,000 candles."
+      : "A public historical endpoint still accepts unbounded work."),
+    result(manualFeeSafe ? "PASS" : "FAIL", "manual trade finite and fee accounting", manualFeeSafe
+      ? "Manual entries reject non-finite sizes and closes deduct both fee legs."
+      : "Manual paper trades can corrupt balances or overstate PnL."),
+    result(daemonHealth ? "PASS" : "FAIL", "daemon scan healthcheck", daemonHealth
+      ? "Compose marks the daemon unhealthy when its scan snapshot disappears."
+      : "Container liveness does not prove the strategy loop is advancing."),
+    result(recoverySafe ? "PASS" : "FAIL", "validated atomic recovery backups", recoverySafe
+      ? "Portfolio backups are structurally validated and replaced atomically."
+      : "Crash recovery can accept malformed state or expose partially written JSON."),
+  ];
+}
+
+function auditPortfolioLearningGuards(): AuditResult[] {
+  const checks: AuditResult[] = [];
+  const severeAssetRule: LocalLearningRule = {
+    id: "asset:BTC",
+    scope: "asset",
+    key: "BTC",
+    action: "REDUCE",
+    confidenceAdjustment: -12,
+    message: "Audit negative-expectancy asset rule.",
+    sampleSize: 40,
+    favorableRate: 0.3,
+    avgMove: -8,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const ordinaryCandidate = PortfolioGuards.evaluateNewSwing({
+    portfolio: basePortfolio(),
+    asset: "BTC",
+    direction: "LONG",
+    dataQuality: 90,
+    finalConviction: 84,
+    setupTags: ["VWAP_RECLAIM"],
+    learningRules: [severeAssetRule],
+  });
+  checks.push(result(
+    !ordinaryCandidate.approved ? "PASS" : "FAIL",
+    "severe losing-asset admission gate",
+    !ordinaryCandidate.approved
+      ? "A materially losing asset cannot re-enter on ordinary conviction."
+      : "A materially losing asset was allowed to re-enter without exceptional evidence."
+  ));
+
+  const exceptionalCandidate = PortfolioGuards.evaluateNewSwing({
+    portfolio: basePortfolio(),
+    asset: "BTC",
+    direction: "LONG",
+    dataQuality: 90,
+    finalConviction: 92,
+    setupTags: ["VWAP_RECLAIM"],
+    learningRules: [severeAssetRule],
+  });
+  checks.push(result(
+    exceptionalCandidate.approved && exceptionalCandidate.recoveryProbe ? "PASS" : "FAIL",
+    "losing-asset recovery probe",
+    exceptionalCandidate.approved && exceptionalCandidate.recoveryProbe
+      ? "Exceptional evidence permits only a controlled recovery probe, preserving a path to relearn without full-size risk."
+      : "The guard did not preserve the intended controlled recovery path."
+  ));
+
+  const conflictingSetupRule: LocalLearningRule = {
+    ...severeAssetRule,
+    id: "setup:VWAP_RECLAIM",
+    scope: "setup",
+    key: "VWAP_RECLAIM",
+  };
+  const doubleNegativeCandidate = PortfolioGuards.evaluateNewSwing({
+    portfolio: basePortfolio(),
+    asset: "BTC",
+    direction: "LONG",
+    dataQuality: 95,
+    finalConviction: 95,
+    setupTags: ["VWAP_RECLAIM"],
+    learningRules: [severeAssetRule, conflictingSetupRule],
+  });
+  checks.push(result(
+    !doubleNegativeCandidate.approved ? "PASS" : "FAIL",
+    "asset-plus-setup negative expectancy gate",
+    !doubleNegativeCandidate.approved
+      ? "A setup is blocked when both its asset and setup history have severe negative expectancy."
+      : "A doubly underperforming asset/setup combination was incorrectly allowed."
+  ));
+
+  return checks;
+}
+
+function auditLearningAggregation(): AuditResult[] {
+  const now = new Date().toISOString();
+  const rules: LocalLearningRule[] = [
+    { id: "asset:SILVER", scope: "asset", key: "SILVER", action: "BOOST", confidenceAdjustment: 1, message: "Profitable lifetime sample", sampleSize: 16, favorableRate: 0.67, avgMove: 6.2, updatedAt: now },
+    { id: "review:asset:SILVER", scope: "asset", key: "SILVER", action: "REDUCE", confidenceAdjustment: -5, message: "Weak recent exits", sampleSize: 8, favorableRate: 0.5, avgMove: -1, updatedAt: now },
+    { id: "setup:VWAP_RECLAIM", scope: "setup", key: "VWAP_RECLAIM", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
+    { id: "setup:VOLUME_BURST", scope: "setup", key: "VOLUME_BURST", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
+    { id: "setup:VOLATILITY_EXPANSION", scope: "setup", key: "VOLATILITY_EXPANSION", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
+  ];
+  const silver = calculateLearningAdjustment(rules, "SILVER", ["VWAP_RECLAIM", "VOLUME_BURST", "VOLATILITY_EXPANSION"]);
+  const severeAsset: LocalLearningRule = {
+    id: "asset:USDJPY", scope: "asset", key: "USDJPY", action: "REDUCE", confidenceAdjustment: -12,
+    message: "Severe loss sample", sampleSize: 20, favorableRate: 0.125, avgMove: -20, updatedAt: now,
+  };
+  const usdJpy = calculateLearningAdjustment([severeAsset], "USDJPY", []);
+  const normalizedSetup = calculateLearningAdjustment([{
+    id: "setup:HTF_TREND_BREAKOUT", scope: "setup", key: "HTF_TREND_BREAKOUT", action: "REDUCE",
+    confidenceAdjustment: -8, message: "Weak trend setup", sampleSize: 20, favorableRate: 0.3, avgMove: -1, updatedAt: now,
+  }], "OIL", ["4H Structural Uptrend (Hurst: 0.71)"]);
+
+  return [
+    result(
+      silver.adjustment === -9 && !silver.watchOnly ? "PASS" : "FAIL",
+      "correlated learning evidence",
+      silver.adjustment === -9 && !silver.watchOnly
+        ? "Overlapping asset reviews and three setup tags are bounded instead of being counted as five independent failures."
+        : `Expected bounded SILVER adjustment -9 without watch-only; got ${silver.adjustment}, watch-only=${silver.watchOnly}.`
+    ),
+    result(
+      usdJpy.adjustment === -12 && usdJpy.watchOnly ? "PASS" : "FAIL",
+      "severe asset learning restriction",
+      usdJpy.adjustment === -12 && usdJpy.watchOnly
+        ? "Genuinely severe asset-level loss evidence still enters watch-only mode."
+        : "Severe asset evidence was weakened by the aggregation fix."
+    ),
+    result(
+      normalizedSetup.adjustment === -5 ? "PASS" : "FAIL",
+      "live setup normalization",
+      normalizedSetup.adjustment === -5
+        ? "Descriptive live structure tags match their stable historical setup category with bounded influence."
+        : `Expected normalized setup adjustment -5; got ${normalizedSetup.adjustment}.`
+    ),
+  ];
+}
+
 function auditTradeReviewMemory(): AuditResult[] {
   const checks: AuditResult[] = [];
 
@@ -577,7 +807,9 @@ function syntheticCandles(startPrice: number, drift: number, count = 260): Candl
     const close = Math.max(0.0001, open * (1 + drift) + wave + impulse);
     const high = Math.max(open, close) * (1 + 0.003 + (i % 10 === 0 ? 0.004 : 0));
     const low = Math.min(open, close) * (1 - 0.003 - (i % 13 === 0 ? 0.003 : 0));
-    const volume = 1000 + (i % 21 === 0 ? 900 : 0) + Math.abs(wave) * 10;
+    // Periodic directional impulses also carry volume so the replay fixture
+    // exercises the same breakout/rejection confirmation required in live use.
+    const volume = 1000 + (i % 21 === 0 ? 900 : 0) + (i % 34 === 0 ? 1800 : 0) + Math.abs(wave) * 10;
 
     candles.push({
       time: startTime + i * 900,
@@ -610,9 +842,23 @@ function auditReplayEngine(): AuditResult[] {
     report.acceptance.messages.join(" ")
   ));
   checks.push(result(
-    report.totalTrades >= 0 && Object.keys(report.scoreDistribution).length >= 5 ? "PASS" : "FAIL",
+    report.totalTrades > 0 && Object.keys(report.scoreDistribution).length >= 5 ? "PASS" : "WARN",
     "replay metrics coverage",
-    `${report.totalTrades} replay trade(s), ${report.watchedSetups} watched setup(s), ${(report.missedOpportunityRate * 100).toFixed(1)}% missed-opportunity rate.`
+    report.totalTrades > 0
+      ? `${report.totalTrades} replay trade(s), ${report.watchedSetups} watched setup(s), ${(report.missedOpportunityRate * 100).toFixed(1)}% missed-opportunity rate.`
+      : `${report.watchedSetups} watched setup(s), ${(report.missedOpportunityRate * 100).toFixed(1)}% missed-opportunity rate. A zero-trade replay cannot validate profitability or execution behavior.`
+  ));
+  const feeMathValid = report.trades.every((trade) => (
+    Math.abs(trade.pnlUsd - (trade.grossPnlUsd - trade.entryFeeUsd - trade.exitFeeUsd)) < 0.000001
+  ));
+  const netTradePnl = report.trades.reduce((sum, trade) => sum + trade.pnlUsd, 0);
+  const capitalMathValid = Math.abs(report.totalReturnUsd - netTradePnl) < 0.000001;
+  checks.push(result(
+    feeMathValid && capitalMathValid && report.totalTrades > 0 ? "PASS" : "FAIL",
+    "replay net fee accounting",
+    feeMathValid && capitalMathValid && report.totalTrades > 0
+      ? "Every replay trade and final capital include both entry and exit fees exactly once."
+      : "Replay fee deductions or final-capital reconciliation are inconsistent."
   ));
   checks.push(result(
     report.setupStats.length > 0 ? "PASS" : "FAIL",
@@ -804,10 +1050,15 @@ function printResults(results: AuditResult[]) {
 async function main() {
   const results: AuditResult[] = [
     ...auditAssetSpecs(),
+    ...auditStatisticalRegimes(),
+    ...auditEventCalendar(),
     ...auditAdmissionSizing(),
     ...auditTargetReachability(),
     ...auditExitSafety(),
     ...auditLearningConnections(),
+    ...auditProductionRegressions(),
+    ...auditPortfolioLearningGuards(),
+    ...auditLearningAggregation(),
     ...auditTradeReviewMemory(),
     ...auditReplayEngine(),
   ];

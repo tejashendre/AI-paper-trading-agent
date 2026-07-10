@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
 import { SignalEngine } from "@/lib/signals";
 import { RiskManager } from "@/lib/riskManager";
-import { MarketService } from "@/lib/market";
+import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { PortfolioManager } from "@/lib/portfolio";
 import { getEnv } from "@/lib/env";
 
@@ -14,6 +14,9 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const asset = url.searchParams.get("asset") || "BTC";
+  if (!SUPPORTED_ASSETS[asset]) {
+    return NextResponse.json({ error: "Unsupported asset" }, { status: 400 });
+  }
 
   try {
     const env = getEnv();

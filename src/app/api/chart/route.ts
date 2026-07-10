@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
-import { MarketService } from "@/lib/market";
+import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { computeAllIndicators } from "@/lib/indicators";
 import { PortfolioManager } from "@/lib/portfolio";
 import { Timeframe } from "@/lib/types";
@@ -12,10 +12,24 @@ export async function GET(request: Request) {
   if (!auth.authorized) return NextResponse.json({ error: auth.error }, { status: 401 });
 
   const url = new URL(request.url);
-  const interval = (url.searchParams.get("interval") || "1h") as Timeframe;
-  const limit = parseInt(url.searchParams.get("limit") || "720", 10);
+  const intervalValue = url.searchParams.get("interval") || "1h";
+  const parsedLimit = Number.parseInt(url.searchParams.get("limit") || "720", 10);
   const asset = url.searchParams.get("asset") || "BTC";
-  const portfolioType = (url.searchParams.get("portfolio") || "user") as "user" | "ai";
+  const portfolioValue = url.searchParams.get("portfolio") || "user";
+  const allowedTimeframes = new Set<Timeframe>(["1m", "5m", "15m", "30m", "1h", "4h"]);
+
+  if (!SUPPORTED_ASSETS[asset]) return NextResponse.json({ error: "Unsupported asset" }, { status: 400 });
+  if (!allowedTimeframes.has(intervalValue as Timeframe)) return NextResponse.json({ error: "Unsupported interval" }, { status: 400 });
+  if (!Number.isFinite(parsedLimit) || parsedLimit < 50 || parsedLimit > 1_000) {
+    return NextResponse.json({ error: "Limit must be between 50 and 1000" }, { status: 400 });
+  }
+  if (portfolioValue !== "user" && portfolioValue !== "ai") {
+    return NextResponse.json({ error: "Unsupported portfolio" }, { status: 400 });
+  }
+
+  const interval = intervalValue as Timeframe;
+  const limit = parsedLimit;
+  const portfolioType = portfolioValue;
 
   try {
     const candles = await MarketService.getCandles(interval, limit, asset);

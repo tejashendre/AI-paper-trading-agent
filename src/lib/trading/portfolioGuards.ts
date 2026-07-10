@@ -1,5 +1,6 @@
 import { OpenPosition, Portfolio } from "@/lib/types";
 import { LocalLearningRule } from "./localLearning";
+import { normalizeSetupTags } from "./setupPerformance";
 
 export type PortfolioExposureMode = "NORMAL" | "DRAWDOWN" | "RECOVERY";
 
@@ -77,12 +78,27 @@ function reduceRuleKeys(rules: LocalLearningRule[] = []) {
 
 function hasReduceRuleForPosition(position: OpenPosition, reduceKeys: Set<string>) {
   if (reduceKeys.has(`asset:${position.asset}`)) return true;
-  return (position.setupTags || []).some((tag) => reduceKeys.has(`setup:${tag}`));
+  return normalizeSetupTags(position.setupTags).some((tag) => reduceKeys.has(`setup:${tag}`));
 }
 
 function hasReduceRuleForCandidate(input: PortfolioGuardInput, reduceKeys: Set<string>) {
   if (reduceKeys.has(`asset:${input.asset}`)) return true;
-  return (input.setupTags || []).some((tag) => reduceKeys.has(`setup:${tag}`));
+  return normalizeSetupTags(input.setupTags).some((tag) => reduceKeys.has(`setup:${tag}`));
+}
+
+function severeReduceRules(input: PortfolioGuardInput) {
+  const normalizedSetups = new Set(normalizeSetupTags(input.setupTags));
+  return (input.learningRules || []).filter((rule) => {
+    const matchesCandidate =
+      (rule.scope === "asset" && rule.key === input.asset) ||
+      (rule.scope === "setup" && normalizedSetups.has(rule.key));
+
+    return matchesCandidate &&
+      rule.action === "REDUCE" &&
+      rule.confidenceAdjustment <= -8 &&
+      rule.sampleSize >= 8 &&
+      rule.avgMove < 0;
+  });
 }
 
 function emptyDecision(input: PortfolioGuardInput, reason: string): PortfolioGuardDecision {
@@ -157,6 +173,10 @@ export class PortfolioGuards {
     }
 
     if (hasReduceRuleForCandidate(input, reduceKeys)) {
+      const severeRules = severeReduceRules(input);
+      const severeAssetRule = severeRules.find((rule) => rule.scope === "asset");
+      const severeSetupRule = severeRules.find((rule) => rule.scope === "setup");
+
       if (reduceAssetOpenCount >= maxReduceAssetPositions) {
         return emptyDecision(
           input,
@@ -164,13 +184,30 @@ export class PortfolioGuards {
         );
       }
 
-      if (Number(input.finalConviction || 0) < 82) {
-        return {
-          ...decision,
-          recoveryProbe: true,
-          reason: "Local learning is cautious on this asset/setup, so the bot may only take a smaller recovery probe instead of blocking the trade completely.",
-        };
+      if (severeAssetRule && severeSetupRule) {
+        return emptyDecision(
+          input,
+          `Closed-trade evidence is negative for both ${input.asset} and setup ${severeSetupRule.key}; wait for a different setup before risking more paper capital.`
+        );
       }
+
+      if (
+        severeAssetRule &&
+        (Number(input.finalConviction || 0) < 90 || Number(input.dataQuality || 0) < 85)
+      ) {
+        return emptyDecision(
+          input,
+          `${input.asset} has severe negative expectancy in the local sample; a recovery probe requires 90+ conviction and 85+ data quality.`
+        );
+      }
+
+      return {
+        ...decision,
+        recoveryProbe: true,
+        reason: severeAssetRule
+          ? `${input.asset} has severe historical underperformance, so only one exceptional, small recovery probe is allowed.`
+          : "Local learning is cautious on this asset/setup, so only a smaller recovery probe is allowed.",
+      };
     }
 
     return decision;

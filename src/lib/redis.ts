@@ -43,6 +43,15 @@ export class LocalRedisProxy {
     return this.client.del(key);
   }
 
+  async compareAndDelete(key: string, expectedValue: string): Promise<number> {
+    return Number(await this.client.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+      1,
+      key,
+      expectedValue
+    ));
+  }
+
   async lpush(key: string, val: any): Promise<number> {
     const v = typeof val === 'string' ? val : JSON.stringify(val);
     return this.client.lpush(key, v);

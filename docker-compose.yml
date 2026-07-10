@@ -13,6 +13,11 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   quant-dashboard:
     build: 
@@ -29,9 +34,15 @@ services:
     volumes:
       - ./data:/app/data
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   swing-daemon:
     build:
@@ -47,9 +58,16 @@ services:
     volumes:
       - ./data:/app/data
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);r.get('swing:lastScan:ai').then(v=>{r.disconnect();process.exit(v?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
 volumes:
   redis_data:
