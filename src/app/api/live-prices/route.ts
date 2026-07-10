@@ -18,6 +18,13 @@ type LivePriceSnapshot = {
   high24h: number;
   low24h: number;
   volume24h: number;
+  independentSources?: Array<{
+    provider: string;
+    price: number;
+    fresh: boolean;
+    updatedAt: string | null;
+    ageSeconds: number | null;
+  }>;
 };
 
 function cryptoMode(asset: string): LivePriceSnapshot["mode"] {
@@ -41,16 +48,36 @@ export async function GET(request: Request) {
 
   await Promise.all(assets.map(async (asset) => {
     const mode = cryptoMode(asset);
-    const [livePrice, liveMeta, cachedPrice] = await Promise.all([
+    const [livePrice, liveMeta, cachedPrice, binancePrice, binanceMeta, bybitPrice, bybitMeta] = await Promise.all([
       redis.get<number | string>(`market:live:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:${asset}`).catch(() => null),
       redis.get<number | string>(`cache:price:${asset}`).catch(() => null),
+      redis.get<number | string>(`market:live:BINANCE_FUTURES_WS:${asset}`).catch(() => null),
+      redis.get<any>(`market:liveMeta:BINANCE_FUTURES_WS:${asset}`).catch(() => null),
+      redis.get<number | string>(`market:live:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
+      redis.get<any>(`market:liveMeta:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
     ]);
 
     const liveNumber = Number(livePrice);
     const cachedNumber = Number(cachedPrice);
     const updatedAt = liveMeta?.updatedAt || null;
     const liveAge = ageSeconds(updatedAt);
+    const independentSources = mode === "REALTIME_FAST"
+      ? [
+          { provider: "BINANCE_FUTURES_WS", price: Number(binancePrice), meta: binanceMeta },
+          { provider: "BYBIT_LINEAR_WS", price: Number(bybitPrice), meta: bybitMeta },
+        ].filter((source) => Number.isFinite(source.price) && source.price > 0).map((source) => {
+          const sourceUpdatedAt = source.meta?.updatedAt || null;
+          const sourceAge = ageSeconds(sourceUpdatedAt);
+          return {
+            provider: source.provider,
+            price: source.price,
+            fresh: sourceAge !== null && sourceAge <= 10,
+            updatedAt: sourceUpdatedAt,
+            ageSeconds: sourceAge,
+          };
+        })
+      : undefined;
 
     if (Number.isFinite(liveNumber) && liveNumber > 0) {
       prices[asset] = {
@@ -66,6 +93,7 @@ export async function GET(request: Request) {
         high24h: 0,
         low24h: 0,
         volume24h: 0,
+        independentSources,
       };
       return;
     }
@@ -84,6 +112,7 @@ export async function GET(request: Request) {
         high24h: 0,
         low24h: 0,
         volume24h: 0,
+        independentSources,
       };
       return;
     }
@@ -104,6 +133,7 @@ export async function GET(request: Request) {
           high24h: 0,
           low24h: 0,
           volume24h: 0,
+          independentSources,
         };
         return;
       }
@@ -122,6 +152,7 @@ export async function GET(request: Request) {
       high24h: 0,
       low24h: 0,
       volume24h: 0,
+      independentSources,
     };
   }));
 
@@ -129,6 +160,13 @@ export async function GET(request: Request) {
   const websocket = snapshots.filter((snapshot) => snapshot.source === "WEBSOCKET" && snapshot.fresh).length;
   const cached = snapshots.filter((snapshot) => snapshot.source === "RECENT_CACHE").length;
   const missing = snapshots.filter((snapshot) => snapshot.source === "REALTIME_UNAVAILABLE").length;
+  const assetsWithDualWebsocket = snapshots.filter((snapshot) => (
+    snapshot.independentSources?.filter((source) => source.fresh).length === 2
+  )).length;
+  const independentWebsocketFeeds = snapshots.reduce(
+    (sum, snapshot) => sum + (snapshot.independentSources?.filter((source) => source.fresh).length || 0),
+    0
+  );
 
   return NextResponse.json({
     success: true,
@@ -139,6 +177,8 @@ export async function GET(request: Request) {
       websocket,
       cached,
       missing,
+      independentWebsocketFeeds,
+      assetsWithDualWebsocket,
       realtimeAssets: assets.filter((asset) => cryptoMode(asset) === "REALTIME_FAST"),
     },
     prices,

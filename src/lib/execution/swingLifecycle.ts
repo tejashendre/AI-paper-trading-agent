@@ -588,6 +588,7 @@ async function takePartialProfit(
     entryFeeShare
   );
   partialTrade.reasoning = `Partial profit taken on swing winner. Closed ${(exitFraction * 100).toFixed(0)}% and left runner active. Net PnL: $${netPnl.toFixed(2)}`;
+  partialTrade.isPartialExit = true;
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(partialTrade, portfolioType);

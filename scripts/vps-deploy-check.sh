@@ -119,6 +119,13 @@ for service in quant-dashboard swing-daemon redis; do
 done
 echo "Required services are running."
 
+for container in quant-redis quant-dashboard quant-swing-daemon; do
+  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$container" 2>/dev/null || true)"
+  echo "$container health: $health"
+  [ "$health" = "healthy" ] || fail "Container is not healthy: $container ($health)"
+done
+echo "Healthchecks passed for Redis, dashboard, and swing daemon."
+
 if [ -n "$STATUS_URL" ]; then
   section "Live Strategy Audit"
   docker compose exec -T \

@@ -7,12 +7,12 @@
         "build": "next build",
         "start": "next start",
         "lint": "next lint",
-        "daemon:swing": "npx tsx src/daemon/swingDaemon.ts",
-        "audit:strategy": "npx tsx scripts/strategy-audit.ts",
-        "agent:status": "npx tsx scripts/agent-status.ts",
-        "agent:audit": "npx tsx scripts/strategy-audit.ts",
-        "agent:explain": "npx tsx scripts/explain-latest-scan.ts",
-        "replay:strategy": "npx tsx scripts/replay-strategy.ts"
+        "daemon:swing": "tsx src/daemon/swingDaemon.ts",
+        "audit:strategy": "tsx scripts/strategy-audit.ts",
+        "agent:status": "tsx scripts/agent-status.ts",
+        "agent:audit": "tsx scripts/strategy-audit.ts",
+        "agent:explain": "tsx scripts/explain-latest-scan.ts",
+        "replay:strategy": "tsx scripts/replay-strategy.ts"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.106.2",
@@ -22,7 +22,6 @@
         "lightweight-charts": "^4.2.0",
         "lucide-react": "^0.446.0",
         "next": "^15.5.9",
-        "protobufjs": "^8.5.0",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "ws": "^8.21.0",

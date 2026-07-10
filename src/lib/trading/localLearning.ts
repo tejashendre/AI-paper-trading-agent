@@ -3,10 +3,10 @@ import path from "path";
 import { getRedis } from "@/lib/redis";
 import { PortfolioManager } from "@/lib/portfolio";
 import { OpportunityJournal } from "./opportunityJournal";
-import { SetupPerformance, SetupPerformanceBucket } from "./setupPerformance";
+import { normalizeSetupTags, SetupPerformance, SetupPerformanceBucket } from "./setupPerformance";
 import { TradeReviewJournal, TradeReviewAssetSignal } from "./tradeReviewJournal";
 
-const RULES_KEY = "learning:localRules";
+const RULES_KEY = "learning:v2:localRules";
 
 export interface LocalLearningRule {
   id: string;
@@ -86,7 +86,7 @@ function ruleFromPerformanceBucket(
   if (bucket.confidenceAdjustment === 0) return null;
 
   const action: LocalLearningRule["action"] = bucket.confidenceAdjustment > 0 ? "BOOST" : "REDUCE";
-  const sampleSize = Math.max(bucket.tradeCount, bucket.opportunityCount);
+  const sampleSize = bucket.tradeCount > 0 ? bucket.tradeCount : bucket.opportunityCount;
   const favorableRate = bucket.tradeCount > 0 ? bucket.winRate : bucket.opportunityFavorableRate;
   const avgMove = bucket.tradeCount > 0 ? bucket.avgPnl : bucket.avgOpportunityMove;
   const evidenceLabel = bucket.evidence.includes("trade") ? "closed trades" : "watched opportunities";
@@ -123,6 +123,58 @@ function ruleFromTradeReviewSignal(signal: TradeReviewAssetSignal): LocalLearnin
   };
 }
 
+function combineCorrelatedAdjustments(values: number[]): number {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) return 0;
+
+  const strongestPositive = Math.max(0, ...finiteValues);
+  const strongestNegative = Math.min(0, ...finiteValues);
+  return strongestPositive + strongestNegative;
+}
+
+export function calculateLearningAdjustment(
+  rules: LocalLearningRule[],
+  asset: string,
+  setupTags: string[] = []
+) {
+  const normalizedSetups = new Set(normalizeSetupTags(setupTags));
+  const matched = rules.filter((rule) => (
+    (rule.scope === "asset" && rule.key === asset) ||
+    (rule.scope === "setup" && normalizedSetups.has(rule.key)) ||
+    rule.scope === "global"
+  ));
+
+  // Lifetime performance and recent reviews are derived from overlapping
+  // closed trades. Multiple setup tags from one signal are correlated too.
+  // Use the strongest opposing evidence in each scope rather than adding
+  // every rule and turning one observation into several confidence votes.
+  const assetAdjustment = combineCorrelatedAdjustments(
+    matched.filter((rule) => rule.scope === "asset").map((rule) => rule.confidenceAdjustment)
+  );
+  const setupAdjustment = Math.max(-5, Math.min(4, combineCorrelatedAdjustments(
+    matched.filter((rule) => rule.scope === "setup").map((rule) => rule.confidenceAdjustment)
+  )));
+  const globalAdjustment = Math.max(-3, Math.min(3, combineCorrelatedAdjustments(
+    matched.filter((rule) => rule.scope === "global").map((rule) => rule.confidenceAdjustment)
+  )));
+
+  const watchOnly = matched.some((rule) =>
+    rule.scope === "asset" &&
+    rule.action === "REDUCE" &&
+    rule.favorableRate < 0.25 &&
+    rule.sampleSize >= 6 &&
+    rule.avgMove < -0.05
+  );
+
+  return {
+    adjustment: Math.max(-12, Math.min(8, assetAdjustment + setupAdjustment + globalAdjustment)),
+    watchOnly,
+    rules: matched
+      .sort((a, b) => Math.abs(b.confidenceAdjustment) - Math.abs(a.confidenceAdjustment))
+      .slice(0, 5),
+  };
+}
+
 export class LocalLearningMemory {
   static async rebuildRules() {
     const summary = await OpportunityJournal.getSummary();
@@ -130,11 +182,6 @@ export class LocalLearningMemory {
 
     for (const [asset, stats] of Object.entries(summary.byAsset || {}) as any) {
       const rule = classifyRule("asset", asset, stats);
-      if (rule) ruleMap.set(rule.id, rule);
-    }
-
-    for (const [setup, stats] of Object.entries(summary.bySetup || {}) as any) {
-      const rule = classifyRule("setup", setup, stats);
       if (rule) ruleMap.set(rule.id, rule);
     }
 
@@ -170,19 +217,6 @@ export class LocalLearningMemory {
 
   static async getAdjustment(asset: string, setupTags: string[] = []) {
     const rules = await this.getRules();
-    const matched = rules.filter((rule) => (
-      (rule.scope === "asset" && rule.key === asset) ||
-      (rule.scope === "setup" && setupTags.includes(rule.key)) ||
-      rule.scope === "global"
-    ));
-
-    const adjustment = matched.reduce((sum, rule) => sum + rule.confidenceAdjustment, 0);
-    const watchOnly = matched.some((rule) => rule.action === "REDUCE" && rule.favorableRate < 0.25 && rule.sampleSize >= 6 && rule.avgMove < -0.05);
-
-    return {
-      adjustment: Math.max(-15, Math.min(10, adjustment)),
-      watchOnly,
-      rules: matched.slice(0, 5),
-    };
+    return calculateLearningAdjustment(rules, asset, setupTags);
   }
 }

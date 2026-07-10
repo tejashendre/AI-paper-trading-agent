@@ -288,7 +288,9 @@ export class TradeAdmissionController {
     // still smaller than the round-trip fee, netting near-zero or negative
     // "wins". Use a conservative capture fraction instead of the full move.
     const REALISTIC_CAPTURE_FRACTION = 0.5;
-    const fullMoveProfitUsd = Math.abs(input.takeProfit - input.entryPrice) * amount;
+    // Use contract-aware PnL math. For JPY-quoted assets, a raw price move
+    // times amount is in JPY, not USD, and would overstate fee viability.
+    const fullMoveProfitUsd = getUsdMovePerUnit(input.asset, input.entryPrice, input.takeProfit) * amount;
     const realisticProfitUsd = fullMoveProfitUsd * REALISTIC_CAPTURE_FRACTION;
     const roundTripFeeUsd = entryFeeUsd * 2;
     if (realisticProfitUsd < roundTripFeeUsd * 3) {

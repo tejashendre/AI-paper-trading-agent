@@ -74,7 +74,7 @@ function humanLabel(key: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function stableSetupTags(tags?: string[]) {
+export function normalizeSetupTags(tags?: string[], includeUntagged = false) {
   const normalized = new Set<string>();
 
   for (const tag of tags || []) {
@@ -83,14 +83,14 @@ function stableSetupTags(tags?: string[]) {
     if (upper.includes("VWAP_REJECTION") || upper.includes("OVERBOUGHT")) normalized.add("VWAP_REJECTION");
     if (upper.includes("VOLUME_BURST")) normalized.add("VOLUME_BURST");
     if (upper.includes("VOLATILITY_EXPANSION")) normalized.add("VOLATILITY_EXPANSION");
-    if (upper.includes("LIVE_BREAK")) normalized.add("MOMENTUM_CONTINUATION");
+    if (upper.includes("LIVE_BREAK") || upper.includes("MOMENTUM_CONTINUATION")) normalized.add("MOMENTUM_CONTINUATION");
     if (upper.includes("SQUEEZE")) normalized.add("SQUEEZE_BREAKOUT");
-    if (upper.includes("STRUCTURAL")) normalized.add("HTF_TREND_BREAKOUT");
-    if (upper.includes("Z-SCORE")) normalized.add("MEAN_REVERSION_EXTREME");
+    if (upper.includes("STRUCTURAL") || upper.includes("HTF_TREND_BREAKOUT")) normalized.add("HTF_TREND_BREAKOUT");
+    if (upper.includes("Z-SCORE") || upper.includes("MEAN_REVERSION_EXTREME")) normalized.add("MEAN_REVERSION_EXTREME");
     if (upper.includes("DATA")) normalized.add("DATA_QUALITY");
   }
 
-  return normalized.size > 0 ? Array.from(normalized) : ["UNTAGGED"];
+  return normalized.size > 0 ? Array.from(normalized) : includeUntagged ? ["UNTAGGED"] : [];
 }
 
 function addTrade(bucket: MutableBucket, trade: Trade) {
@@ -201,11 +201,11 @@ export class SetupPerformance {
   static build(aiTrades: Trade[], opportunitySummary: any): SetupPerformanceSummary {
     const bySetup = new Map<string, MutableBucket>();
     const byAsset = new Map<string, MutableBucket>();
-    const closedTrades = aiTrades.filter((trade) => typeof trade.pnl === "number");
+    const closedTrades = aiTrades.filter((trade) => typeof trade.pnl === "number" && !trade.isPartialExit);
     let taggedTradeCount = 0;
 
     for (const trade of closedTrades) {
-      const setupTags = stableSetupTags(trade.setupTags);
+      const setupTags = normalizeSetupTags(trade.setupTags, true);
       if (setupTags.some((tag) => tag !== "UNTAGGED")) taggedTradeCount++;
 
       for (const tag of setupTags) {
@@ -219,7 +219,10 @@ export class SetupPerformance {
     }
 
     for (const [setup, stats] of Object.entries(opportunitySummary?.bySetup || {}) as Array<[string, any]>) {
-      for (const tag of stableSetupTags([setup])) {
+      // Unknown diagnostics (for example STRUCTURE_ALIGNED or sensor-online
+      // tags) are not setups. Pooling every unknown key into UNTAGGED counted
+      // one market observation many times and polluted learning confidence.
+      for (const tag of normalizeSetupTags([setup])) {
         addOpportunity(upsert(bySetup, tag), stats);
       }
     }

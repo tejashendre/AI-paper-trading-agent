@@ -13,6 +13,7 @@ import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
+import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -313,9 +314,15 @@ async function runExitWatchdog() {
 
   try {
     await withPortfolioLock(async () => {
-      const portfolio = await getAIPortfolio();
-      ensurePortfolioShape(portfolio);
-      await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+      const portfolioRelease = await PortfolioManager.acquireWriteLock("ai");
+      if (!portfolioRelease) return;
+      try {
+        const portfolio = await getAIPortfolio();
+        ensurePortfolioShape(portfolio);
+        await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+      } finally {
+        await portfolioRelease();
+      }
     });
   } catch (error) {
     await Logger.error(`[EXIT_WATCHDOG] Failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -328,6 +335,19 @@ async function runEntryScan() {
   if (isEntryScanning) return;
   isEntryScanning = true;
   scanSequence += 1;
+
+  let portfolioRelease: (() => Promise<void>) | null = null;
+  try {
+    portfolioRelease = await PortfolioManager.acquireWriteLock("ai");
+  } catch (error) {
+    isEntryScanning = false;
+    await Logger.error(`[SWING SCAN] Portfolio lock failed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  if (!portfolioRelease) {
+    isEntryScanning = false;
+    return;
+  }
 
   const startedAt = new Date().toISOString();
   const results: SwingScanResult[] = [];
@@ -348,6 +368,8 @@ async function runEntryScan() {
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
     const learningRules = await LocalLearningMemory.getRules().catch(() => []);
+    const feedHealth = await FeedHealthSummary.build().catch(() => null);
+    const feedByAsset = new Map((feedHealth?.assets || []).map((row) => [row.asset, row]));
 
     exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
@@ -435,6 +457,22 @@ async function runEntryScan() {
           });
           continue;
         }
+      }
+
+      const assetFeed = feedByAsset.get(asset);
+      if (assetFeed && !assetFeed.safeForSwingExecution) {
+        results.push({
+          asset,
+          action: "SKIPPED",
+          reason: `Feed health blocked autonomous entry: ${assetFeed.warnings[0] || assetFeed.status}.`,
+          simpleStatus: "Waiting for reliable market data",
+          simpleReason: assetFeed.warnings[0] || `Feed status is ${assetFeed.status.toLowerCase()}.`,
+          nextStep: "The bot will resume this asset after its candle feed becomes fresh and reliable.",
+          decisionState: "BLOCKED_DATA",
+          dataQuality: assetFeed.score,
+          timestamp,
+        });
+        continue;
       }
 
       try {
@@ -660,6 +698,7 @@ async function runEntryScan() {
           btcAmount: admission.amount,
           usdInvested: admission.requiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
+          initialStopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           entryTime: new Date().toISOString(),
           signalScore: swingSignal.score,
@@ -814,6 +853,7 @@ async function runEntryScan() {
     await saveScanSnapshot(results, exitSweep, startedAt);
   } finally {
     isEntryScanning = false;
+    await portfolioRelease();
   }
 }
 

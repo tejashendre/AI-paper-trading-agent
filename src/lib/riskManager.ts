@@ -250,7 +250,13 @@ export class RiskManager {
     // ══════════════════════════════════════════════════════════════
     // Advanced Swing Trade Trailing Logic (Dynamic Watermark)
     // ══════════════════════════════════════════════════════════════
-    const originalRiskPercent = Math.abs(position.entryPrice - position.stopLoss) / position.entryPrice;
+    // Use the entry-time stop as the trailing basis. Using the current stop
+    // here shrinks the risk basis on every trail and can force premature exits.
+    const initialStopLoss = Number(position.initialStopLoss);
+    const stopBasis = Number.isFinite(initialStopLoss) && initialStopLoss > 0
+      ? initialStopLoss
+      : position.stopLoss;
+    const originalRiskPercent = Math.abs(position.entryPrice - stopBasis) / position.entryPrice;
     const activationThreshold = originalRiskPercent * 2.0; // Let swing winners breathe before hard trailing
     const trailDistancePercent = originalRiskPercent * 1.15; // Wider trail helps capture larger directional runs
     const isShort = position.direction === 'SHORT';

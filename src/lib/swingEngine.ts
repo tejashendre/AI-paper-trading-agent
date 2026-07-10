@@ -708,7 +708,7 @@ export class SwingEngine {
       finalConviction = Math.max(0, Math.min(100, finalConviction + weeklyBiasAdjustment));
       
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
-      const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.25 : 0.60;
+      const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.15 : 0.08;
       const slippageOk = slippagePercent <= allowedSlippage;
       
       // Structure Safety Buffer: If the market structure score is weak (< 4), demand +5 finalConviction to execute
