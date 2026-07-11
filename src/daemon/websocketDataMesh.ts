@@ -7,8 +7,7 @@ const REDIS_KEY_PREFIX = "market:live:";
 const REDIS_META_PREFIX = "market:liveMeta:";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const STALE_THRESHOLD_MS = 30_000;
-const SOURCE_RETENTION_SECONDS = 45;
-const EXECUTION_FRESHNESS_MS = 10_000;
+const SOURCE_RETENTION_SECONDS = 60;
 
 export class WebsocketDataMesh {
     private krakenWs: WebSocket | null = null;
@@ -37,24 +36,18 @@ export class WebsocketDataMesh {
             imbalance: Number.isFinite(imbalance) ? imbalance : null,
         }, { ex: SOURCE_RETENTION_SECONDS });
 
-        // Kraken is primary. Bybit fills the shared key only when Kraken's
-        // observation for the symbol is unavailable.
-        const primaryMeta = await redis.get<{ updatedAt?: string }>(
-            `${REDIS_META_PREFIX}KRAKEN_SPOT_WS:${symbol}`
-        ).catch(() => null);
-        const primaryTimestamp = new Date(primaryMeta?.updatedAt || 0).getTime();
-        const primaryFresh = Number.isFinite(primaryTimestamp) && Date.now() - primaryTimestamp <= EXECUTION_FRESHNESS_MS;
-        if (source === "KRAKEN_SPOT_WS" || !primaryFresh) {
-            await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: 10 });
-            await redis.set(`${REDIS_META_PREFIX}${symbol}`, {
-                source,
-                updatedAt,
-                price,
-                imbalance: Number.isFinite(imbalance) ? imbalance : null,
-            }, { ex: 10 });
-            if (Number.isFinite(imbalance)) {
-                await redis.set(`market:imbalance:${symbol}`, String(imbalance), { ex: 10 });
-            }
+        // The shared execution key always receives the newest valid tick from
+        // either independent source. Source-specific keys remain separate for
+        // agreement and health checks.
+        await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: 10 });
+        await redis.set(`${REDIS_META_PREFIX}${symbol}`, {
+            source,
+            updatedAt,
+            price,
+            imbalance: Number.isFinite(imbalance) ? imbalance : null,
+        }, { ex: 10 });
+        if (Number.isFinite(imbalance)) {
+            await redis.set(`market:imbalance:${symbol}`, String(imbalance), { ex: 10 });
         }
     }
 
