@@ -72,7 +72,7 @@ export async function GET(request: Request) {
           return {
             provider: source.provider,
             price: source.price,
-            fresh: sourceAge !== null && sourceAge <= 30,
+            fresh: sourceAge !== null && sourceAge <= 45,
             updatedAt: sourceUpdatedAt,
             ageSeconds: sourceAge,
           };

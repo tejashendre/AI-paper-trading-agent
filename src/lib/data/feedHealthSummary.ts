@@ -23,7 +23,7 @@ export interface AssetFeedHealthSummary {
 }
 
 const WEBSOCKET_SOURCES = ["KRAKEN_SPOT_WS", "BYBIT_LINEAR_WS"] as const;
-const WEBSOCKET_FRESHNESS_MS = 30_000;
+const WEBSOCKET_FRESHNESS_MS = 45_000;
 
 function websocketTimestamp(meta: any): number {
   const timestamp = new Date(meta?.updatedAt || 0).getTime();
