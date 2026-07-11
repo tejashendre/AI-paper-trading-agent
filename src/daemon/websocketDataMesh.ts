@@ -20,12 +20,18 @@ export class WebsocketDataMesh {
     private krakenConnectedAt = 0;
     private bybitConnectedAt = 0;
     private heartbeatInterval: NodeJS.Timeout | null = null;
+    private lastPersistedAt = new Map<string, number>();
 
     private getCryptoAssets() {
         return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].category === "crypto");
     }
 
     private async writeLiveTick(symbol: string, price: number, source: string, imbalance?: number) {
+        const persistenceKey = `${source}:${symbol}`;
+        const now = Date.now();
+        if (now - (this.lastPersistedAt.get(persistenceKey) || 0) < 500) return;
+        this.lastPersistedAt.set(persistenceKey, now);
+
         const redis = getRedis();
         const updatedAt = new Date().toISOString();
         await redis.set(`${REDIS_KEY_PREFIX}${source}:${symbol}`, price.toString(), { ex: SOURCE_RETENTION_SECONDS });
@@ -130,21 +136,28 @@ export class WebsocketDataMesh {
                     method: "subscribe",
                     params: { channel: "ticker", symbol: symbols },
                 }));
+                ws.send(JSON.stringify({
+                    method: "subscribe",
+                    params: { channel: "trade", symbol: symbols },
+                }));
             });
 
             ws.on("message", async (data) => {
                 try {
                     const parsed = JSON.parse(data.toString());
                     const ticker = parsed.channel === "ticker" ? parsed.data?.[0] : null;
-                    if (!ticker?.symbol || !ticker?.last) return;
+                    const trades = parsed.channel === "trade" && Array.isArray(parsed.data) ? parsed.data : [];
+                    const trade = trades.length > 0 ? trades[trades.length - 1] : null;
+                    const observation = ticker || trade;
+                    if (!observation?.symbol) return;
 
-                    const symbol = String(ticker.symbol).split("/")[0];
-                    const price = Number(ticker.last);
+                    const symbol = String(observation.symbol).split("/")[0];
+                    const price = Number(ticker?.last ?? trade?.price);
                     if (!Number.isFinite(price) || price <= 0) return;
 
                     this.krakenLastMarketDataAt = Date.now();
-                    const bidQty = Number(ticker.bid_qty);
-                    const askQty = Number(ticker.ask_qty);
+                    const bidQty = Number(ticker?.bid_qty);
+                    const askQty = Number(ticker?.ask_qty);
                     const imbalance = Number.isFinite(bidQty) && Number.isFinite(askQty) && bidQty + askQty > 0
                         ? (bidQty - askQty) / (bidQty + askQty)
                         : undefined;
@@ -188,22 +201,29 @@ export class WebsocketDataMesh {
                 this.bybitReconnectTimeout = null;
                 this.bybitConnectedAt = Date.now();
                 Logger.info("Connected to Bybit Futures WebSocket");
-                const streams = this.getCryptoAssets().map((asset) => `tickers.${asset}USDT`);
+                const streams = this.getCryptoAssets().flatMap((asset) => [
+                    `tickers.${asset}USDT`,
+                    `publicTrade.${asset}USDT`,
+                ]);
                 ws.send(JSON.stringify({ op: "subscribe", args: streams }));
             });
 
             ws.on("message", async (data) => {
                 try {
                     const parsed = JSON.parse(data.toString());
-                    if (!parsed.topic?.startsWith("tickers.") || !parsed.data) return;
+                    const isTicker = parsed.topic?.startsWith("tickers.");
+                    const isTrade = parsed.topic?.startsWith("publicTrade.");
+                    if ((!isTicker && !isTrade) || !parsed.data) return;
 
-                    const symbol = parsed.topic.split(".")[1].replace("USDT", "");
-                    const price = Number(parsed.data.lastPrice);
+                    const trades = isTrade && Array.isArray(parsed.data) ? parsed.data : [];
+                    const trade = trades.length > 0 ? trades[trades.length - 1] : null;
+                    const symbol = String(isTicker ? parsed.topic.split(".")[1] : trade?.s || "").replace("USDT", "");
+                    const price = Number(isTicker ? parsed.data.lastPrice : trade?.p);
                     if (!Number.isFinite(price) || price <= 0) return;
 
                     this.bybitLastMarketDataAt = Date.now();
-                    const bidQty = Number(parsed.data.bid1Size);
-                    const askQty = Number(parsed.data.ask1Size);
+                    const bidQty = Number(isTicker ? parsed.data.bid1Size : undefined);
+                    const askQty = Number(isTicker ? parsed.data.ask1Size : undefined);
                     const imbalance = Number.isFinite(bidQty) && Number.isFinite(askQty) && bidQty + askQty > 0
                         ? (bidQty - askQty) / (bidQty + askQty)
                         : undefined;

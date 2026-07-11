@@ -559,6 +559,7 @@ function auditProductionRegressions(): AuditResult[] {
   const opportunitySource = read("src", "lib", "trading", "opportunityJournal.ts");
   const feedSource = read("src", "lib", "data", "feedHealthSummary.ts");
   const daemonSource = read("src", "daemon", "swingDaemon.ts");
+  const websocketSource = read("src", "daemon", "websocketDataMesh.ts");
   const tradeSource = read("src", "app", "api", "trade", "route.ts");
   const swingTradeSource = read("src", "app", "api", "trade", "swing", "route.ts");
   const manualSource = read("src", "app", "api", "trade", "manual", "route.ts");
@@ -572,6 +573,8 @@ function auditProductionRegressions(): AuditResult[] {
   const opportunityVersioned = opportunitySource.includes('opportunity:v2:') && opportunitySource.includes("DEDUPE_SECONDS");
   const feedEnforced = feedSource.includes("KRAKEN_SPOT_WS") &&
     feedSource.includes("BYBIT_LINEAR_WS") &&
+    websocketSource.includes('channel: "trade"') &&
+    websocketSource.includes("publicTrade.") &&
     [daemonSource, tradeSource, swingTradeSource].every((source) => source.includes("safeForSwingExecution"));
   const publicBounds = [backtestSource, chartSource].every((source) => source.includes("parsedLimit > 1_000"));
   const manualFeeSafe = manualSource.includes("Number.isFinite(usdAmount)") &&
