@@ -569,7 +569,7 @@ function auditProductionRegressions(): AuditResult[] {
   const lockSafe = redisSource.includes("compareAndDelete") && portfolioSource.includes("redis.compareAndDelete(key, token)");
   const learningVersioned = learningSource.includes('learning:v2:localRules');
   const opportunityVersioned = opportunitySource.includes('opportunity:v2:') && opportunitySource.includes("DEDUPE_SECONDS");
-  const feedEnforced = feedSource.includes("BINANCE_FUTURES_WS") &&
+  const feedEnforced = feedSource.includes("KRAKEN_SPOT_WS") &&
     feedSource.includes("BYBIT_LINEAR_WS") &&
     [daemonSource, tradeSource, swingTradeSource].every((source) => source.includes("safeForSwingExecution"));
   const publicBounds = [backtestSource, chartSource].every((source) => source.includes("parsedLimit > 1_000"));

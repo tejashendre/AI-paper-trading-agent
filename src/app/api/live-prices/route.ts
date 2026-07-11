@@ -48,12 +48,12 @@ export async function GET(request: Request) {
 
   await Promise.all(assets.map(async (asset) => {
     const mode = cryptoMode(asset);
-    const [livePrice, liveMeta, cachedPrice, binancePrice, binanceMeta, bybitPrice, bybitMeta] = await Promise.all([
+    const [livePrice, liveMeta, cachedPrice, krakenPrice, krakenMeta, bybitPrice, bybitMeta] = await Promise.all([
       redis.get<number | string>(`market:live:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:${asset}`).catch(() => null),
       redis.get<number | string>(`cache:price:${asset}`).catch(() => null),
-      redis.get<number | string>(`market:live:BINANCE_FUTURES_WS:${asset}`).catch(() => null),
-      redis.get<any>(`market:liveMeta:BINANCE_FUTURES_WS:${asset}`).catch(() => null),
+      redis.get<number | string>(`market:live:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
+      redis.get<any>(`market:liveMeta:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
       redis.get<number | string>(`market:live:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
     ]);
@@ -64,7 +64,7 @@ export async function GET(request: Request) {
     const liveAge = ageSeconds(updatedAt);
     const independentSources = mode === "REALTIME_FAST"
       ? [
-          { provider: "BINANCE_FUTURES_WS", price: Number(binancePrice), meta: binanceMeta },
+          { provider: "KRAKEN_SPOT_WS", price: Number(krakenPrice), meta: krakenMeta },
           { provider: "BYBIT_LINEAR_WS", price: Number(bybitPrice), meta: bybitMeta },
         ].filter((source) => Number.isFinite(source.price) && source.price > 0).map((source) => {
           const sourceUpdatedAt = source.meta?.updatedAt || null;

@@ -22,7 +22,7 @@ export interface AssetFeedHealthSummary {
   updatedAt: string;
 }
 
-const WEBSOCKET_SOURCES = ["BINANCE_FUTURES_WS", "BYBIT_LINEAR_WS"] as const;
+const WEBSOCKET_SOURCES = ["KRAKEN_SPOT_WS", "BYBIT_LINEAR_WS"] as const;
 const WEBSOCKET_FRESHNESS_MS = 30_000;
 
 function websocketTimestamp(meta: any): number {
