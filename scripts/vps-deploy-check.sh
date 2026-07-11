@@ -120,9 +120,15 @@ done
 echo "Required services are running."
 
 for container in quant-redis quant-dashboard quant-swing-daemon; do
-  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$container" 2>/dev/null || true)"
-  echo "$container health: $health"
-  [ "$health" = "healthy" ] || fail "Container is not healthy: $container ($health)"
+  attempt=0
+  while :; do
+    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$container" 2>/dev/null || true)"
+    echo "$container health: $health"
+    [ "$health" = "healthy" ] && break
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 36 ] && fail "Container did not become healthy: $container ($health)"
+    sleep 5
+  done
 done
 echo "Healthchecks passed for Redis, dashboard, and swing daemon."
 
