@@ -28,6 +28,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/tsconfig.json ./
+COPY --from=builder /app/docker-compose.yml ./docker-compose.yml
 
 # Keep the runtime image within free-tier disk limits. The dashboard only
 # needs production packages; the daemon's TypeScript loader is installed
