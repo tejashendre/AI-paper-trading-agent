@@ -565,6 +565,7 @@ function auditProductionRegressions(): AuditResult[] {
   const backtestSource = read("src", "app", "api", "backtest", "route.ts");
   const chartSource = read("src", "app", "api", "chart", "route.ts");
   const composeSource = read("docker-compose.yml");
+  const deployCheckSource = read("scripts", "vps-deploy-check.sh");
 
   const lockSafe = redisSource.includes("compareAndDelete") && portfolioSource.includes("redis.compareAndDelete(key, token)");
   const learningVersioned = learningSource.includes('learning:v2:localRules');
@@ -576,6 +577,7 @@ function auditProductionRegressions(): AuditResult[] {
   const manualFeeSafe = manualSource.includes("Number.isFinite(usdAmount)") &&
     manualSource.includes("const netPnl = pnl - entryFee - exitFee");
   const daemonHealth = composeSource.includes("quant-swing-daemon") && composeSource.includes("swing:lastScan:ai");
+  const deploymentWaitsForHealth = deployCheckSource.includes('-ge 36') && deployCheckSource.includes('sleep 5');
   const recoverySafe = portfolioSource.includes("function isValidPortfolio") &&
     portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
     portfolioSource.includes("if (Array.isArray(backup))");
@@ -599,6 +601,9 @@ function auditProductionRegressions(): AuditResult[] {
     result(daemonHealth ? "PASS" : "FAIL", "daemon scan healthcheck", daemonHealth
       ? "Compose marks the daemon unhealthy when its scan snapshot disappears."
       : "Container liveness does not prove the strategy loop is advancing."),
+    result(deploymentWaitsForHealth ? "PASS" : "FAIL", "deployment health readiness", deploymentWaitsForHealth
+      ? "Deployment verification waits for container health instead of failing during startup."
+      : "Deployment verification can fail while healthy containers are still starting."),
     result(recoverySafe ? "PASS" : "FAIL", "validated atomic recovery backups", recoverySafe
       ? "Portfolio backups are structurally validated and replaced atomically."
       : "Crash recovery can accept malformed state or expose partially written JSON."),
