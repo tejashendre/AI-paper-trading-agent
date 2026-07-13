@@ -1,279 +1,223 @@
 # Autonomous Paper Trading Agent
 
-> A safe AI agent for market observation, simulated execution, and learning — **Kaggle AI Agents Capstone (Freestyle Track)**
+An explainable, autonomous paper-trading system for observing markets, evaluating multi-timeframe setups, simulating execution, managing exits, and learning from outcomes. It is designed as a free-tier research and demonstration project, not as a real-money trading service.
 
-`Paper Trading Only` · `Free APIs` · `Zero-Cost VPS` · `24/7 Autonomous` · `Fully Explainable`
+**Live spectator dashboard:** [trader.tejashendre.com](https://trader.tejashendre.com)
+**Repository:** [tejashendre/AI-paper-trading-agent](https://github.com/tejashendre/AI-paper-trading-agent)
 
----
+## What This Project Does
 
-## The Problem
+The system continuously watches nine assets, computes deterministic market signals, proposes entries only after data and risk checks, simulates fills and fees, monitors open positions, and records the reasoning and outcome of each decision.
 
-Retail traders face three persistent challenges:
-
-1. **Overtrading** — entering positions based on emotion, boredom, or fear of missing out rather than evidence.
-2. **Missed setups** — no human can monitor multiple markets across multiple timeframes around the clock.
-3. **Inconsistent risk discipline** — varying position sizes, moving stop losses, ignoring drawdown limits, and revenge trading after losses.
-
-These problems are well-documented in behavioral finance research. Most retail traders lose money not because their strategy is fundamentally flawed, but because they cannot execute it consistently.
-
-**This project asks:** can an autonomous agent system observe markets continuously, wait for statistically stronger setups, manage risk mathematically, explain every decision, and learn from outcomes — all without risking real capital?
-
----
-
-## The Solution
-
-An **autonomous paper-trading agent** that monitors 9 assets 24/7 using entirely free market data feeds:
-
-| Asset Class | Assets | Data Sources |
+| Asset class | Assets | Current data mode |
 |---|---|---|
-| Crypto | BTC, ETH, SOL | Kraken/Bybit WebSockets, Kraken OHLC, CoinGecko |
-| Forex | EURUSD, GBPUSD, USDJPY | Yahoo Finance |
-| Commodities | GOLD, OIL, SILVER | Yahoo Finance |
+| Crypto | BTC, ETH, SOL | WebSocket prices with exchange OHLC fallback |
+| Forex | EURUSD, GBPUSD, USDJPY | Free cached/periodic market data |
+| Commodities | GOLD, OIL, SILVER | Free cached/periodic market data |
 
-### Auditable Risk Policy
+The core decision path does **not** depend on an LLM. Optional language-model features can explain or summarize decisions, but deterministic indicators, admission checks, simulated execution, and exits remain available when an LLM provider is unavailable or rate-limited.
 
-Every autonomous swing entry passes one shared admission controller:
+## Current Operating Model
 
-| Control | Current policy |
-|---|---|
-| Per-asset margin | At most 10% of equity |
-| Total paper margin | At most 40% of equity |
-| Market-data mode | Crypto WebSocket assets can use fast mode; cached feeds are slower swing-only and receive 65% sizing |
-| Fee viability | A realistic captured move must clear estimated round-trip fees plus a minimum useful net profit |
-| Setup promotion | Extra trust requires at least 8 later chronological closed trades with positive expectancy and profit factor >= 1.15 |
-| Winner protection | Trailing stops move only to a level that preserves a useful net gain after both fee legs |
+This is an autonomous **swing-trading simulator**, not an HFT engine.
 
-The dashboard labels setups as **Observed**, **Caution**, or **Validated** so viewers can distinguish a promising pattern from one that has earned a sizing boost.
+- Entry scans run approximately every 60 seconds.
+- The exit watchdog checks open positions approximately every 5 seconds.
+- Crypto has the freshest market path because it uses WebSockets.
+- Forex and commodities use slower free feeds and are treated as swing-only data.
+- All balances, trades, fees, slippage, leverage, and P&L are simulated.
+- Public viewers receive read-only spectator data; administrative mutations are separate.
 
-The system evaluates **multi-timeframe technical confluence** (1m, 5m, 15m, 1h, 4h), applies advanced indicators, manages risk through mathematical models, and records every decision with full explainability. All execution is simulated — **no real money is ever at risk**.
-
----
-
-## Live Demo
-
-> 🌐 **[https://trader.tejashendre.com](https://trader.tejashendre.com)**
->
-> Public spectator dashboard — no login required. Read-only access to portfolio state, scan results, trade history, equity curve, and opportunity radar.
-
----
-
-## Kaggle Capstone Concepts Demonstrated
-
-| # | Kaggle Concept | Where | Description |
-|---|---|---|---|
-| 1 | **Agent / Multi-Agent System (ADK)** | `agents/trading_reviewer_agent.py` | Safety and explainability reviewer agent |
-| 2 | **MCP Server** | `mcp/trading_mcp_server.ts` | Read-only Model Context Protocol server |
-| 3 | **Antigravity** | Video demo (4:10–4:40) | Google Antigravity development workflow |
-| 4 | **Security Features** | Spectator/Admin auth separation | Paper-only execution, read-only public access |
-| 5 | **Deployability** | Docker Compose + Oracle VPS | One-command deployment with CI/CD pipeline |
-| 6 | **Agent Skills (CLI)** | `scripts/agent-status.ts` | `agent:status`, `agent:explain`, `agent:audit` |
-
----
+The dashboard is a visibility layer, not proof of profitability. Current performance must be read from the live closed-trade ledger and its net metrics, not from a chart or an isolated open-position estimate.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A["Free Market Data Feeds"] --> B["Data Health Layer"]
-    B --> C["Market State Builder"]
-    C --> D["Autonomous Decision Agent"]
-    D --> E["Risk Governor"]
-    E --> F["Paper Exchange Simulator"]
-    F --> G["Portfolio Ledger"]
-    G --> H["Learning Memory"]
+    A["Free market data feeds"] --> B["Data health and freshness"]
+    B --> C["Candle and market-state builder"]
+    C --> D["Autonomous decision agent"]
+    D --> E["Risk and admission governor"]
+    E --> F["Paper exchange simulator"]
+    F --> G["Portfolio and trade ledger"]
+    G --> H["Opportunity and outcome memory"]
     H --> D
-    D --> I["Exit Watchdog"]
+    D --> I["Five-second exit watchdog"]
     I --> G
-    G --> J["Spectator Dashboard"]
-    B --> J
+    B --> J["Spectator dashboard"]
+    G --> J
     H --> J
 ```
 
-The system follows a continuous agent loop:
+The operating loop is:
 
-**Observe → Decide → Risk Check → Paper Execute → Monitor → Learn**
+**Observe -> validate data -> build state -> decide -> risk check -> simulate -> monitor -> learn**
 
-Each cycle runs autonomously. The daemon scans for entries every 60 seconds and monitors open positions every 5 seconds. The learning memory feeds back into future decisions, creating a closed-loop agent system.
+### Main agents and services
 
----
+1. **Market observer** normalizes candles and prices across assets and timeframes, reports feed freshness, and prevents low-quality data from silently becoming a trade signal.
+2. **Decision agent** combines trend, momentum, volatility, volume, VWAP, market structure, and multi-timeframe confluence into an explainable `ENTRY`, `HOLD`, `SKIPPED`, or `BLOCKED` decision.
+3. **Risk governor** controls margin, exposure, drawdown scaling, fee viability, and setup-specific sizing before an entry can be accepted.
+4. **Paper exchange** simulates fills, fees, slippage, leverage effects, and realized/unrealized P&L.
+5. **Exit watchdog** checks stop loss, take profit, breakeven, and trailing-protection rules independently of the slower entry scan.
+6. **Learning memory** evaluates closed trades and watched opportunities chronologically. It can make a setup more selective, but it cannot silently rewrite history or promote a setup without evidence.
+7. **Dashboard and CLI tools** expose the state, decisions, health, and explanations for human review.
 
-## Agent Roles
+## Auditable Risk Policy
 
-### 1. Market Observer Agent
-Fetches free market data from Binance/Bybit WebSockets, Kraken OHLC, Yahoo Finance, and CoinGecko. Normalizes candles across all timeframes (1m, 5m, 15m, 1h, 4h). Computes feed health scores and detects stale or degraded data. Blocks trading decisions when data quality is insufficient.
+Every autonomous entry passes the same admission path. The system is intentionally selective when the evidence does not show a usable edge.
 
-### 2. Decision Agent
-Evaluates technical confluence across multiple timeframes. Computes indicators including SMA, EMA, RSI, MACD, Bollinger Bands, ATR, VWAP, Stochastic RSI, Market Structure detection, Order Blocks, Fair Value Gaps, Volume Spread Analysis, and RSI Divergences. Produces one of four decisions: **ENTRY**, **HOLD**, **SKIPPED**, or **BLOCKED** — each with full reasoning.
-
-### 3. Risk Governor Agent
-Validates every proposed trade against risk limits. Caps leverage, margin, and notional exposure. Enforces drawdown equity guards (25–75% size reduction during drawdowns). Applies sector concentration limits. Uses ATR-based stop placement adjusted by the Hurst Exponent. Sizes positions with Kelly Criterion.
-
-### 4. Paper Execution Agent
-Simulates order fills at current market prices. Records entries and exits with timestamps, prices, and sizing. Tracks PnL including simulated fees, slippage, and leverage costs. Writes all state to Redis for dashboard display.
-
-### 5. Exit Watchdog Agent
-Monitors all open positions every 5 seconds. Checks stop loss and take profit levels against live prices. Moves stops to breakeven when trades start working. Applies trailing stops to protect profit. Cuts losses at predetermined levels.
-
-### 6. Learning Agent
-Maintains an **Opportunity Journal** that tracks setups seen but not taken, recording what would have happened. The **Local Learning Memory** compares predicted vs actual outcomes and adjusts conviction multipliers for future decisions. This creates a feedback loop that makes the system more selective over time.
-
----
-
-## Safety
-
-> ⚠️ This system is **paper trading only** by design.
-
-| Safety Feature | Implementation |
+| Control | Current behavior |
 |---|---|
-| No real money | `LIVE_TRADING_ENABLED=false` by default |
-| No brokerage | No real exchange connection in production |
-| Read-only public access | Spectator mode with `Bearer SPECTATOR` token |
-| Admin separation | Mutations require separate admin authentication |
-| Economic blackouts | FOMC, CPI, NFP, BOE, ECB events block new entries |
-| Session enforcement | Forex entries require London+New York overlap |
-| Drawdown protection | Automatic size reduction during equity drawdowns |
+| Per-asset margin | Capped at 10% of equity |
+| Total paper margin | Capped at 40% of equity |
+| Degraded data | Slower feeds are swing-only and receive reduced sizing |
+| Fee viability | The expected move must clear estimated round-trip fees and a minimum useful net result |
+| Setup promotion | Requires later chronological evidence, positive expectancy, and a minimum profit-factor threshold |
+| Drawdown response | Position sizing is reduced as equity drawdown increases |
+| Winner protection | Trailing exits must preserve a useful net gain after fees |
+| Kill behavior | Invalid, stale, unsafe, or overexposed proposals are blocked with a recorded reason |
 
----
+The dashboard distinguishes **Observed**, **Caution**, and **Validated** setup states. A favorable price move alone is not treated as a profitable opportunity: learning uses net expectancy after costs and later validation where available.
 
-## Tech Stack
+## Explainability and Visibility
 
-| Component | Technology |
+Each decision should answer:
+
+- What asset and timeframe were evaluated?
+- What data-health state was available?
+- Which signals contributed to the score?
+- Why was the trade admitted, held, skipped, or blocked?
+- What entry, stop, target, size, fees, and expected move were used?
+- How did the eventual exit affect net P&L?
+
+The public dashboard prioritizes current portfolio state, closed AI performance, active positions, latest scan status, and plain-English reasons. Detailed diagnostics remain available through the authenticated/admin or developer surfaces rather than being required for every spectator.
+
+## Kaggle Capstone Concepts
+
+| Concept | Evidence in this project |
 |---|---|
-| Frontend | Next.js 15, React 18, TypeScript |
-| State | Redis (ioredis) |
-| Containerization | Docker Compose (3 services) |
+| Agent or multi-agent system (ADK) | `agents/trading_reviewer_agent.py` provides a read-only safety and explainability reviewer |
+| MCP server | `mcp/trading_mcp_server.ts` exposes read-only portfolio, health, scan, and trade context |
+| Antigravity | Demonstrated in the project video as part of the development workflow |
+| Security | Paper-only execution, spectator/admin separation, validation, and read-only public tools |
+| Deployability | Docker Compose, Oracle VPS runtime, reverse proxy, and deployment checks |
+| Agent skills | `agent:status`, `agent:explain`, and `agent:audit` CLI workflows |
+
+## Safety and Scope
+
+- Production configuration is paper-only. No real exchange order is submitted.
+- No real-money profit is promised or implied.
+- The free data sources can be delayed, rate-limited, incomplete, or temporarily unavailable.
+- Paper fills do not reproduce live spreads, liquidity, queue position, or market impact.
+- This project is not HFT. A one-minute entry scan and free delayed feeds cannot support institutional HFT claims.
+- LLM providers are optional and may be unavailable; the deterministic trading path must remain the source of truth.
+- Real brokerage execution, automatic leverage escalation, paid market-data feeds, and unsupervised live deployment are deliberately out of scope.
+
+## Technology
+
+| Layer | Technology |
+|---|---|
+| Application | Next.js, React, TypeScript |
+| State and cache | Redis via ioredis |
+| Runtime | Docker Compose |
 | Hosting | Oracle Cloud Free Tier VPS |
-| Reverse Proxy | Nginx with SSL |
-| CI/CD | GitHub Actions (lint + build + tsc + audit → SSH deploy) |
-| Market Data | Binance WS, Bybit WS, Kraken OHLC, Yahoo Finance, CoinGecko |
+| Public routing | Cloudflare proxy and Nginx |
+| Market data | Crypto WebSockets plus free OHLC and cached feeds |
 | Charts | Lightweight Charts |
-| Validation | Zod schemas |
+| Validation | TypeScript, Zod, audit scripts |
 
----
-
-## Local Setup
+## Local Development
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Configure environment
 cp .env.local.example .env.local
-# Edit .env.local with your settings (Redis URL, secrets)
-
-# 3. Start Redis
+# Configure local Redis and non-secret development settings in .env.local.
 docker compose up -d redis
-
-# 4. Start the dashboard (http://localhost:3000)
 npm run dev
+```
 
-# 5. Start the autonomous trading daemon (separate terminal)
+Run the autonomous swing daemon separately when local testing requires it:
+
+```bash
 npm run daemon:swing
 ```
 
----
+Never commit `.env.local`, API keys, SSH keys, admin tokens, Redis dumps, or private infrastructure details.
 
-## Deployment
+## Verification Commands
 
-### Docker Compose (Production)
+Run the relevant checks before publishing application changes:
 
 ```bash
-git pull origin main
-docker compose down
-docker compose up -d --build
+npm run lint
+npx tsc --noEmit
+npm run build
+npm run audit:strategy
+npm run agent:audit
+```
+
+Useful read-only CLI views:
+
+```bash
+npm run agent:status
+npm run agent:explain
+npm run agent:audit
+```
+
+## VPS Deployment
+
+The canonical production host runs the checked-out project with Docker Compose. Deploy the intended commit and rebuild only the application services:
+
+```bash
+git pull --ff-only origin main
+docker compose up -d --build quant-dashboard swing-daemon
 docker compose ps
 ```
 
-### Docker Services
+Do not use `docker compose down` as a routine deployment step. It unnecessarily interrupts the stack and can create avoidable downtime. Redis and its persistent portfolio data should remain running unless an intentional maintenance procedure requires otherwise.
 
-| Service | Container | Port |
+Typical service names:
+
+| Service | Container | Purpose |
 |---|---|---|
-| Dashboard | `quant-dashboard` | 3000 |
-| Swing Daemon | `quant-swing-daemon` | — |
-| Redis | `quant-redis` | 6379 |
+| Dashboard | `quant-dashboard` | Web UI and API |
+| Swing daemon | `quant-swing-daemon` | Autonomous scan and exit process |
+| Redis | `quant-redis` | Runtime state and ledger persistence |
 
-### Post-Deployment Verification
+After deployment, inspect logs and run the repository verifier from the VPS:
 
 ```bash
-# Check logs
 docker logs quant-swing-daemon --tail=100
 docker logs quant-dashboard --tail=100
-
-# Run deploy verifier
 STATUS_URL=https://trader.tejashendre.com/api/user/status \
 STATUS_AUTH_TOKEN=SPECTATOR \
 sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
 ```
 
----
+A healthy release requires commit agreement, healthy containers, a passing audit, advancing scans, fresh-enough feed samples, and repeated continuity checks. A green HTTP response alone is not enough.
 
-## MCP Server
+## Read-Only Interfaces
 
-The project includes a **read-only Model Context Protocol server** at `mcp/trading_mcp_server.ts`. It exposes portfolio state, scan results, system health metrics, and trade history over stdio JSON-RPC 2.0. No write operations are supported.
+The public spectator surface uses the read-only spectator authorization configured by the deployment. The primary status and price endpoints are:
 
-📖 See [`mcp/README.md`](../mcp/README.md) for setup and usage.
-
----
-
-## ADK Reviewer Agent
-
-A Python-based **safety and explainability reviewer agent** at `agents/trading_reviewer_agent.py`. It audits recent trade decisions for risk compliance, validates reasoning quality, and generates human-readable review reports. Read-only — it cannot modify system state.
-
-📖 See [`agents/README.md`](../agents/README.md) for setup and usage.
-
----
-
-## Agent CLI Skills
-
-Three CLI commands provide agent-like interaction with the system:
-
-```bash
-# Portfolio status + system health summary
-npm run agent:status
-
-# Plain-English explanation of the latest scan decision
-npm run agent:explain
-
-# Full strategy audit report
-npm run agent:audit
+```text
+GET /api/user/status
+GET /api/live-prices
 ```
 
-These demonstrate the **Agent Skills** Kaggle concept — structured CLI tools that query system state and produce formatted reports.
+Do not place credentials or bearer tokens in this README, screenshots, source control, or public video material.
 
----
+## MCP and Reviewer Agent
 
-## Limitations
+The read-only MCP server is documented in [mcp/README.md](mcp/README.md). It does not expose trade mutation tools.
 
-- **Free data feeds** can be stale, rate-limited, or temporarily unavailable.
-- **Paper results differ from live execution** due to slippage, liquidity, spreads, and exchange behavior.
-- **No profit guarantee** — no trading system can guarantee profitability.
-- **One-minute scan interval** — this is swing trading, not high-frequency trading.
-- **Forex/commodity data** may be slower or less complete than crypto data.
-- **LLM APIs are optional** — the core system runs on deterministic math, not language models.
+The ADK reviewer agent is documented in [agents/README.md](agents/README.md). It reviews decisions and risk explanations but cannot change portfolio state.
 
----
+## Project Status
 
-## Future Work
+The project is a functioning free-tier paper-trading research platform with explicit limits and audit surfaces. It is not a guaranteed money-making system, a broker, or a substitute for professional financial infrastructure. Treat live dashboard performance as experimental evidence and keep the simulator in paper mode.
 
-- **Real broker sandbox** — paper mode with live order book simulation (e.g., Alpaca, IBKR paper).
-- **Stronger ML signal filtering** — local models trained on actual paper trade outcomes.
-- **Formal evaluation pipeline** — backtesting with standard metrics (Sharpe, Sortino, max drawdown).
-- **Per-setup performance analytics** — track which setup types perform best.
-- **Real-time feed health alerts** — notifications when data quality degrades.
-- **Multi-agent coordination** — agents that negotiate risk allocation across sectors.
+## License and Disclaimer
 
----
-
-## Validation
-
-```bash
-# Run all checks before shipping
-npm run lint
-npx tsc --noEmit
-npm run build
-npm run audit:strategy
-```
-
----
-
-> ⚠️ **Disclaimer**: This is an educational paper-trading simulation and research platform. It does not execute real-money trades, does not provide financial advice, and cannot guarantee profitability. Past simulated performance does not predict future results. Use at your own risk.
+This project is intended for education, experimentation, and agent-system demonstration. Simulated performance is not predictive of future results. Nothing in this repository is financial advice. The authors accept no responsibility for trading or investment decisions made from this software.
