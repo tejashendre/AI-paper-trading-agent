@@ -26,9 +26,24 @@ An **autonomous paper-trading agent** that monitors 9 assets 24/7 using entirely
 
 | Asset Class | Assets | Data Sources |
 |---|---|---|
-| Crypto | BTC, ETH, SOL | Binance/Bybit WebSockets, Kraken OHLC, CoinGecko |
+| Crypto | BTC, ETH, SOL | Kraken/Bybit WebSockets, Kraken OHLC, CoinGecko |
 | Forex | EURUSD, GBPUSD, USDJPY | Yahoo Finance |
 | Commodities | GOLD, OIL, SILVER | Yahoo Finance |
+
+### Auditable Risk Policy
+
+Every autonomous swing entry passes one shared admission controller:
+
+| Control | Current policy |
+|---|---|
+| Per-asset margin | At most 10% of equity |
+| Total paper margin | At most 40% of equity |
+| Market-data mode | Crypto WebSocket assets can use fast mode; cached feeds are slower swing-only and receive 65% sizing |
+| Fee viability | A realistic captured move must clear estimated round-trip fees plus a minimum useful net profit |
+| Setup promotion | Extra trust requires at least 8 later chronological closed trades with positive expectancy and profit factor >= 1.15 |
+| Winner protection | Trailing stops move only to a level that preserves a useful net gain after both fee legs |
+
+The dashboard labels setups as **Observed**, **Caution**, or **Validated** so viewers can distinguish a promising pattern from one that has earned a sizing boost.
 
 The system evaluates **multi-timeframe technical confluence** (1m, 5m, 15m, 1h, 4h), applies advanced indicators, manages risk through mathematical models, and records every decision with full explainability. All execution is simulated — **no real money is ever at risk**.
 

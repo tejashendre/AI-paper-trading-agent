@@ -86,6 +86,7 @@ function ruleFromPerformanceBucket(
   if (bucket.confidenceAdjustment === 0) return null;
 
   const action: LocalLearningRule["action"] = bucket.confidenceAdjustment > 0 ? "BOOST" : "REDUCE";
+  if (action === "BOOST" && !bucket.promotionEligible) return null;
   const sampleSize = bucket.tradeCount > 0 ? bucket.tradeCount : bucket.opportunityCount;
   const favorableRate = bucket.tradeCount > 0 ? bucket.winRate : bucket.opportunityFavorableRate;
   const avgMove = bucket.tradeCount > 0 ? bucket.avgPnl : bucket.avgOpportunityMove;
@@ -97,7 +98,7 @@ function ruleFromPerformanceBucket(
     key: bucket.key,
     action,
     confidenceAdjustment: Math.max(-12, Math.min(8, bucket.confidenceAdjustment)),
-    message: `${bucket.label} is ${action === "BOOST" ? "performing well" : "underperforming"} based on ${evidenceLabel}; the bot should ${action === "BOOST" ? "trust it slightly more" : "be more selective here"}.`,
+    message: `${bucket.label} is ${action === "BOOST" ? "performing well in its later closed-trade sample" : "underperforming"} based on ${evidenceLabel}; the bot should ${action === "BOOST" ? "trust it slightly more" : "be more selective here"}.`,
     sampleSize,
     favorableRate,
     avgMove,

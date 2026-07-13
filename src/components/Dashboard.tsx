@@ -1547,17 +1547,25 @@ function DashboardContent({ secret }: { secret: string }) {
                               <div>
                                 <div className={`text-xs font-bold font-mono ${textPrimary}`}>{data.setupPerformance.bestSetup.label}</div>
                                 <p className={`text-[10px] mt-1 ${textSub}`}>
-                                  Best observed pattern so far based on closed trades and watched opportunities.
+                                  {data.setupPerformance.bestSetup.promotionEligible
+                                    ? "Validated on a later closed-trade sample before receiving any size boost."
+                                    : "Observed pattern only. It has not earned a size boost yet."}
                                 </p>
                               </div>
                               <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${
-                                data.setupPerformance.bestSetup.confidenceAdjustment >= 0
+                                data.setupPerformance.bestSetup.promotionEligible
                                   ? "text-emerald-400 border-emerald-900/40 bg-emerald-950/20"
+                                  : data.setupPerformance.bestSetup.confidenceAdjustment < 0
+                                    ? "text-rose-400 border-rose-900/40 bg-rose-950/20"
                                   : isDark
                                     ? "text-slate-300 border-slate-700 bg-slate-900/40"
                                     : "text-slate-600 border-slate-300 bg-slate-100"
                               }`}>
-                                {data.setupPerformance.bestSetup.confidenceAdjustment >= 0 ? "HELPING" : "NEEDS DATA"}
+                                {data.setupPerformance.bestSetup.promotionEligible
+                                  ? "VALIDATED"
+                                  : data.setupPerformance.bestSetup.confidenceAdjustment < 0
+                                    ? "CAUTION"
+                                    : "OBSERVED"}
                               </span>
                             </div>
                             <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[8px] font-mono ${textMuted}`}>
@@ -1566,6 +1574,9 @@ function DashboardContent({ secret }: { secret: string }) {
                               <span>Watched: <b className={textPrimary}>{data.setupPerformance.bestSetup.opportunityCount}</b></span>
                               <span>Net wins: <b className={textPrimary}>{percentLabel(data.setupPerformance.bestSetup.opportunityFavorableRate)}</b></span>
                             </div>
+                            <p className={`text-[9px] font-mono ${textMuted}`}>
+                              Later validation: {data.setupPerformance.bestSetup.outOfSampleTradeCount || 0} closed trades, {percentLabel(data.setupPerformance.bestSetup.outOfSampleWinRate || 0)} wins
+                            </p>
                             {(data.setupPerformance.plainFindings || []).slice(0, 2).map((finding: string) => (
                               <p key={finding} className={`text-[10px] leading-relaxed ${textMuted}`}>{finding}</p>
                             ))}

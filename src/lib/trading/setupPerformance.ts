@@ -14,6 +14,11 @@ export interface SetupPerformanceBucket {
   grossLoss: number;
   profitFactor: number | null;
   avgPnl: number;
+  outOfSampleTradeCount: number;
+  outOfSampleWinRate: number;
+  outOfSampleProfitFactor: number | null;
+  outOfSampleAvgPnl: number;
+  promotionEligible: boolean;
   opportunityCount: number;
   favorableOpportunities: number;
   opportunityFavorableRate: number;
@@ -38,7 +43,7 @@ export interface SetupPerformanceSummary {
   plainFindings: string[];
 }
 
-interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
+interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "outOfSampleTradeCount" | "outOfSampleWinRate" | "outOfSampleProfitFactor" | "outOfSampleAvgPnl" | "promotionEligible" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
   grossOpportunityProfitUsd: number;
   grossOpportunityLossUsd: number;
   opportunityNetPnlTotalUsd: number;
@@ -144,9 +149,7 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
       : 0;
 
   let confidenceAdjustment = 0;
-  if (bucket.tradeCount >= 3 && winRate >= 0.6 && avgPnl > 0) confidenceAdjustment += 5;
   if (bucket.tradeCount >= 3 && (winRate <= 0.35 || avgPnl < 0)) confidenceAdjustment -= 8;
-  if (bucket.opportunityCount >= 6 && opportunityFavorableRate >= 0.62 && avgOpportunityNetPnlUsd > 0) confidenceAdjustment += 3;
   if (bucket.opportunityCount >= 6 && (opportunityFavorableRate <= 0.35 || avgOpportunityNetPnlUsd < 0)) confidenceAdjustment -= 4;
 
   return {
@@ -154,6 +157,11 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
     winRate,
     profitFactor,
     avgPnl,
+    outOfSampleTradeCount: 0,
+    outOfSampleWinRate: 0,
+    outOfSampleProfitFactor: null,
+    outOfSampleAvgPnl: 0,
+    promotionEligible: false,
     opportunityFavorableRate,
     avgOpportunityMove,
     avgOpportunityNetPnlUsd,
@@ -161,6 +169,43 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
     opportunityProfitFactor,
     confidenceAdjustment,
     evidence: Array.from(bucket.evidence),
+  };
+}
+
+function enrichWithOutOfSampleEvidence(bucket: SetupPerformanceBucket, holdoutTrades: Trade[] = []): SetupPerformanceBucket {
+  const wins = holdoutTrades.filter((trade) => Number(trade.pnl || 0) >= 0);
+  const losses = holdoutTrades.filter((trade) => Number(trade.pnl || 0) < 0);
+  const grossProfit = wins.reduce((sum, trade) => sum + Number(trade.pnl || 0), 0);
+  const grossLoss = losses.reduce((sum, trade) => sum + Math.abs(Number(trade.pnl || 0)), 0);
+  const outOfSampleTradeCount = holdoutTrades.length;
+  const outOfSampleWinRate = outOfSampleTradeCount > 0 ? wins.length / outOfSampleTradeCount : 0;
+  const outOfSampleAvgPnl = outOfSampleTradeCount > 0
+    ? holdoutTrades.reduce((sum, trade) => sum + Number(trade.pnl || 0), 0) / outOfSampleTradeCount
+    : 0;
+  const outOfSampleProfitFactor = grossLoss > 0
+    ? grossProfit / grossLoss
+    : grossProfit > 0
+      ? null
+      : 0;
+
+  // A setup is promoted only after it has survived a later chronological
+  // sample of real closed trades. Watched opportunities can reduce trust, but
+  // cannot create an unearned size boost.
+  const promotionEligible = (
+    outOfSampleTradeCount >= 8 &&
+    outOfSampleWinRate >= 0.55 &&
+    outOfSampleAvgPnl > 0 &&
+    (outOfSampleProfitFactor === null || outOfSampleProfitFactor >= 1.15)
+  );
+
+  return {
+    ...bucket,
+    outOfSampleTradeCount,
+    outOfSampleWinRate,
+    outOfSampleProfitFactor,
+    outOfSampleAvgPnl,
+    promotionEligible,
+    confidenceAdjustment: Math.max(-12, Math.min(8, bucket.confidenceAdjustment + (promotionEligible ? 4 : 0))),
   };
 }
 
@@ -186,7 +231,9 @@ function buildFindings(summary: Omit<SetupPerformanceSummary, "plainFindings">) 
     findings.push("No closed tagged AI trades yet, so the system is learning mostly from watched opportunities.");
   }
   if (summary.bestSetup) {
-    findings.push(`${summary.bestSetup.label} is currently the strongest observed setup.`);
+    findings.push(summary.bestSetup.promotionEligible
+      ? `${summary.bestSetup.label} is currently the strongest independently validated setup.`
+      : `${summary.bestSetup.label} is currently the strongest observed setup, but it has not earned a size boost yet.`);
   }
   if (summary.worstSetup && summary.worstSetup.key !== summary.bestSetup?.key) {
     findings.push(`${summary.worstSetup.label} needs caution until more evidence improves.`);
@@ -202,6 +249,13 @@ export class SetupPerformance {
     const bySetup = new Map<string, MutableBucket>();
     const byAsset = new Map<string, MutableBucket>();
     const closedTrades = aiTrades.filter((trade) => typeof trade.pnl === "number" && !trade.isPartialExit);
+    const chronologicalClosedTrades = [...closedTrades].sort((a, b) => (
+      new Date(a.exitTime || a.timestamp).getTime() - new Date(b.exitTime || b.timestamp).getTime()
+    ));
+    const holdoutStart = Math.max(0, Math.floor(chronologicalClosedTrades.length * 0.7));
+    const holdoutIds = new Set(chronologicalClosedTrades.slice(holdoutStart).map((trade) => trade.id));
+    const holdoutBySetup = new Map<string, Trade[]>();
+    const holdoutByAsset = new Map<string, Trade[]>();
     let taggedTradeCount = 0;
 
     for (const trade of closedTrades) {
@@ -210,8 +264,19 @@ export class SetupPerformance {
 
       for (const tag of setupTags) {
         addTrade(upsert(bySetup, tag), trade);
+        if (holdoutIds.has(trade.id)) {
+          const values = holdoutBySetup.get(tag) || [];
+          values.push(trade);
+          holdoutBySetup.set(tag, values);
+        }
       }
       addTrade(upsert(byAsset, trade.asset || "UNKNOWN"), trade);
+      if (holdoutIds.has(trade.id)) {
+        const assetKey = trade.asset || "UNKNOWN";
+        const values = holdoutByAsset.get(assetKey) || [];
+        values.push(trade);
+        holdoutByAsset.set(assetKey, values);
+      }
     }
 
     for (const [asset, stats] of Object.entries(opportunitySummary?.byAsset || {}) as Array<[string, any]>) {
@@ -227,8 +292,12 @@ export class SetupPerformance {
       }
     }
 
-    const setupBuckets = sortBuckets(Array.from(bySetup.values()).map(finalize));
-    const assetBuckets = sortBuckets(Array.from(byAsset.values()).map(finalize));
+    const setupBuckets = sortBuckets(Array.from(bySetup.values()).map((bucket) => (
+      enrichWithOutOfSampleEvidence(finalize(bucket), holdoutBySetup.get(bucket.key))
+    )));
+    const assetBuckets = sortBuckets(Array.from(byAsset.values()).map((bucket) => (
+      enrichWithOutOfSampleEvidence(finalize(bucket), holdoutByAsset.get(bucket.key))
+    )));
     const bucketsWithEvidence = setupBuckets.filter((bucket) => bucket.tradeCount > 0 || bucket.opportunityCount > 0);
     const bestSetup = bucketsWithEvidence[0] || null;
     const worstSetup = bucketsWithEvidence.length > 1

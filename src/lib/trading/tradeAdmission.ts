@@ -20,6 +20,8 @@ export interface TradeAdmissionInput {
   finalConviction?: number;
   learningAdjustment?: number;
   setupTags?: string[];
+  /** Crypto can use verified public WebSocket data; other free feeds stay swing-only. */
+  assetMode?: "REALTIME_FAST" | "CONDITIONAL_FAST" | "SLOW_SWING";
 }
 
 export interface TradeAdmissionResult {
@@ -36,12 +38,16 @@ export interface TradeAdmissionResult {
   learningRiskMultiplier: number;
   setupRiskMultiplier: number;
   setupRiskReason: string;
+  feedRiskMultiplier: number;
   maxTradeMarginUsd: number;
   maxTotalMarginUsd: number;
 }
 
 const BASE_RISK_PERCENT = 0.015;
-const MAX_TOTAL_MARGIN_PERCENT = 0.55;
+// The admission controller, asset specifications, and dashboard all use this
+// same portfolio cap. It leaves room for exits and prevents correlated trades
+// from turning a short bad regime into a portfolio-level event.
+const MAX_TOTAL_MARGIN_PERCENT = 0.40;
 
 function activeMarginUsd(portfolio: Portfolio): number {
   const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
@@ -87,14 +93,18 @@ function leverageFromConviction(signalScore: number, maxLeverage: number, finalC
 
 function marginPercentFromConviction(specMaxMarginPercent: number, finalConviction?: number): number {
   const conviction = finalConviction ?? 0;
-  let target = specMaxMarginPercent;
-  if (conviction >= 90) target = 0.30;
-  else if (conviction >= 80) target = 0.25;
-  else if (conviction >= 70) target = 0.20;
-  else if (conviction >= 60) target = 0.12;
-  else target = Math.min(0.05, specMaxMarginPercent);
+  let fractionOfAssetCap = 0.3;
+  if (conviction >= 90) fractionOfAssetCap = 1;
+  else if (conviction >= 80) fractionOfAssetCap = 0.85;
+  else if (conviction >= 70) fractionOfAssetCap = 0.7;
+  else if (conviction >= 60) fractionOfAssetCap = 0.5;
 
-  return Math.max(0.01, Math.min(0.30, target));
+  return Math.max(0.01, Math.min(specMaxMarginPercent, specMaxMarginPercent * fractionOfAssetCap));
+}
+
+function feedRiskMultiplier(assetMode?: TradeAdmissionInput["assetMode"]): number {
+  // Free cached feeds are valid for slower swings, not fast or heavy sizing.
+  return assetMode === "SLOW_SWING" ? 0.65 : 1;
 }
 
 function riskMultiplierFromConviction(finalConviction?: number): number {
@@ -171,8 +181,13 @@ export class TradeAdmissionController {
     const currentActiveMargin = activeMarginUsd(input.portfolio);
     const learningMultiplier = learningRiskMultiplier(input.learningAdjustment);
     const setupProfile = setupRiskProfile(input);
-    const combinedRiskMultiplier = learningMultiplier * setupProfile.multiplier;
-    const maxTradeMarginUsd = equity * marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction) * combinedRiskMultiplier;
+    const marketDataMultiplier = feedRiskMultiplier(input.assetMode);
+    const combinedRiskMultiplier = learningMultiplier * setupProfile.multiplier * marketDataMultiplier;
+    const convictionMarginPercent = marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction);
+    // A setup boost can recover some size inside its asset limit, but never
+    // silently override the published per-asset maximum margin.
+    const effectiveMarginPercent = Math.min(spec.maxMarginPercent, convictionMarginPercent * combinedRiskMultiplier);
+    const maxTradeMarginUsd = equity * effectiveMarginPercent;
     const maxTotalMarginUsd = equity * MAX_TOTAL_MARGIN_PERCENT;
     const remainingTotalMarginRoom = Math.max(0, maxTotalMarginUsd - currentActiveMargin);
 
@@ -190,6 +205,7 @@ export class TradeAdmissionController {
       learningRiskMultiplier: learningMultiplier,
       setupRiskMultiplier: setupProfile.multiplier,
       setupRiskReason: setupProfile.reason,
+      feedRiskMultiplier: marketDataMultiplier,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     });
@@ -293,8 +309,9 @@ export class TradeAdmissionController {
     const fullMoveProfitUsd = getUsdMovePerUnit(input.asset, input.entryPrice, input.takeProfit) * amount;
     const realisticProfitUsd = fullMoveProfitUsd * REALISTIC_CAPTURE_FRACTION;
     const roundTripFeeUsd = entryFeeUsd * 2;
-    if (realisticProfitUsd < roundTripFeeUsd * 3) {
-      return emptyResult(`Realistic captured profit ($${realisticProfitUsd.toFixed(2)}) is less than 3x round-trip fee ($${(roundTripFeeUsd * 3).toFixed(2)}). Position is too small to be fee-viable.`);
+    const minimumUsefulNetProfitUsd = Math.max(3, requiredMarginUsd * 0.003);
+    if (realisticProfitUsd < roundTripFeeUsd + minimumUsefulNetProfitUsd) {
+      return emptyResult(`Realistic captured profit ($${realisticProfitUsd.toFixed(2)}) cannot clear round-trip fees and the $${minimumUsefulNetProfitUsd.toFixed(2)} minimum useful net-profit threshold.`);
     }
 
     if (maxLossUsd > riskAmountUsd * 1.01) {
@@ -303,7 +320,9 @@ export class TradeAdmissionController {
 
     return {
       approved: true,
-      reason: setupProfile.multiplier !== 1
+      reason: marketDataMultiplier < 1
+        ? `Approved as a slower cached-feed swing at ${Math.round(marketDataMultiplier * 100)}% of normal risk. Fast/heavy sizing is reserved for verified real-time data.`
+        : setupProfile.multiplier !== 1
         ? `Approved with setup-specific sizing (${Math.round(setupProfile.multiplier * 100)}%). ${setupProfile.reason}.`
         : learningMultiplier < 1
         ? `Approved with local-learning risk reduction (${Math.round(learningMultiplier * 100)}% size). Recent evidence is weaker, so margin is deliberately smaller.`
@@ -321,6 +340,7 @@ export class TradeAdmissionController {
       learningRiskMultiplier: learningMultiplier,
       setupRiskMultiplier: setupProfile.multiplier,
       setupRiskReason: setupProfile.reason,
+      feedRiskMultiplier: marketDataMultiplier,
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     };
