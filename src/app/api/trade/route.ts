@@ -122,6 +122,7 @@ async function handleSwingTrade(request: Request) {
             finalConviction: swingSignal.finalConviction,
             learningAdjustment: swingSignal.learningAdjustment,
             setupTags: swingSignal.setupTags,
+            assetMode: swingSignal.assetMode,
             reasoning: swingSignal.reasoning,
             strategyType: "swing",
             requestedMarginUsd: portfolioGuard.recoveryProbe

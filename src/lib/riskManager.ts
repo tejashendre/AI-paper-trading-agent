@@ -1,6 +1,54 @@
 import { RiskParameters, Portfolio, OpenPosition, StatisticalMetrics } from "@/lib/types";
+import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
 
 export class RiskManager {
+  private static netPnlAtPrice(position: OpenPosition, price: number): number {
+    const entryFee = position.entryFeePaid ?? estimateFeeUsd(position.asset, position.amount, position.entryPrice);
+    const exitFee = estimateFeeUsd(position.asset, position.amount, price);
+    return calculatePnlUsd(position.asset, position.entryPrice, price, position.amount, position.direction) - entryFee - exitFee;
+  }
+
+  /**
+   * Finds the first executable stop level that retains a useful net profit
+   * after both fee legs. A nominal "breakeven" price is not enough for paper
+   * execution because a small adverse tick can still close below fees.
+   */
+  private static usefulProfitLockPrice(position: OpenPosition, currentPrice: number): number | null {
+    if (!Number.isFinite(position.entryPrice) || position.entryPrice <= 0 || position.amount <= 0) return null;
+
+    const minimumNetProfitUsd = Math.max(2, position.usdInvested * 0.002);
+    if (RiskManager.netPnlAtPrice(position, currentPrice) < minimumNetProfitUsd) return null;
+
+    const isShort = position.direction === "SHORT";
+    let near = position.entryPrice;
+    let far = isShort ? position.entryPrice * 0.9 : position.entryPrice * 1.1;
+
+    // Expand the search only when an unusual contract or fee profile needs it.
+    for (let attempt = 0; attempt < 4 && RiskManager.netPnlAtPrice(position, far) < minimumNetProfitUsd; attempt++) {
+      far = isShort ? far * 0.9 : far * 1.1;
+    }
+    if (RiskManager.netPnlAtPrice(position, far) < minimumNetProfitUsd) return null;
+
+    for (let iteration = 0; iteration < 36; iteration++) {
+      const middle = (near + far) / 2;
+      const netPnl = RiskManager.netPnlAtPrice(position, middle);
+      const hasEnoughProfit = netPnl >= minimumNetProfitUsd;
+
+      if (isShort) {
+        if (hasEnoughProfit) far = middle;
+        else near = middle;
+      } else if (hasEnoughProfit) {
+        far = middle;
+      } else {
+        near = middle;
+      }
+    }
+
+    const lockPrice = far;
+    const stillProtective = isShort ? lockPrice > currentPrice : lockPrice < currentPrice;
+    return stillProtective ? lockPrice : null;
+  }
+
   static calculatePosition(
     capital: number,
     riskPercent: number,
@@ -295,15 +343,13 @@ export class RiskManager {
       if (currentPrice >= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     }
 
-    // 2. Swing profit protection: protect fees first, then lock part of the move
-    // only after the trade has already travelled far enough to avoid choking rallies.
+    // 2. Swing profit protection: only move a stop once it can retain a useful
+    // net gain after fees. This prevents a visually green trade from closing
+    // as a small loss or a few cents of noise.
     let newStopLoss = position.stopLoss;
-    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.0) {
-      const feeBufferPercent = 0.001;
-      const breakevenLockPercent = Math.max(feeBufferPercent, originalRiskPercent * 0.1);
-      const protectedStop = isShort
-        ? position.entryPrice * (1 - breakevenLockPercent)
-        : position.entryPrice * (1 + breakevenLockPercent);
+    const usefulProfitLock = RiskManager.usefulProfitLockPrice(position, currentPrice);
+    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.0 && usefulProfitLock !== null) {
+      const protectedStop = usefulProfitLock;
       const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
       const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
       if (isBetterStop && isProtectiveStop) {
@@ -313,9 +359,14 @@ export class RiskManager {
 
     if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.6) {
       const profitLockPercent = originalRiskPercent * 0.45;
-      const protectedStop = isShort
+      const theoreticalStop = isShort
         ? position.entryPrice * (1 - profitLockPercent)
         : position.entryPrice * (1 + profitLockPercent);
+      const protectedStop = usefulProfitLock === null
+        ? theoreticalStop
+        : isShort
+          ? Math.min(theoreticalStop, usefulProfitLock)
+          : Math.max(theoreticalStop, usefulProfitLock);
       const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
       const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
       if (isBetterStop && isProtectiveStop) {

@@ -34,7 +34,11 @@ function buildLearningDigest(localLearningRules: any[], opportunitySummary: any,
     }
 
     const plainFindings = [
-        bestSetup ? `${bestSetup.label} is the best observed setup so far.` : null,
+        bestSetup
+            ? bestSetup.promotionEligible
+                ? `${bestSetup.label} has passed its later closed-trade validation sample.`
+                : `${bestSetup.label} is the best observed setup so far, but has not earned a size boost.`
+            : null,
         worstSetup && worstSetup.key !== bestSetup?.key ? `${worstSetup.label} still needs caution.` : null,
         boostRules[0]?.message || null,
         reduceRules[0]?.message || null,
@@ -55,6 +59,10 @@ function buildLearningDigest(localLearningRules: any[], opportunitySummary: any,
             opportunityCount: bestSetup.opportunityCount,
             favorableRate: bestSetup.opportunityFavorableRate,
             confidenceAdjustment: bestSetup.confidenceAdjustment,
+            outOfSampleTradeCount: bestSetup.outOfSampleTradeCount,
+            outOfSampleWinRate: bestSetup.outOfSampleWinRate,
+            outOfSampleProfitFactor: bestSetup.outOfSampleProfitFactor,
+            promotionEligible: bestSetup.promotionEligible,
         } : null,
         plainFindings: plainFindings.slice(0, 4),
         lastUpdated: opportunitySummary?.lastUpdated || setupPerformance?.generatedAt || null,

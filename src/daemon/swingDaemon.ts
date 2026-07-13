@@ -638,6 +638,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           learningAdjustment: swingSignal.learningAdjustment,
           setupTags: swingSignal.setupTags,
+          assetMode: swingSignal.assetMode,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd,

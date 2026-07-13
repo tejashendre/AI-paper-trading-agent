@@ -6,6 +6,7 @@ import { RiskManager } from "../src/lib/riskManager";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
 import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
 import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/trading/localLearning";
+import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
 import fs from "fs";
@@ -219,11 +220,11 @@ function auditAdmissionSizing(): AuditResult[] {
   const checks: AuditResult[] = [];
   const portfolio = basePortfolio();
   const scenarios = [
-    { conviction: 58, expected: "weak/watch", maxMargin: 600 },
-    { conviction: 65, expected: "probe", maxMargin: 1_300 },
-    { conviction: 75, expected: "normal", maxMargin: 2_100 },
-    { conviction: 85, expected: "strong", maxMargin: 2_600 },
-    { conviction: 92, expected: "heavy", maxMargin: 3_100 },
+    { conviction: 58, expected: "watch", maxMargin: 300 },
+    { conviction: 65, expected: "probe", maxMargin: 500 },
+    { conviction: 75, expected: "normal", maxMargin: 700 },
+    { conviction: 85, expected: "strong", maxMargin: 850 },
+    { conviction: 92, expected: "maximum approved", maxMargin: 1_000 },
   ];
 
   for (const scenario of scenarios) {
@@ -241,7 +242,7 @@ function auditAdmissionSizing(): AuditResult[] {
     });
 
     const margin = admission.requiredMarginUsd;
-    const marginOk = admission.approved && margin <= scenario.maxMargin;
+    const marginOk = admission.approved && margin <= scenario.maxMargin + 0.01;
     checks.push(result(
       marginOk ? "PASS" : "FAIL",
       `conviction sizing: ${scenario.conviction}`,
@@ -292,6 +293,28 @@ function auditAdmissionSizing(): AuditResult[] {
       : `Learning-reduced trade was rejected: ${reducedLearning.reason}`
   ));
 
+  const slowFeedAdmission = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "GOLD",
+    direction: "LONG",
+    entryPrice: 4_000,
+    stopLoss: 3_960,
+    takeProfit: 4_080,
+    signalScore: 20,
+    reasoning: "Audit cached feed sizing",
+    strategyType: "swing",
+    finalConviction: 92,
+    assetMode: "SLOW_SWING",
+  });
+  const slowFeedSeparated = slowFeedAdmission.approved && slowFeedAdmission.feedRiskMultiplier === 0.65 && slowFeedAdmission.requiredMarginUsd <= 650;
+  checks.push(result(
+    slowFeedSeparated ? "PASS" : "FAIL",
+    "cached-feed sizing separation",
+    slowFeedAdmission.approved
+      ? `Cached-feed GOLD is limited to $${slowFeedAdmission.requiredMarginUsd.toFixed(2)} margin at ${Math.round(slowFeedAdmission.feedRiskMultiplier * 100)}% of normal risk.`
+      : `Cached-feed GOLD was rejected: ${slowFeedAdmission.reason}`
+  ));
+
   const portfolioWithExposure = basePortfolio({
     usd: 6_500,
     openPositions: {
@@ -339,10 +362,10 @@ function auditAdmissionSizing(): AuditResult[] {
 
   const totalMarginAfter = 3_500 + capped.requiredMarginUsd;
   checks.push(result(
-    capped.approved && totalMarginAfter <= 5_500.01 ? "PASS" : "FAIL",
+    capped.approved && totalMarginAfter <= 4_000.01 ? "PASS" : "FAIL",
     "total margin cap",
     capped.approved
-      ? `Existing $3,500 exposure allows only $${capped.requiredMarginUsd.toFixed(2)} more margin, keeping total near the 55% paper-aggressive cap.`
+      ? `Existing $3,500 exposure allows only $${capped.requiredMarginUsd.toFixed(2)} more margin, keeping total near the 40% portfolio cap.`
       : `Trade rejected with existing exposure: ${capped.reason}`
   ));
 
@@ -415,7 +438,7 @@ function auditAdmissionSizing(): AuditResult[] {
     finalConviction: 85,
   });
   checks.push(result(
-    !jpyFeeGuard.approved && jpyFeeGuard.reason.includes("fee-viable") ? "PASS" : "FAIL",
+    !jpyFeeGuard.approved && jpyFeeGuard.reason.includes("profit") ? "PASS" : "FAIL",
     "JPY fee guard uses USD PnL",
     !jpyFeeGuard.approved ? jpyFeeGuard.reason : "USDJPY trade was admitted using an unconverted JPY price move."
   ));
@@ -492,6 +515,30 @@ function auditExitSafety(): AuditResult[] {
       : "Short position did not close after price crossed above stop."
   ));
 
+  const feeProtectedWinner = RiskManager.checkStopLossOrTakeProfit({
+    asset: "BTC",
+    entryPrice: 100,
+    amount: 10,
+    btcAmount: 10,
+    usdInvested: 1_000,
+    stopLoss: 95,
+    initialStopLoss: 95,
+    takeProfit: 110,
+    entryTime: new Date().toISOString(),
+    signalScore: 20,
+    reasoning: "Audit fee-aware profit protection",
+    direction: "LONG",
+    strategyType: "swing",
+    maxLossUsd: 50,
+  }, 106);
+  checks.push(result(
+    !feeProtectedWinner.triggered && Number(feeProtectedWinner.newStopLoss || 0) > 100.2 ? "PASS" : "FAIL",
+    "fee-aware swing profit lock",
+    Number(feeProtectedWinner.newStopLoss || 0) > 100.2
+      ? `A profitable swing now protects a net-positive stop at ${feeProtectedWinner.newStopLoss?.toFixed(4)} instead of a nominal fee-blind breakeven.`
+      : "A profitable swing did not receive a fee-aware protective stop."
+  ));
+
   const lifecyclePath = path.join(process.cwd(), "src", "lib", "execution", "swingLifecycle.ts");
   const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
   const stopCheckIndex = lifecycleSource.indexOf("RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice)");
@@ -546,6 +593,27 @@ function auditLearningConnections(): AuditResult[] {
     localLearningSource.includes("review:asset:")
       ? "Trade-review rules use a distinct id namespace from opportunity/setup rules."
       : "Trade-review rules may collide with existing learning rule ids."
+  ));
+
+  const syntheticTrade = (index: number, pnl: number) => ({
+    id: `oos-${index}`,
+    timestamp: new Date(1_725_000_000_000 + index * 60_000).toISOString(),
+    exitTime: new Date(1_725_000_000_000 + index * 60_000).toISOString(),
+    asset: "BTC",
+    pnl,
+    setupTags: ["VWAP_REJECTION"],
+  } as any);
+  const unproven = SetupPerformance.build(Array.from({ length: 7 }, (_, index) => syntheticTrade(index, 10)), {});
+  const proven = SetupPerformance.build(Array.from({ length: 30 }, (_, index) => syntheticTrade(index, 10)), {});
+  const unprovenSetup = unproven.bySetup.find((bucket) => bucket.key === "VWAP_REJECTION");
+  const provenSetup = proven.bySetup.find((bucket) => bucket.key === "VWAP_REJECTION");
+  const holdoutPromotionWorks = !unprovenSetup?.promotionEligible && provenSetup?.promotionEligible === true && (provenSetup.outOfSampleTradeCount || 0) >= 8;
+  checks.push(result(
+    holdoutPromotionWorks ? "PASS" : "FAIL",
+    "out-of-sample setup promotion",
+    provenSetup?.promotionEligible
+      ? `A setup earns a boost only after ${provenSetup.outOfSampleTradeCount} later closed trades validate it; a seven-trade sample remains unpromoted.`
+      : "Chronological holdout evidence did not control setup promotion."
   ));
 
   return checks;
