@@ -1046,9 +1046,13 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   ));
 
   checks.push(result(
-    activeUser.includes("BTC") ? "PASS" : "WARN",
+    activeUser.includes("BTC") || activeUser.length === 0 ? "PASS" : "WARN",
     "user BTC preservation",
-    activeUser.includes("BTC") ? "User BTC manual position is still visible." : "User BTC manual position is not currently visible."
+    activeUser.includes("BTC")
+      ? "User BTC manual position is still visible."
+      : activeUser.length === 0
+        ? "No user position is currently open, so there is no manual BTC position to preserve."
+        : "User positions exist, but the historical BTC manual position is not currently visible."
   ));
 
   checks.push(result(
