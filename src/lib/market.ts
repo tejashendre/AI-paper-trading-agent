@@ -389,10 +389,18 @@ export class MarketService {
   static async getCurrentPrice(assetKey: string = "BTC"): Promise<number> {
     const redis = getRedis();
 
-    // 1. Live WebSocket Feed (Microsecond Latency, Zero API Cost)
+    // 1. Live WebSocket Feed. The timestamp is authoritative so a retained
+    // value cannot be mistaken for a fresh execution price.
     try {
-      const livePrice = await redis.get<number>(`market:live:${assetKey}`);
-      if (livePrice) return Number(livePrice);
+      const [livePrice, liveMeta] = await Promise.all([
+        redis.get<number>(`market:live:${assetKey}`),
+        redis.get<any>(`market:liveMeta:${assetKey}`),
+      ]);
+      const updatedAt = new Date(liveMeta?.updatedAt || 0).getTime();
+      const ageMs = Date.now() - updatedAt;
+      if (livePrice && Number.isFinite(Number(livePrice)) && ageMs >= 0 && ageMs <= 45_000) {
+        return Number(livePrice);
+      }
     } catch {}
 
     // 2. HTTP Cache Fallback

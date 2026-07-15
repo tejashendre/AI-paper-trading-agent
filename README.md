@@ -93,17 +93,6 @@ Each decision should answer:
 
 The public dashboard prioritizes current portfolio state, closed AI performance, active positions, latest scan status, and plain-English reasons. Detailed diagnostics remain available through the authenticated/admin or developer surfaces rather than being required for every spectator.
 
-## Kaggle Capstone Concepts
-
-| Concept | Evidence in this project |
-|---|---|
-| Agent or multi-agent system (ADK) | `agents/trading_reviewer_agent.py` provides a read-only safety and explainability reviewer |
-| MCP server | `mcp/trading_mcp_server.ts` exposes read-only portfolio, health, scan, and trade context |
-| Antigravity | Demonstrated in the project video as part of the development workflow |
-| Security | Paper-only execution, spectator/admin separation, validation, and read-only public tools |
-| Deployability | Docker Compose, Oracle VPS runtime, reverse proxy, and deployment checks |
-| Agent skills | `agent:status`, `agent:explain`, and `agent:audit` CLI workflows |
-
 ## Safety and Scope
 
 - Production configuration is paper-only. No real exchange order is submitted.
