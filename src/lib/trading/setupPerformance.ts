@@ -270,8 +270,12 @@ export class SetupPerformance {
           holdoutBySetup.set(tag, values);
         }
       }
-      addTrade(upsert(byAsset, trade.asset || "UNKNOWN"), trade);
-      if (holdoutIds.has(trade.id)) {
+      const isProbe = trade.entryMode === "CONTROLLED_PROBE" || trade.decisionState === "PROBE_ENTRY";
+      // Probe trades validate the setup that produced them, but they must not
+      // poison every future strategy on the same asset. Asset-level learning
+      // is reserved for standard entries; probe evidence remains setup-scoped.
+      if (!isProbe) addTrade(upsert(byAsset, trade.asset || "UNKNOWN"), trade);
+      if (!isProbe && holdoutIds.has(trade.id)) {
         const assetKey = trade.asset || "UNKNOWN";
         const values = holdoutByAsset.get(assetKey) || [];
         values.push(trade);

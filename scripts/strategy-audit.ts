@@ -1,7 +1,7 @@
 import { ASSET_CONTRACT_SPECS, getAssetSpec } from "../src/lib/trading/assetSpecs";
 import { runReplay } from "../src/lib/backtest/replayEngine";
 import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
-import { Candle, Portfolio } from "../src/lib/types";
+import { Candle, IndicatorSnapshot, Portfolio, StatisticalMetrics } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
 import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
@@ -9,6 +9,8 @@ import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/tradi
 import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
+import { scoreContinuousHtfEvidence } from "../src/lib/swingEngine";
+import { OpportunityEvaluation, selectIndependentOpportunityEvaluations } from "../src/lib/trading/opportunityJournal";
 import fs from "fs";
 import path from "path";
 
@@ -201,6 +203,126 @@ function auditStatisticalRegimes(): AuditResult[] {
     "Hurst regime calibration",
     `Deterministic trend H=${trendHurst.toFixed(3)}; deterministic random walk H=${walkHurst.toFixed(3)}. Random walks must not be forced to 1.0.`
   )];
+}
+
+function auditTradingRevivalCalibration(): AuditResult[] {
+  const snapshot = (values: Partial<IndicatorSnapshot>): IndicatorSnapshot => ({
+    ema9: 103,
+    ema21: 102,
+    ema50: 100,
+    ema200: 95,
+    rsi: 60,
+    macd: { line: 1, signal: 0.5, histogram: 0.5 },
+    bb: { upper: 110, middle: 100, lower: 90 },
+    atr: 2,
+    vwap: 101,
+    stochRsi: { k: 60, d: 50 },
+    price: 104,
+    ...values,
+  });
+  const statistics = (values: Partial<StatisticalMetrics>): StatisticalMetrics => ({
+    logReturns: [],
+    realizedVolatility: 0.2,
+    priceZScore: 0.3,
+    rsiZScore: 0,
+    hurstExponent: 0.58,
+    regime: "TRENDING",
+    volatilityPercentile: 50,
+    volumePercentile: 60,
+    regressionSlope: 0.4,
+    regressionR2: 0.6,
+    ...values,
+  });
+
+  const aligned = scoreContinuousHtfEvidence({
+    livePrice: 104,
+    snap1h: snapshot({}),
+    snap4h: snapshot({}),
+    stats1h: statistics({}),
+    stats4h: statistics({}),
+  });
+  const noisy = scoreContinuousHtfEvidence({
+    livePrice: 104,
+    snap1h: snapshot({}),
+    snap4h: snapshot({}),
+    stats1h: statistics({ regressionR2: 0.1 }),
+    stats4h: statistics({ regressionR2: 0.1 }),
+  });
+
+  const baseEvaluation = {
+    id: "opportunity-1-15m",
+    opportunityId: "opportunity-1",
+    asset: "BTC",
+    horizon: "15m",
+    direction: "LONG",
+    entryPrice: 100,
+    currentPrice: 101,
+    movePercent: 1,
+    maxFavorableExcursion: 1,
+    maxAdverseExcursion: -0.2,
+    hitTakeProfit: false,
+    hitStopLoss: false,
+    firstHit: "NONE",
+    hypotheticalOutcome: "FAVORABLE",
+    favorable: true,
+    decision: "WATCH",
+    setupTags: ["HTF_TREND_BREAKOUT"],
+    finalConviction: 65,
+    evaluatedAt: new Date().toISOString(),
+  } as OpportunityEvaluation;
+  const independent = selectIndependentOpportunityEvaluations([
+    baseEvaluation,
+    { ...baseEvaluation, id: "opportunity-1-1h", horizon: "1h" },
+    { ...baseEvaluation, id: "opportunity-1-4h", horizon: "4h" },
+    { ...baseEvaluation, id: "opportunity-1-24h", horizon: "24h" },
+    { ...baseEvaluation, id: "opportunity-2-1h", opportunityId: "opportunity-2", horizon: "1h" },
+  ] as OpportunityEvaluation[]);
+
+  const probeTrade = {
+    id: "probe-close",
+    timestamp: new Date().toISOString(),
+    asset: "BTC",
+    action: "SELL",
+    direction: "LONG",
+    amount: 1,
+    btcAmount: 1,
+    price: 99,
+    usdValue: 99,
+    stopLoss: 99,
+    takeProfit: 104,
+    signalScore: 10,
+    reasoning: "probe",
+    pnl: -5,
+    entryMode: "CONTROLLED_PROBE",
+    decisionState: "PROBE_ENTRY",
+    setupTags: ["HTF_TREND_BREAKOUT"],
+  } as any;
+  const probeSummary = SetupPerformance.build([probeTrade], { byAsset: {}, bySetup: {} });
+  const probeAsset = probeSummary.byAsset.find((bucket) => bucket.key === "BTC");
+  const probeSetup = probeSummary.bySetup.find((bucket) => bucket.key === "HTF_TREND_BREAKOUT");
+
+  return [
+    result(
+      aligned.buyScore >= 14 && aligned.buyScore > aligned.shortScore ? "PASS" : "FAIL",
+      "continuous HTF trend admission",
+      `Aligned trend produced ${aligned.buyScore} bullish HTF points; normal evidence must be reachable without an extreme indicator.`
+    ),
+    result(
+      noisy.buyScore <= 5 && noisy.shortScore <= 5 ? "PASS" : "FAIL",
+      "random HTF evidence cap",
+      `Low-quality regressions were capped at bullish=${noisy.buyScore}, bearish=${noisy.shortScore}.`
+    ),
+    result(
+      independent.length === 2 && independent.some((row) => row.opportunityId === "opportunity-1" && row.horizon === "4h") ? "PASS" : "FAIL",
+      "independent opportunity learning sample",
+      `${independent.length} independent opportunities selected from five correlated horizon rows.`
+    ),
+    result(
+      !probeAsset?.tradeCount && probeSetup?.tradeCount === 1 ? "PASS" : "FAIL",
+      "probe learning remains setup-scoped",
+      `Probe asset trades=${probeAsset?.tradeCount || 0}; probe setup trades=${probeSetup?.tradeCount || 0}.`
+    ),
+  ];
 }
 
 function auditEventCalendar(): AuditResult[] {
@@ -1131,6 +1253,7 @@ async function main() {
   const results: AuditResult[] = [
     ...auditAssetSpecs(),
     ...auditStatisticalRegimes(),
+    ...auditTradingRevivalCalibration(),
     ...auditEventCalendar(),
     ...auditAdmissionSizing(),
     ...auditTargetReachability(),

@@ -162,6 +162,7 @@ export function calculateLearningAdjustment(
   const watchOnly = matched.some((rule) =>
     rule.scope === "asset" &&
     rule.action === "REDUCE" &&
+    rule.confidenceAdjustment <= -8 &&
     rule.favorableRate < 0.25 &&
     rule.sampleSize >= 6 &&
     rule.avgMove < -0.05
