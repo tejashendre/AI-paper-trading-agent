@@ -8,7 +8,7 @@
 import * as http from "http";
 import * as https from "https";
 
-const STATUS_URL = process.env.STATUS_URL || "https://ai-quant-trader.duckdns.org/api/user/status";
+const STATUS_URL = process.env.STATUS_URL || "https://trader.tejashendre.com/api/user/status";
 const STATUS_AUTH_TOKEN = process.env.STATUS_AUTH_TOKEN || "SPECTATOR";
 
 type RawRecord = Record<string, unknown>;

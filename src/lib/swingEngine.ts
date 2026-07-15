@@ -1,4 +1,4 @@
-import { Candle } from "@/lib/types";
+import { Candle, IndicatorSnapshot, StatisticalMetrics } from "@/lib/types";
 import { MarketService } from "./market";
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
@@ -165,6 +165,60 @@ function entryThresholds(assetMode: SwingSignal["assetMode"]) {
   };
 }
 
+export function scoreContinuousHtfEvidence(input: {
+  livePrice: number;
+  snap1h: IndicatorSnapshot;
+  snap4h: IndicatorSnapshot;
+  stats1h: StatisticalMetrics;
+  stats4h: StatisticalMetrics;
+}) {
+  let buyScore = 0;
+  let shortScore = 0;
+  const details: string[] = [];
+  const { livePrice, snap1h, snap4h, stats1h, stats4h } = input;
+
+  const addDirectional = (bullish: boolean, points: number, label: string) => {
+    if (bullish) buyScore += points;
+    else shortScore += points;
+    details.push(`${label} (${bullish ? "Bullish" : "Bearish"})`);
+  };
+
+  const ema4hBull = snap4h.ema9 > snap4h.ema21 && snap4h.ema21 > snap4h.ema50;
+  const ema4hBear = snap4h.ema9 < snap4h.ema21 && snap4h.ema21 < snap4h.ema50;
+  if (ema4hBull || ema4hBear) addDirectional(ema4hBull, 4, "4H EMA Alignment");
+
+  const ema1hBull = snap1h.ema9 > snap1h.ema21 && snap1h.ema21 > snap1h.ema50;
+  const ema1hBear = snap1h.ema9 < snap1h.ema21 && snap1h.ema21 < snap1h.ema50;
+  if (ema1hBull || ema1hBear) addDirectional(ema1hBull, 3, "1H EMA Alignment");
+
+  if (stats4h.regressionR2 >= 0.35 && stats4h.regressionSlope !== 0) {
+    addDirectional(stats4h.regressionSlope > 0, 3, "4H Regression Confirmation");
+  }
+
+  if (Number.isFinite(snap1h.vwap) && snap1h.vwap > 0 && Number.isFinite(livePrice)) {
+    const distance = Math.abs(livePrice - snap1h.vwap) / snap1h.vwap;
+    if (distance >= 0.001) addDirectional(livePrice > snap1h.vwap, 2, "1H VWAP Control");
+  }
+
+  if (snap1h.rsi >= 54 && snap1h.rsi <= 68) {
+    buyScore += 2;
+    details.push("1H RSI Momentum (Bullish)");
+  } else if (snap1h.rsi <= 46 && snap1h.rsi >= 32) {
+    shortScore += 2;
+    details.push("1H RSI Momentum (Bearish)");
+  }
+
+  // A weak or random 4H regression must not become directional evidence just
+  // because lower-timeframe indicators happen to align.
+  if (stats4h.regressionR2 < 0.15 && stats1h.regressionR2 < 0.15) {
+    buyScore = Math.min(buyScore, 5);
+    shortScore = Math.min(shortScore, 5);
+    details.push("HTF Regression Quality Cap");
+  }
+
+  return { buyScore, shortScore, details };
+}
+
 function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[]) {
   let score = assetMode === "REALTIME_FAST" ? 92 : 72;
   const latest15m = candles15m[candles15m.length - 1]?.time ? candles15m[candles15m.length - 1].time * 1000 : 0;
@@ -249,7 +303,9 @@ function scoreCryptoMicrostructure(
       score: 0,
       aligned: true,
       tags,
-      reason: "Live flow is neutral because this asset is not in crypto fast mode.",
+      reason: direction === "NEUTRAL"
+        ? "Live flow is neutral because there is no directional setup to confirm."
+        : "Live flow is neutral because this asset is not in crypto fast mode.",
     };
   }
 
@@ -622,6 +678,17 @@ export class SwingEngine {
       let buyScore = 0;
       let shortScore = 0;
       const details: string[] = [];
+
+      const continuousHtf = scoreContinuousHtfEvidence({
+        livePrice,
+        snap1h,
+        snap4h,
+        stats1h,
+        stats4h,
+      });
+      buyScore += continuousHtf.buyScore;
+      shortScore += continuousHtf.shortScore;
+      details.push(...continuousHtf.details);
 
       // A. HTF Z-Score Reversion (1H)
       const zScore1h = stats1h.priceZScore;

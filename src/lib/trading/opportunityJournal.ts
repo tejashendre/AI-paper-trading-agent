@@ -39,6 +39,7 @@ export interface OpportunityRecord {
   dataQuality: number;
   finalConviction: number;
   paperSize?: string;
+  entryMode?: string;
   setupTags: string[];
   evaluatedHorizons: EvaluationHorizon[];
 }
@@ -68,6 +69,7 @@ export interface OpportunityEvaluation {
   netReturnPercent?: number;
   decision: OpportunityDecision;
   decisionState?: string;
+  entryMode?: string;
   setupTags: string[];
   finalConviction: number;
   evaluatedAt: string;
@@ -329,6 +331,7 @@ export class OpportunityJournal {
       dataQuality: Number(result.dataQuality || 0),
       finalConviction: Number(result.finalConviction || 0),
       paperSize: result.paperSize,
+      entryMode: result.entryMode,
       setupTags: Array.isArray(result.setupTags) ? result.setupTags.slice(0, 8) : [],
       evaluatedHorizons: [],
     };
@@ -406,6 +409,7 @@ export class OpportunityJournal {
           netReturnPercent: netOutcome.netReturnPercent,
           decision: record.decision,
           decisionState: record.decisionState,
+          entryMode: record.entryMode,
           setupTags: record.setupTags,
           finalConviction: record.finalConviction,
           evaluatedAt: new Date().toISOString(),
@@ -455,7 +459,8 @@ export class OpportunityJournal {
   static async rebuildSummary() {
     const redis = getRedis();
     const rows = await redis.lrange(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1);
-    const evaluations = rows.map(parseEvaluation).filter(Boolean) as OpportunityEvaluation[];
+    const horizonEvaluations = rows.map(parseEvaluation).filter(Boolean) as OpportunityEvaluation[];
+    const evaluations = selectIndependentOpportunityEvaluations(horizonEvaluations);
     const byAsset: Record<string, { total: number; favorable: number; avgMove: number; avgNetPnlUsd: number; avgNetReturnPercent: number; grossProfitUsd: number; grossLossUsd: number; profitFactor: number | null }> = {};
     const bySetup: Record<string, { total: number; favorable: number; avgMove: number; avgMfe: number; avgMae: number; avgNetPnlUsd: number; avgNetReturnPercent: number; grossProfitUsd: number; grossLossUsd: number; profitFactor: number | null; takeProfitHits: number; stopLossHits: number }> = {};
     let bestMissed: OpportunityEvaluation | null = null;
@@ -521,6 +526,7 @@ export class OpportunityJournal {
     const favorable = Object.values(byAsset).reduce((sum, stats) => sum + stats.favorable, 0);
     const summary = {
       totalEvaluated,
+      totalHorizonEvaluations: horizonEvaluations.length,
       favorableRate: totalEvaluated > 0 ? favorable / totalEvaluated : 0,
       bestMissed,
       byAsset,
@@ -533,4 +539,32 @@ export class OpportunityJournal {
     writeJsonBackup("opportunity_evaluations.json", evaluations.slice(0, 300));
     return summary;
   }
+}
+
+const LEARNING_HORIZON_PRIORITY: Record<EvaluationHorizon, number> = {
+  "4h": 4,
+  "1h": 3,
+  "24h": 2,
+  "15m": 1,
+};
+
+/**
+ * Select one strategy-relevant outcome per opportunity for learning. Horizon
+ * rows remain stored for diagnostics, but they are dependent observations and
+ * must not inflate the rule sample size.
+ */
+export function selectIndependentOpportunityEvaluations(
+  evaluations: OpportunityEvaluation[]
+): OpportunityEvaluation[] {
+  const selected = new Map<string, OpportunityEvaluation>();
+
+  for (const evaluation of evaluations) {
+    const key = evaluation.opportunityId || evaluation.id;
+    const current = selected.get(key);
+    if (!current || LEARNING_HORIZON_PRIORITY[evaluation.horizon] > LEARNING_HORIZON_PRIORITY[current.horizon]) {
+      selected.set(key, evaluation);
+    }
+  }
+
+  return Array.from(selected.values());
 }
