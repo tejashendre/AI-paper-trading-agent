@@ -51,10 +51,11 @@ jobs:
             set -eu
             DEPLOY_COMMIT="${{ github.sha }}"
             DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            BACKUP_STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
             cd /home/ubuntu/version-6
 
             echo "Creating a state-preserving pre-deploy snapshot..."
-            BACKUP_DIR="data/deploy-backups/${DEPLOYED_AT}-${DEPLOY_COMMIT}"
+            BACKUP_DIR="data/deploy-backups/${BACKUP_STAMP}-${DEPLOY_COMMIT}"
             mkdir -p "$BACKUP_DIR"
             git rev-parse HEAD > "$BACKUP_DIR/previous-commit.txt"
             git status --short > "$BACKUP_DIR/previous-status.txt"
@@ -68,7 +69,7 @@ jobs:
             echo "Materializing the exact GitHub commit..."
             git fetch --prune origin main
             git reset --hard "$DEPLOY_COMMIT"
-            git clean -fd -- src scripts public
+            git clean -fd
             test "$(git rev-parse HEAD)" = "$DEPLOY_COMMIT"
 
             echo "Rebuilding and starting application containers..."
