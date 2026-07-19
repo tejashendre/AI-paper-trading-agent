@@ -79,6 +79,10 @@ export class LocalRedisProxy {
   async publish(channel: string, message: string): Promise<number> {
     return this.client.publish(channel, message);
   }
+
+  async quit(): Promise<void> {
+    await this.client.quit();
+  }
 }
 
 let client: LocalRedisProxy | null = null;
@@ -88,4 +92,10 @@ export function getRedis(): LocalRedisProxy {
     client = new LocalRedisProxy();
   }
   return client;
+}
+
+export async function closeRedis(): Promise<void> {
+  const activeClient = client;
+  client = null;
+  if (activeClient) await activeClient.quit();
 }
