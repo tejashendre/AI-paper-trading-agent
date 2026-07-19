@@ -1,6 +1,7 @@
 import { PortfolioManager } from "../src/lib/portfolio";
 import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
 import { TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
+import { closeRedis } from "../src/lib/redis";
 
 function cohortStartFromArgs(): string | undefined {
   const index = process.argv.indexOf("--since");
@@ -25,7 +26,15 @@ async function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-main().catch((error) => {
+async function run() {
+  try {
+    await main();
+  } finally {
+    await closeRedis();
+  }
+}
+
+run().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
