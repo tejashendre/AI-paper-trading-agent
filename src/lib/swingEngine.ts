@@ -3,6 +3,7 @@ import { MarketService } from "./market";
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
 import { LocalLearningMemory } from "./trading/localLearning";
+import { buildPaperExecutionPlan, EXECUTION_COST_MODEL_VERSION } from "./trading/executionCostModel";
 
 export type SwingDecisionState =
   | "NO_BIAS"
@@ -22,6 +23,7 @@ export interface EntryGateDiagnostics {
   convictionPassed: boolean;
   dataPassed: boolean;
   slippagePassed: boolean;
+  rewardRiskPassed: boolean;
   learningPassed: boolean;
   normalEntry: boolean;
   exceptionEntry: boolean;
@@ -87,6 +89,23 @@ export interface SwingSignal {
     compressed: boolean;
     reason: string;
   };
+  netRewardRisk?: {
+    grossRewardUsdPerUnit: number;
+    grossLossUsdPerUnit: number;
+    estimatedRoundTripFeeUsdPerUnit: number;
+    netRewardUsdPerUnit: number;
+    netLossUsdPerUnit: number;
+    ratio: number;
+    minimumRequired: number;
+    passed: boolean;
+    reason: string;
+    executionCostModelVersion?: string;
+    entryFillPrice?: number;
+    targetFillPrice?: number;
+    stopFillPrice?: number;
+    estimatedRoundTripExecutionCostUsdPerUnit?: number;
+  };
+  marketRegime: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' | 'UNKNOWN';
 }
 
 function emptySignal(assetKey: string, reason: string): SwingSignal {
@@ -126,6 +145,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     signalPrice: 0,
     slippagePercent: 0,
     oldScoreOverride: false,
+    marketRegime: "UNKNOWN",
     entryGate: {
       htfPassed: false,
       triggerPassed: false,
@@ -134,6 +154,7 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
       convictionPassed: false,
       dataPassed: false,
       slippagePassed: false,
+      rewardRiskPassed: false,
       learningPassed: false,
       normalEntry: false,
       exceptionEntry: false,
@@ -163,6 +184,95 @@ function entryThresholds(assetMode: SwingSignal["assetMode"]) {
     impulseConviction: assetMode === "REALTIME_FAST" ? 58 : 60,
     impulseData: assetMode === "REALTIME_FAST" ? 85 : 68,
   };
+}
+
+export function evaluateNetRewardRisk(input: {
+  asset: string;
+  direction: "LONG" | "SHORT";
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  minimumRequired?: number;
+  assetMode?: SwingSignal["assetMode"];
+  dataQuality?: number;
+  liquidityState?: string;
+  orderbookImbalanceRatio?: number;
+}) {
+  const minimumRequired = input.minimumRequired ?? 1.35;
+  const plan = buildPaperExecutionPlan({
+    asset: input.asset,
+    direction: input.direction,
+    entryPrice: input.entryPrice,
+    stopLoss: input.stopLoss,
+    takeProfit: input.takeProfit,
+    amount: 1,
+    context: {
+      assetMode: input.assetMode,
+      dataQuality: input.dataQuality,
+      liquidityState: input.liquidityState,
+      orderbookImbalanceRatio: input.orderbookImbalanceRatio,
+    },
+  });
+  const grossRewardUsdPerUnit = plan.grossRewardUsd;
+  const grossLossUsdPerUnit = Math.abs(plan.grossStopPnlUsd);
+  const estimatedRoundTripFeeUsdPerUnit = plan.entry.feeUsd + plan.targetExit.feeUsd;
+  const netRewardUsdPerUnit = plan.netRewardUsd;
+  const netLossUsdPerUnit = plan.netLossUsd;
+  const ratio = netLossUsdPerUnit > 0 ? netRewardUsdPerUnit / netLossUsdPerUnit : 0;
+  const passed = Number.isFinite(ratio) && netRewardUsdPerUnit > 0 && ratio >= minimumRequired;
+
+  return {
+    grossRewardUsdPerUnit,
+    grossLossUsdPerUnit,
+    estimatedRoundTripFeeUsdPerUnit,
+    netRewardUsdPerUnit,
+    netLossUsdPerUnit,
+    ratio,
+    minimumRequired,
+    passed,
+    reason: passed
+      ? `Net reward/risk ${ratio.toFixed(2)} clears the ${minimumRequired.toFixed(2)} minimum after modeled fees, spread, slippage, and stop-gap risk.`
+      : `Net reward/risk ${Math.max(0, ratio).toFixed(2)} is below the ${minimumRequired.toFixed(2)} minimum after modeled fees, spread, slippage, and stop-gap risk.`,
+    executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+    entryFillPrice: plan.entry.fillPrice,
+    targetFillPrice: plan.targetExit.fillPrice,
+    stopFillPrice: plan.stopExit.fillPrice,
+    estimatedRoundTripExecutionCostUsdPerUnit: plan.estimatedRoundTripExecutionCostUsd,
+  };
+}
+
+export function calculateCalibratedConviction(input: {
+  htfScore: number;
+  htfThreshold: number;
+  triggerScore: number;
+  triggerThreshold: number;
+  liquidityScore: number;
+  microstructureScore: number;
+  dataQuality: number;
+  netRewardRiskRatio: number;
+  weeklyBiasAdjustment: number;
+  learningAdjustment: number;
+}) {
+  const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
+  const htfContribution = 45 * clamp(input.htfScore / Math.max(input.htfThreshold, 1), 0, 1);
+  const triggerContribution = 20 * clamp(input.triggerScore / Math.max(input.triggerThreshold, 1), 0, 1);
+  const liquidityContribution = clamp(input.liquidityScore * 1.25, -10, 10);
+  const microstructureContribution = clamp(input.microstructureScore, -10, 10);
+  const dataContribution = 10 * clamp(input.dataQuality / 100, 0, 1);
+  const rewardRiskContribution = 10 * clamp((input.netRewardRiskRatio - 1) / 1, 0, 1);
+
+  return Math.round(clamp(
+    htfContribution +
+    triggerContribution +
+    liquidityContribution +
+    microstructureContribution +
+    dataContribution +
+    rewardRiskContribution +
+    input.weeklyBiasAdjustment +
+    input.learningAdjustment,
+    0,
+    100
+  ));
 }
 
 export function scoreContinuousHtfEvidence(input: {
@@ -583,6 +693,7 @@ function buildEntryGateDiagnostics(input: {
   finalConviction: number;
   dataQuality: number;
   slippageOk: boolean;
+  rewardRiskPassed: boolean;
   structureAligned: boolean;
   microstructureAligned: boolean;
   learningWatchOnly: boolean;
@@ -593,7 +704,7 @@ function buildEntryGateDiagnostics(input: {
   const thresholds = entryThresholds(input.assetMode);
   const triggerThreshold = thresholds.trigger;
   const htfPassed = input.htfScore >= thresholds.htf;
-  const exceptionHtfPassed = input.htfScore >= 8 && input.htfScore < thresholds.htf;
+  const exceptionHtfPassed = input.htfScore >= Math.max(8, thresholds.htf - 3) && input.htfScore < thresholds.htf;
   const triggerPassed = input.triggerScore >= triggerThreshold;
   const structurePassed = input.structureAligned || input.controlledProbeEntry;
   const microstructurePassed = input.microstructureAligned;
@@ -605,6 +716,7 @@ function buildEntryGateDiagnostics(input: {
   if (!learningPassed) missing.push("local learning has this pattern in watch-only mode");
   if (!dataPassed) missing.push("market data quality is below the live-trading minimum");
   if (!input.slippageOk) missing.push("live price moved too far from the signal candle");
+  if (!input.rewardRiskPassed) missing.push("net reward/risk is too weak after estimated fees");
   if (!structurePassed) missing.push("market structure and liquidity are not aligned with the trade direction");
   if (!microstructurePassed) missing.push("live order-book or funding flow is against the setup");
   if (!htfPassed && !exceptionHtfPassed) missing.push("higher-timeframe evidence is still too weak");
@@ -619,6 +731,7 @@ function buildEntryGateDiagnostics(input: {
     convictionPassed,
     dataPassed,
     slippagePassed: input.slippageOk,
+    rewardRiskPassed: input.rewardRiskPassed,
     learningPassed,
     normalEntry: input.normalEntry,
     exceptionEntry: input.exceptionEntry,
@@ -747,10 +860,8 @@ export class SwingEngine {
       const setupTags = [...details, ...trigger.tags, ...liquidity.tags, ...microstructure.tags];
       const learning = await LocalLearningMemory.getAdjustment(assetKey, setupTags);
       const triggerScore = trigger.score;
-      const dataScore = Math.round(dataQuality / 5);
-      const riskRewardScore = 10;
-      let finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + liquidity.score + microstructure.score + dataScore + riskRewardScore + learning.adjustment)));
-      
+      const thresholds = entryThresholds(assetMode);
+
       // Weekly bias adjustment
       let weeklyBiasAdjustment = 0;
       if (candles1w.length >= 8) {
@@ -772,61 +883,13 @@ export class SwingEngine {
           weeklyBiasAdjustment = -8;
         }
       }
-      finalConviction = Math.max(0, Math.min(100, finalConviction + weeklyBiasAdjustment));
-      
+
       const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
       const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.15 : 0.08;
       const slippageOk = slippagePercent <= allowedSlippage;
-      
-      // Structure Safety Buffer: If the market structure score is weak (< 4), demand +5 finalConviction to execute
-      const requiredConviction = liquidity.score < 4 ? 65 : 60;
-      
-      const thresholds = entryThresholds(assetMode);
-      const normalEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= thresholds.htf && triggerScore >= thresholds.trigger && finalConviction >= requiredConviction && dataQuality >= 60 && slippageOk;
-      const exceptionEntry = !learning.watchOnly && liquidity.aligned && microstructure.aligned && htfScore >= 8 && htfScore < thresholds.htf && triggerScore >= thresholds.exceptionTrigger && dataQuality >= thresholds.exceptionData && finalConviction >= thresholds.exceptionConviction && slippageOk;
-      const controlledProbeEntry =
-        !normalEntry &&
-        !exceptionEntry &&
-        !learning.watchOnly &&
-        bestDirection !== "NEUTRAL" &&
-        htfScore >= 8 &&
-        triggerScore >= thresholds.probeTrigger &&
-        finalConviction >= thresholds.probeConviction &&
-        dataQuality >= thresholds.probeData &&
-        slippageOk &&
-        liquidity.state === "NEUTRAL" &&
-        liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
-        microstructure.aligned &&
-        microstructure.score >= -5;
-      const momentumImpulseProbeEntry =
-        !normalEntry &&
-        !exceptionEntry &&
-        !controlledProbeEntry &&
-        !learning.watchOnly &&
-        bestDirection !== "NEUTRAL" &&
-        htfScore >= thresholds.impulseHtf &&
-        triggerScore >= thresholds.impulseTrigger &&
-        finalConviction >= thresholds.impulseConviction &&
-        dataQuality >= thresholds.impulseData &&
-        slippageOk &&
-        liquidity.score >= 4 &&
-        microstructure.aligned &&
-        microstructure.score >= (assetMode === "REALTIME_FAST" ? 0 : -2);
-      const approvedProbeEntry = controlledProbeEntry || momentumImpulseProbeEntry;
-      const entryGate = buildEntryGateDiagnostics({
-        assetMode,
-        htfScore,
-        triggerScore,
-        finalConviction,
-        dataQuality,
-        slippageOk,
-        structureAligned: liquidity.aligned,
-        microstructureAligned: microstructure.aligned,
-        learningWatchOnly: learning.watchOnly,
-        normalEntry,
-        exceptionEntry,
-        controlledProbeEntry: approvedProbeEntry,
-      });
+
+      // Stops, target reachability, and fee-aware economics must be known
+      // before conviction can authorize an entry.
       const htfAtr = snap1h.atr;
       const currentPrice = livePrice;
       const minAtrPercent = assetMode === "REALTIME_FAST" ? 0.002 : 0.001;
@@ -856,10 +919,122 @@ export class SwingEngine {
       const adjustedTakeProfit = targetReachability.adjustedTakeProfit;
       if (targetReachability.compressed) {
         setupTags.push("TP_COMPRESSED_TO_RECENT_RANGE");
-        finalConviction = Math.max(0, Math.min(100, finalConviction + 2));
       } else if (targetReachability.score >= 75 && bestDirection !== "NEUTRAL") {
         setupTags.push("REACHABLE_TARGET");
       }
+
+      const netRewardRisk = bestDirection === "NEUTRAL"
+        ? {
+            grossRewardUsdPerUnit: 0,
+            grossLossUsdPerUnit: 0,
+            estimatedRoundTripFeeUsdPerUnit: 0,
+            estimatedRoundTripExecutionCostUsdPerUnit: 0,
+            netRewardUsdPerUnit: 0,
+            netLossUsdPerUnit: 0,
+            ratio: 0,
+            minimumRequired: 1.35,
+            passed: false,
+            reason: "No directional setup exists for reward/risk evaluation.",
+            executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+          }
+        : evaluateNetRewardRisk({
+            asset: assetKey,
+            direction: bestDirection,
+            entryPrice: currentPrice,
+            stopLoss: plannedStopLoss,
+            takeProfit: adjustedTakeProfit,
+            minimumRequired: 1.35,
+            assetMode,
+            dataQuality,
+            liquidityState: liquidity.state,
+            orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
+          });
+      const finalConviction = calculateCalibratedConviction({
+        htfScore,
+        htfThreshold: thresholds.htf,
+        triggerScore,
+        triggerThreshold: thresholds.trigger,
+        liquidityScore: liquidity.score,
+        microstructureScore: microstructure.score,
+        dataQuality,
+        netRewardRiskRatio: netRewardRisk.ratio,
+        weeklyBiasAdjustment,
+        learningAdjustment: learning.adjustment,
+      });
+      const requiredConviction = liquidity.score < 4 ? 65 : 60;
+      const probeEconomicsPassed = netRewardRisk.ratio >= 1.5;
+      const probeLearningPassed = learning.adjustment >= -4;
+      const nearNormalHtf = htfScore >= Math.max(8, thresholds.htf - 2);
+      const normalEntry =
+        !learning.watchOnly &&
+        liquidity.aligned &&
+        microstructure.aligned &&
+        htfScore >= thresholds.htf &&
+        triggerScore >= thresholds.trigger &&
+        finalConviction >= requiredConviction &&
+        dataQuality >= 60 &&
+        slippageOk &&
+        netRewardRisk.passed;
+      const exceptionEntry =
+        !learning.watchOnly &&
+        liquidity.aligned &&
+        liquidity.score >= 6 &&
+        microstructure.aligned &&
+        htfScore >= Math.max(8, thresholds.htf - 3) &&
+        htfScore < thresholds.htf &&
+        triggerScore >= thresholds.exceptionTrigger &&
+        dataQuality >= thresholds.exceptionData &&
+        finalConviction >= thresholds.exceptionConviction &&
+        slippageOk &&
+        netRewardRisk.passed;
+      const controlledProbeEntry =
+        !normalEntry &&
+        !exceptionEntry &&
+        !learning.watchOnly &&
+        probeLearningPassed &&
+        bestDirection !== "NEUTRAL" &&
+        nearNormalHtf &&
+        triggerScore >= thresholds.probeTrigger &&
+        finalConviction >= thresholds.probeConviction &&
+        dataQuality >= thresholds.probeData &&
+        slippageOk &&
+        probeEconomicsPassed &&
+        liquidity.state === "NEUTRAL" &&
+        liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
+        microstructure.aligned &&
+        microstructure.score >= -5;
+      const momentumImpulseProbeEntry =
+        !normalEntry &&
+        !exceptionEntry &&
+        !controlledProbeEntry &&
+        !learning.watchOnly &&
+        probeLearningPassed &&
+        bestDirection !== "NEUTRAL" &&
+        nearNormalHtf &&
+        triggerScore >= thresholds.impulseTrigger &&
+        finalConviction >= thresholds.impulseConviction &&
+        dataQuality >= thresholds.impulseData &&
+        slippageOk &&
+        probeEconomicsPassed &&
+        liquidity.score >= 4 &&
+        microstructure.aligned &&
+        microstructure.score >= (assetMode === "REALTIME_FAST" ? 0 : -2);
+      const approvedProbeEntry = controlledProbeEntry || momentumImpulseProbeEntry;
+      const entryGate = buildEntryGateDiagnostics({
+        assetMode,
+        htfScore,
+        triggerScore,
+        finalConviction,
+        dataQuality,
+        slippageOk,
+        rewardRiskPassed: approvedProbeEntry ? probeEconomicsPassed : netRewardRisk.passed,
+        structureAligned: liquidity.aligned,
+        microstructureAligned: microstructure.aligned,
+        learningWatchOnly: learning.watchOnly,
+        normalEntry,
+        exceptionEntry,
+        controlledProbeEntry: approvedProbeEntry,
+      });
 
       // Require strong HTF alignment (score >= 14)
       if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
@@ -885,7 +1060,7 @@ export class SwingEngine {
           entryPrice: livePrice,
           stopLoss: plannedStopLoss,
           takeProfit: adjustedTakeProfit,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
+          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
           score: htfScore,
           expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
           htfScore,
@@ -903,6 +1078,10 @@ export class SwingEngine {
           simpleStatus: simpleStateText(decisionState, bestDirection),
           simpleReason: decisionState === "BLOCKED_DATA"
             ? "The bot does not trust the current market data enough to trade."
+            : learning.watchOnly
+              ? "Later closed-trade evidence has quarantined this asset or setup until it demonstrates positive out-of-sample expectancy."
+            : !netRewardRisk.passed
+              ? "The reachable target does not provide enough net reward for the stop risk and estimated round-trip fees."
             : !liquidity.aligned
               ? "The bot sees a possible liquidity trap or a move against the main market structure."
             : !microstructure.aligned
@@ -916,7 +1095,7 @@ export class SwingEngine {
               ? "The bot will enter only if short-term price action confirms weakness."
               : "The bot will keep scanning for a clearer setup.",
           paperSize: paperSizeFromConviction(finalConviction),
-          riskMode: dataQuality < 70 ? "Protected" : "Normal",
+          riskMode: learning.watchOnly ? "Watch Only" : dataQuality < 70 ? "Protected" : "Normal",
           entryMode: "STANDARD",
           assetMode,
           setupTags,
@@ -927,8 +1106,10 @@ export class SwingEngine {
           signalPrice,
           slippagePercent,
           oldScoreOverride: false,
+          marketRegime: stats4h.regime,
           entryGate,
           targetReachability,
+          netRewardRisk,
         };
       }
 
@@ -943,7 +1124,7 @@ export class SwingEngine {
         entryPrice: currentPrice,
         stopLoss,
         takeProfit,
-          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
+          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
         score: finalScore,
         expectedMove: expectedMovePercent,
         htfScore,
@@ -979,8 +1160,10 @@ export class SwingEngine {
         signalPrice,
         slippagePercent,
         oldScoreOverride: exceptionEntry,
+        marketRegime: stats4h.regime,
         entryGate,
         targetReachability,
+        netRewardRisk,
       };
     } catch (err) {
       return emptySignal(assetKey, `Swing scan failed: ${err instanceof Error ? err.message : String(err)}`);

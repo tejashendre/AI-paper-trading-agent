@@ -9,6 +9,14 @@ import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd, estimateNotiona
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
+import {
+  estimateCarryCostUsd,
+  estimatePaperFill,
+  PaperExecutionReason,
+  PaperFillEstimate,
+} from "@/lib/trading/executionCostModel";
+import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
 
 export interface SwingExitSweepResult {
   source: string;
@@ -38,6 +46,8 @@ function ensurePortfolioStats(portfolio: Portfolio) {
   portfolio.maxConsecutiveWins = portfolio.maxConsecutiveWins || 0;
   portfolio.maxConsecutiveLosses = portfolio.maxConsecutiveLosses || 0;
   portfolio.totalFeesPaid = portfolio.totalFeesPaid || 0;
+  portfolio.totalExecutionCostsPaid = portfolio.totalExecutionCostsPaid || portfolio.totalFeesPaid || 0;
+  portfolio.totalCarryPaid = portfolio.totalCarryPaid || 0;
   portfolio.openPositions = portfolio.openPositions || {};
   portfolio.balances = portfolio.balances || {};
 }
@@ -53,11 +63,13 @@ async function getLivePrice(asset: string): Promise<number> {
 function buildCloseTrade(
   asset: string,
   pos: OpenPosition,
-  exitPrice: number,
+  exit: PaperFillEstimate,
   reason: NonNullable<Trade["exitReason"]>,
+  grossPnl: number,
   netPnl: number,
   pnlPercent: number,
-  entryFee: number
+  entryFee: number,
+  carryCost: number
 ): Trade {
   const isShort = pos.direction === "SHORT";
 
@@ -69,7 +81,8 @@ function buildCloseTrade(
     direction: isShort ? "SHORT" : "LONG",
     amount: pos.amount,
     btcAmount: pos.amount,
-    price: exitPrice,
+    price: exit.fillPrice,
+    requestedPrice: exit.requestedPrice,
     usdValue: pos.usdInvested + entryFee + netPnl,
     stopLoss: pos.stopLoss,
     takeProfit: pos.takeProfit,
@@ -87,12 +100,34 @@ function buildCloseTrade(
     orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
     liquidityState: pos.liquidityState,
     paperSize: pos.paperSize,
+    entryMode: pos.entryMode,
+    learningAdjustment: pos.learningAdjustment,
+    netRewardRiskRatio: pos.netRewardRiskRatio,
+    strategyVersion: pos.strategyVersion || TRADING_STRATEGY_VERSION,
+    marketRegime: pos.marketRegime || "UNKNOWN",
+    executionCostModelVersion: exit.modelVersion,
+    executionVenueModel: exit.venueModel,
+    notionalUsd: exit.notionalUsd,
+    leverageUsed: pos.leverageUsed,
+    riskAmountUsd: pos.riskAmountUsd,
+    maxLossUsd: pos.maxLossUsd,
+    entryFeeUsd: entryFee,
+    exitFeeUsd: exit.feeUsd,
+    grossPnlUsd: grossPnl,
+    carryCostUsd: carryCost,
+    executionCostUsd: exit.totalExecutionCostUsd + carryCost,
+    entryExecutionCostUsd: pos.entryExecutionCostUsd,
+    exitExecutionCostUsd: exit.totalExecutionCostUsd + carryCost,
+    totalRoundTripExecutionCostUsd: Number(pos.entryExecutionCostUsd || entryFee) + exit.totalExecutionCostUsd + carryCost,
+    spreadCostUsd: exit.spreadCostUsd,
+    slippageCostUsd: exit.slippageCostUsd,
+    gapCostUsd: exit.gapCostUsd,
     reasoning: `Swing exit triggered: ${reason.replaceAll("_", " ")} | Net PnL: $${netPnl.toFixed(2)}`,
     pnl: netPnl,
     pnlPercent,
     entryPrice: pos.entryPrice,
     entryTime: pos.entryTime,
-    exitPrice,
+    exitPrice: exit.fillPrice,
     exitTime: new Date().toISOString(),
     exitReason: reason,
   };
@@ -107,10 +142,16 @@ function classifyExitReason(pos: OpenPosition, reason: SwingCloseReason, netPnl:
   return "STOP_LOSS";
 }
 
-function cooldownSecondsForExit(reason: NonNullable<Trade["exitReason"]>, netPnl: number): number {
+function cooldownSecondsForExit(
+  reason: NonNullable<Trade["exitReason"]>,
+  netPnl: number,
+  entryMode?: OpenPosition["entryMode"]
+): number {
   if (reason === "TAKE_PROFIT" || reason === "TRAILING_STOP_PROFIT" || reason === "SIGNAL_REVERSAL") return 0;
   if (netPnl >= 0) return 0;
-  return 600;
+  if (entryMode === "CONTROLLED_PROBE") return 4 * 60 * 60;
+  if (reason === "STOP_LOSS") return 2 * 60 * 60;
+  return 60 * 60;
 }
 
 function isCryptoFastAsset(asset: string) {
@@ -129,11 +170,48 @@ function activeMarginUsd(portfolio: Portfolio): number {
   return swingMargin + scalpMargin;
 }
 
+function paperExitReason(reason: SwingCloseReason | "PARTIAL_EXIT" | "MARK"): PaperExecutionReason {
+  if (reason === "STOP_LOSS") return "STOP_LOSS";
+  if (reason === "TAKE_PROFIT") return "TAKE_PROFIT";
+  if (reason === "SIGNAL_REVERSAL") return "SIGNAL_REVERSAL";
+  if (reason === "SIGNAL_INVALIDATION") return "SIGNAL_INVALIDATION";
+  if (reason === "PARTIAL_EXIT") return "PARTIAL_EXIT";
+  return "MARK";
+}
+
+function estimatePositionExit(
+  pos: OpenPosition,
+  requestedPrice: number,
+  amount: number,
+  reason: SwingCloseReason | "PARTIAL_EXIT" | "MARK"
+): PaperFillEstimate {
+  return estimatePaperFill({
+    asset: pos.asset,
+    action: pos.direction === "SHORT" ? "COVER" : "SELL",
+    requestedPrice,
+    amount,
+    context: {
+      reason: paperExitReason(reason),
+      assetMode: isCryptoFastAsset(pos.asset) ? "REALTIME_FAST" : "SLOW_SWING",
+      dataQuality: pos.dataQuality,
+      isPeakLiquidity: false,
+      liquidityState: pos.liquidityState,
+      orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
+    },
+  });
+}
+
 function unrealizedNetPnl(asset: string, pos: OpenPosition, currentPrice: number): number {
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
+  const exit = estimatePositionExit(pos, currentPrice, pos.amount, "MARK");
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
   const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-  const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
-  return grossPnl - entryFee - exitFee;
+  const carryCost = estimateCarryCostUsd({
+    asset,
+    notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+    openedAt: pos.entryTime,
+    fundingRate: pos.fundingRate,
+  });
+  return grossPnl - entryFee - exit.feeUsd - carryCost;
 }
 
 function repairInvalidProtectiveStop(pos: OpenPosition, currentPrice: number): boolean {
@@ -375,14 +453,22 @@ async function closePosition(
 ) {
   const redis = getRedis();
   const isShort = pos.direction === "SHORT";
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exitPrice, pos.amount, pos.direction);
+  const exit = estimatePositionExit(pos, exitPrice, pos.amount, reason);
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
   const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-  const exitFee = estimateFeeUsd(asset, pos.amount, exitPrice);
-  const netPnl = grossPnl - entryFee - exitFee;
+  const carryCost = estimateCarryCostUsd({
+    asset,
+    notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+    openedAt: pos.entryTime,
+    fundingRate: pos.fundingRate,
+  });
+  const netPnl = grossPnl - entryFee - exit.feeUsd - carryCost;
   const pnlPercent = pos.usdInvested > 0 ? (netPnl / pos.usdInvested) * 100 : 0;
 
   portfolio.usd += pos.usdInvested + entryFee + netPnl;
-  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exit.feeUsd;
+  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + carryCost;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + exit.totalExecutionCostUsd + carryCost;
 
   if (portfolio.balances && !isShort) {
     portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
@@ -409,7 +495,7 @@ async function closePosition(
 
   delete portfolio.openPositions[asset];
   const exitReason = classifyExitReason(pos, reason, netPnl);
-  const cooldownSeconds = setCooldown ? cooldownSecondsForExit(exitReason, netPnl) : 0;
+  const cooldownSeconds = setCooldown ? cooldownSecondsForExit(exitReason, netPnl, pos.entryMode) : 0;
   if (cooldownSeconds > 0) {
     await redis.set(`swing:cooldown:${asset}`, "1", { ex: cooldownSeconds });
   }
@@ -417,11 +503,13 @@ async function closePosition(
   const closeTrade = buildCloseTrade(
     asset,
     pos,
-    exitPrice,
+    exit,
     exitReason,
+    grossPnl,
     netPnl,
     pnlPercent,
-    entryFee
+    entryFee,
+    carryCost
   );
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
@@ -431,8 +519,17 @@ async function closePosition(
       console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
     });
   }
+  if (portfolioType === "ai") {
+    await ExecutionLedger.recordBestEffort({
+      type: "EXIT_FILLED",
+      source,
+      asset,
+      tradeId: closeTrade.id,
+      payload: { trade: closeTrade, position: pos, requestedExitPrice: exitPrice, exit },
+    });
+  }
   await Logger.info(
-    `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
+    `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason} at ${exit.fillPrice.toFixed(6)}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
   );
 
   result.closed++;
@@ -458,7 +555,7 @@ async function scaleIntoWinner(
   if ((pos.finalConviction || 0) < 60 || (pos.dataQuality || 0) < 68) return false;
 
   const equity = Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
-  const maxTotalMargin = equity * 0.55;
+  const maxTotalMargin = equity * 0.40;
   const remainingRoom = Math.max(0, maxTotalMargin - activeMarginUsd(portfolio));
   const addMarginUsd = Math.min(portfolio.usd * 0.06, pos.usdInvested * 0.5, 600, remainingRoom);
   const leverage = Math.max(1, pos.leverageUsed || 1);
@@ -466,25 +563,94 @@ async function scaleIntoWinner(
 
   const addNotionalUsd = addMarginUsd * leverage;
   const addAmount = amountFromNotionalUsd(asset, addNotionalUsd, currentPrice);
-  const entryFee = estimateFeeUsd(asset, addAmount, currentPrice);
-  if (addMarginUsd + entryFee > portfolio.usd || addAmount <= 0) return false;
+  if (addAmount <= 0) return false;
+  const scaleFill = estimatePaperFill({
+    asset,
+    action: pos.direction === "SHORT" ? "SHORT" : "BUY",
+    requestedPrice: currentPrice,
+    amount: addAmount,
+    context: {
+      reason: "SCALE_IN",
+      assetMode: isCryptoFastAsset(asset) ? "REALTIME_FAST" : "SLOW_SWING",
+      dataQuality: pos.dataQuality,
+      isPeakLiquidity: false,
+      liquidityState: pos.liquidityState,
+      orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
+    },
+  });
+  const entryFee = scaleFill.feeUsd;
+  if (addMarginUsd + entryFee > portfolio.usd) return false;
 
   const existingNotional = estimateNotionalUsd(asset, pos.amount, pos.entryPrice);
-  const totalNotional = existingNotional + addNotionalUsd;
-  pos.entryPrice = totalNotional > 0
-    ? ((pos.entryPrice * existingNotional) + (currentPrice * addNotionalUsd)) / totalNotional
+  const existingAmount = pos.amount;
+  const totalAmount = existingAmount + addAmount;
+  const projectedEntryPrice = totalAmount > 0
+    ? ((pos.entryPrice * existingAmount) + (scaleFill.fillPrice * addAmount)) / totalAmount
     : pos.entryPrice;
+  const projectedPosition: OpenPosition = {
+    ...pos,
+    entryPrice: projectedEntryPrice,
+    amount: totalAmount,
+    btcAmount: totalAmount,
+    entryFeePaid: (pos.entryFeePaid || 0) + entryFee,
+  };
+  const projectedTargetExit = estimatePositionExit(projectedPosition, pos.takeProfit, totalAmount, "TAKE_PROFIT");
+  const projectedStopExit = estimatePositionExit(projectedPosition, pos.stopLoss, totalAmount, "STOP_LOSS");
+  const projectedEntryFee = Number(projectedPosition.entryFeePaid || 0);
+  const projectedGrossReward = calculatePnlUsd(asset, projectedEntryPrice, projectedTargetExit.fillPrice, totalAmount, pos.direction);
+  const projectedGrossStop = calculatePnlUsd(asset, projectedEntryPrice, projectedStopExit.fillPrice, totalAmount, pos.direction);
+  const projectedNetReward = projectedGrossReward - projectedEntryFee - projectedTargetExit.feeUsd;
+  const projectedNetLoss = Math.abs(Math.min(0, projectedGrossStop - projectedEntryFee - projectedStopExit.feeUsd));
+  const projectedPlan = {
+    netRewardUsd: projectedNetReward,
+    netLossUsd: projectedNetLoss,
+    netRewardRiskRatio: projectedNetLoss > 0 ? projectedNetReward / projectedNetLoss : 0,
+    targetExit: projectedTargetExit,
+    stopExit: projectedStopExit,
+  };
+  if (projectedPlan.netRewardUsd <= 0 || projectedPlan.netRewardRiskRatio < 1.35) {
+    pos.scaleInBlockedReason = "Scale-in would reduce modeled net reward/risk below 1.35.";
+    return false;
+  }
+  const existingMaxLoss = Math.max(0, Number(pos.maxLossUsd || 0));
+  const incrementalMaxLoss = Math.max(0, projectedPlan.netLossUsd - existingMaxLoss);
+  const portfolioBudget = evaluatePortfolioRiskBudget({
+    portfolio,
+    trades: await PortfolioManager.getTrades("ai"),
+    asset,
+    direction: pos.direction,
+    candidateNotionalUsd: scaleFill.notionalUsd,
+    candidateMaxLossUsd: incrementalMaxLoss,
+    candidateEntryCostUsd: scaleFill.totalExecutionCostUsd,
+  });
+  if (!portfolioBudget.approved) {
+    pos.scaleInBlockedReason = portfolioBudget.reason;
+    await ExecutionLedger.recordBestEffort({
+      type: "RISK_CIRCUIT_BREAKER",
+      source,
+      asset,
+      payload: { scope: "SCALE_IN", portfolioBudget, projectedPlan, scaleFill },
+    });
+    return false;
+  }
+
+  pos.entryPrice = projectedEntryPrice;
   pos.amount += addAmount;
   pos.btcAmount = pos.amount;
   pos.usdInvested += addMarginUsd;
-  pos.notionalUsd = (pos.notionalUsd || existingNotional) + addNotionalUsd;
+  pos.notionalUsd = (pos.notionalUsd || existingNotional) + scaleFill.notionalUsd;
   pos.entryFeePaid = (pos.entryFeePaid || 0) + entryFee;
+  pos.entryExecutionCostUsd = (pos.entryExecutionCostUsd || 0) + scaleFill.totalExecutionCostUsd;
+  pos.entryPriceImpactCostUsd = (pos.entryPriceImpactCostUsd || 0) + scaleFill.priceImpactCostUsd;
   if (pos.direction === "LONG" && pos.stopLoss >= pos.entryPrice) {
     pos.stopLoss = pos.entryPrice * 0.995;
   } else if (pos.direction === "SHORT" && pos.stopLoss <= pos.entryPrice) {
     pos.stopLoss = pos.entryPrice * 1.005;
   }
-  pos.maxLossUsd = Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+  pos.maxLossUsd = projectedPlan.netLossUsd;
+  pos.netRewardRiskRatio = projectedPlan.netRewardRiskRatio;
+  pos.expectedNetRewardUsd = projectedPlan.netRewardUsd;
+  pos.expectedNetLossUsd = projectedPlan.netLossUsd;
   pos.scaleInCount = (pos.scaleInCount || 0) + 1;
   pos.lastScaleInTime = new Date().toISOString();
   pos.paperSize = pos.paperSize === "Probe" ? "Normal" : pos.paperSize;
@@ -492,6 +658,7 @@ async function scaleIntoWinner(
 
   portfolio.usd -= addMarginUsd + entryFee;
   portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + entryFee;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + scaleFill.totalExecutionCostUsd;
   if (pos.direction === "LONG") {
     portfolio.balances[asset] = (portfolio.balances[asset] || 0) + addAmount;
   }
@@ -504,8 +671,13 @@ async function scaleIntoWinner(
     direction: pos.direction,
     amount: addAmount,
     btcAmount: addAmount,
-    price: currentPrice,
+    price: scaleFill.fillPrice,
+    requestedPrice: currentPrice,
     usdValue: addMarginUsd,
+    notionalUsd: scaleFill.notionalUsd,
+    leverageUsed: leverage,
+    riskAmountUsd: incrementalMaxLoss,
+    maxLossUsd: projectedPlan.netLossUsd,
     stopLoss: pos.stopLoss,
     takeProfit: pos.takeProfit,
     signalScore: pos.signalScore,
@@ -523,11 +695,28 @@ async function scaleIntoWinner(
     liquidityState: pos.liquidityState,
     paperSize: pos.paperSize,
     entryMode: pos.entryMode,
+    strategyVersion: pos.strategyVersion || TRADING_STRATEGY_VERSION,
+    marketRegime: pos.marketRegime || "UNKNOWN",
+    executionCostModelVersion: scaleFill.modelVersion,
+    executionVenueModel: scaleFill.venueModel,
+    entryFeeUsd: scaleFill.feeUsd,
+    executionCostUsd: scaleFill.totalExecutionCostUsd,
+    entryExecutionCostUsd: scaleFill.totalExecutionCostUsd,
+    spreadCostUsd: scaleFill.spreadCostUsd,
+    slippageCostUsd: scaleFill.slippageCostUsd,
+    gapCostUsd: scaleFill.gapCostUsd,
     reasoning: `Scaled into profitable swing winner. Added $${addMarginUsd.toFixed(2)} margin after probe follow-through.`,
   };
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(scaleTrade, portfolioType);
+  await ExecutionLedger.recordBestEffort({
+    type: "SCALE_IN_FILLED",
+    source,
+    asset,
+    tradeId: scaleTrade.id,
+    payload: { trade: scaleTrade, position: pos, portfolioBudget, projectedPlan, scaleFill },
+  });
   await Logger.info(`[${source}] Scaled into ${asset} ${pos.direction}. Added margin $${addMarginUsd.toFixed(2)} after profitable follow-through.`);
   result.scaledIn = (result.scaledIn || 0) + 1;
   return true;
@@ -552,24 +741,39 @@ async function takePartialProfit(
   const exitAmount = pos.amount * exitFraction;
   const releasedMargin = pos.usdInvested * exitFraction;
   const entryFeeShare = (pos.entryFeePaid || 0) * exitFraction;
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, exitAmount, pos.direction);
-  const exitFee = estimateFeeUsd(asset, exitAmount, currentPrice);
-  const netPnl = grossPnl - entryFeeShare - exitFee;
+  const entryExecutionCostShare = (pos.entryExecutionCostUsd || entryFeeShare) * exitFraction;
+  const entryPriceImpactShare = (pos.entryPriceImpactCostUsd || 0) * exitFraction;
+  const previousNotional = pos.notionalUsd || estimateNotionalUsd(asset, pos.amount, pos.entryPrice);
+  const partialExit = estimatePositionExit(pos, currentPrice, exitAmount, "PARTIAL_EXIT");
+  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, partialExit.fillPrice, exitAmount, pos.direction);
+  const carryCost = estimateCarryCostUsd({
+    asset,
+    notionalUsd: previousNotional * exitFraction,
+    openedAt: pos.entryTime,
+    fundingRate: pos.fundingRate,
+  });
+  const netPnl = grossPnl - entryFeeShare - partialExit.feeUsd - carryCost;
   const pnlPercent = releasedMargin > 0 ? (netPnl / releasedMargin) * 100 : 0;
 
   pos.amount -= exitAmount;
   pos.btcAmount = pos.amount;
   pos.usdInvested -= releasedMargin;
   pos.entryFeePaid = Math.max(0, (pos.entryFeePaid || 0) - entryFeeShare);
-  pos.notionalUsd = Math.max(0, (pos.notionalUsd || estimateNotionalUsd(asset, pos.amount, pos.entryPrice)) * (1 - exitFraction));
-  pos.maxLossUsd = Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+  pos.entryExecutionCostUsd = Math.max(0, (pos.entryExecutionCostUsd || 0) - entryExecutionCostShare);
+  pos.entryPriceImpactCostUsd = Math.max(0, (pos.entryPriceImpactCostUsd || 0) - entryPriceImpactShare);
+  pos.notionalUsd = Math.max(0, previousNotional * (1 - exitFraction));
+  const remainingStopExit = estimatePositionExit(pos, pos.stopLoss, pos.amount, "STOP_LOSS");
+  const remainingStopPnl = calculatePnlUsd(asset, pos.entryPrice, remainingStopExit.fillPrice, pos.amount, pos.direction);
+  pos.maxLossUsd = Math.abs(Math.min(0, remainingStopPnl - Number(pos.entryFeePaid || 0) - remainingStopExit.feeUsd));
   pos.partialExitCount = (pos.partialExitCount || 0) + 1;
   pos.lastPartialExitTime = new Date().toISOString();
   pos.isTrailing = true;
 
   portfolio.usd += releasedMargin + entryFeeShare + netPnl;
   portfolio.totalPnl += netPnl;
-  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exitFee;
+  portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + partialExit.feeUsd;
+  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + carryCost;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + partialExit.totalExecutionCostUsd + carryCost;
   if (portfolio.returns) portfolio.returns.push(pnlPercent);
   if (portfolio.returns && portfolio.returns.length > 2000) portfolio.returns.shift();
   if (netPnl >= 0) portfolio.grossProfit = (portfolio.grossProfit || 0) + netPnl;
@@ -580,18 +784,35 @@ async function takePartialProfit(
 
   const partialTrade = buildCloseTrade(
     asset,
-    { ...pos, amount: exitAmount, btcAmount: exitAmount, usdInvested: releasedMargin, entryFeePaid: entryFeeShare },
-    currentPrice,
+    {
+      ...pos,
+      amount: exitAmount,
+      btcAmount: exitAmount,
+      usdInvested: releasedMargin,
+      entryFeePaid: entryFeeShare,
+      entryExecutionCostUsd: entryExecutionCostShare,
+      entryPriceImpactCostUsd: entryPriceImpactShare,
+    },
+    partialExit,
     "TAKE_PROFIT",
+    grossPnl,
     netPnl,
     pnlPercent,
-    entryFeeShare
+    entryFeeShare,
+    carryCost
   );
   partialTrade.reasoning = `Partial profit taken on swing winner. Closed ${(exitFraction * 100).toFixed(0)}% and left runner active. Net PnL: $${netPnl.toFixed(2)}`;
   partialTrade.isPartialExit = true;
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(partialTrade, portfolioType);
+  await ExecutionLedger.recordBestEffort({
+    type: "PARTIAL_EXIT_FILLED",
+    source,
+    asset,
+    tradeId: partialTrade.id,
+    payload: { trade: partialTrade, position: pos, requestedExitPrice: currentPrice, partialExit },
+  });
   await Logger.info(`[${source}] Partial profit ${asset} ${pos.direction}. Closed ${(exitFraction * 100).toFixed(0)}%, net PnL ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}.`);
   result.partialExits = (result.partialExits || 0) + 1;
   return true;

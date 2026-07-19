@@ -1,11 +1,31 @@
 import { RiskParameters, Portfolio, OpenPosition, StatisticalMetrics } from "@/lib/types";
-import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
+import { estimateCarryCostUsd, estimatePaperFill } from "@/lib/trading/executionCostModel";
 
 export class RiskManager {
   private static netPnlAtPrice(position: OpenPosition, price: number): number {
     const entryFee = position.entryFeePaid ?? estimateFeeUsd(position.asset, position.amount, position.entryPrice);
-    const exitFee = estimateFeeUsd(position.asset, position.amount, price);
-    return calculatePnlUsd(position.asset, position.entryPrice, price, position.amount, position.direction) - entryFee - exitFee;
+    const exit = estimatePaperFill({
+      asset: position.asset,
+      action: position.direction === "SHORT" ? "COVER" : "SELL",
+      requestedPrice: price,
+      amount: position.amount,
+      context: {
+        reason: "MARK",
+        assetMode: ["BTC", "ETH", "SOL"].includes(position.asset) ? "REALTIME_FAST" : "SLOW_SWING",
+        dataQuality: position.dataQuality,
+        isPeakLiquidity: false,
+        liquidityState: position.liquidityState,
+        orderbookImbalanceRatio: position.orderbookImbalanceRatio,
+      },
+    });
+    const carryCost = estimateCarryCostUsd({
+      asset: position.asset,
+      notionalUsd: position.notionalUsd ?? estimateNotionalUsd(position.asset, position.amount, position.entryPrice),
+      openedAt: position.entryTime,
+      fundingRate: position.fundingRate,
+    });
+    return calculatePnlUsd(position.asset, position.entryPrice, exit.fillPrice, position.amount, position.direction) - entryFee - exit.feeUsd - carryCost;
   }
 
   /**

@@ -12,7 +12,10 @@
         "agent:status": "tsx scripts/agent-status.ts",
         "agent:audit": "tsx scripts/strategy-audit.ts",
         "agent:explain": "tsx scripts/explain-latest-scan.ts",
-        "replay:strategy": "tsx scripts/replay-strategy.ts"
+        "replay:strategy": "tsx scripts/replay-strategy.ts",
+        "research:audit": "tsx scripts/research-audit.ts",
+        "ledger:verify": "tsx scripts/verify-execution-ledger.ts",
+        "source:manifest": "node scripts/source-manifest.mjs"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.106.2",

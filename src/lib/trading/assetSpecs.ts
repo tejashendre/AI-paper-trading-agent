@@ -9,11 +9,17 @@ export interface AssetContractSpec {
   unitLabel: string;
   maxLeverage: number;
   maxMarginPercent: number;
+  makerFeeRate: number;
+  takerFeeRate: number;
+  /** Legacy alias. New execution paths should use makerFeeRate/takerFeeRate. */
   feeRate: number;
   minMarginUsd: number;
 }
 
-const DEFAULT_FEE_RATE = 0.0005;
+const CRYPTO_MAKER_FEE_RATE = 0.0002;
+const CRYPTO_TAKER_FEE_RATE = 0.00055;
+const SYNTHETIC_FX_FEE_RATE = 0;
+const SYNTHETIC_COMMODITY_FEE_RATE = 0.0001;
 
 export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
   BTC: {
@@ -23,7 +29,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "BTC",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: CRYPTO_MAKER_FEE_RATE,
+    takerFeeRate: CRYPTO_TAKER_FEE_RATE,
+    feeRate: CRYPTO_TAKER_FEE_RATE,
     minMarginUsd: 50,
   },
   ETH: {
@@ -33,7 +41,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "ETH",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: CRYPTO_MAKER_FEE_RATE,
+    takerFeeRate: CRYPTO_TAKER_FEE_RATE,
+    feeRate: CRYPTO_TAKER_FEE_RATE,
     minMarginUsd: 50,
   },
   SOL: {
@@ -43,7 +53,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "SOL",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: CRYPTO_MAKER_FEE_RATE,
+    takerFeeRate: CRYPTO_TAKER_FEE_RATE,
+    feeRate: CRYPTO_TAKER_FEE_RATE,
     minMarginUsd: 50,
   },
   EURUSD: {
@@ -53,7 +65,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "EUR",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    takerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    feeRate: SYNTHETIC_FX_FEE_RATE,
     minMarginUsd: 50,
   },
   GBPUSD: {
@@ -63,7 +77,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "GBP",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    takerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    feeRate: SYNTHETIC_FX_FEE_RATE,
     minMarginUsd: 50,
   },
   USDJPY: {
@@ -73,7 +89,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "USD",
     maxLeverage: 5,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    takerFeeRate: SYNTHETIC_FX_FEE_RATE,
+    feeRate: SYNTHETIC_FX_FEE_RATE,
     minMarginUsd: 50,
   },
   GOLD: {
@@ -83,7 +101,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "oz",
     maxLeverage: 3,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    takerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    feeRate: SYNTHETIC_COMMODITY_FEE_RATE,
     minMarginUsd: 50,
   },
   OIL: {
@@ -93,7 +113,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "barrel",
     maxLeverage: 3,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    takerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    feeRate: SYNTHETIC_COMMODITY_FEE_RATE,
     minMarginUsd: 50,
   },
   SILVER: {
@@ -103,7 +125,9 @@ export const ASSET_CONTRACT_SPECS: Record<string, AssetContractSpec> = {
     unitLabel: "oz",
     maxLeverage: 3,
     maxMarginPercent: 0.1,
-    feeRate: DEFAULT_FEE_RATE,
+    makerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    takerFeeRate: SYNTHETIC_COMMODITY_FEE_RATE,
+    feeRate: SYNTHETIC_COMMODITY_FEE_RATE,
     minMarginUsd: 50,
   },
 };
@@ -164,7 +188,13 @@ export function calculatePnlUsd(
   return signedMove * amount;
 }
 
-export function estimateFeeUsd(asset: string, amount: number, price: number): number {
+export function estimateFeeUsd(
+  asset: string,
+  amount: number,
+  price: number,
+  liquidity: "maker" | "taker" = "taker"
+): number {
   const spec = getAssetSpec(asset);
-  return estimateNotionalUsd(asset, amount, price) * spec.feeRate;
+  const feeRate = liquidity === "maker" ? spec.makerFeeRate : spec.takerFeeRate;
+  return estimateNotionalUsd(asset, amount, price) * feeRate;
 }
