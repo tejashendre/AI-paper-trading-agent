@@ -4,7 +4,7 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -12,8 +12,38 @@ import { SetupPerformance } from "@/lib/trading/setupPerformance";
 import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import { SUPPORTED_ASSETS } from "@/lib/market";
+import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { EXECUTION_COST_MODEL_VERSION, estimateCarryCostUsd, estimatePaperFill } from "@/lib/trading/executionCostModel";
+import { PORTFOLIO_RISK_POLICY_VERSION } from "@/lib/trading/portfolioRiskBudget";
+import { RESEARCH_HARNESS_VERSION } from "@/lib/research/walkForward";
 
 export const dynamic = "force-dynamic";
+
+function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
+    const exit = estimatePaperFill({
+        asset,
+        action: pos.direction === "SHORT" ? "COVER" : "SELL",
+        requestedPrice: currentPrice,
+        amount: pos.amount,
+        context: {
+            reason: "MARK",
+            assetMode: ["BTC", "ETH", "SOL"].includes(asset) ? "REALTIME_FAST" : "SLOW_SWING",
+            dataQuality: pos.dataQuality,
+            isPeakLiquidity: false,
+            liquidityState: pos.liquidityState,
+            orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
+        },
+    });
+    const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
+    const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+    const carryCost = estimateCarryCostUsd({
+        asset,
+        notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+        openedAt: pos.entryTime,
+        fundingRate: pos.fundingRate,
+    });
+    return { grossPnl, entryFee, exitFee: exit.feeUsd, carryCost };
+}
 
 function buildLearningDigest(localLearningRules: any[], opportunitySummary: any, setupPerformance: any) {
     const boostRules = (localLearningRules || []).filter((rule) => rule.action === "BOOST");
@@ -326,9 +356,8 @@ export async function GET(request: Request) {
                     
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
-                        const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
-                        const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
-                        return pos.usdInvested + pnl - exitFee;
+                        const mark = modeledPositionMark(asset, pos, currentPrice);
+                        return pos.usdInvested + mark.grossPnl - mark.exitFee - mark.carryCost;
                     };
 
                     if (portfolio.openPositions?.[asset]) {
@@ -391,10 +420,8 @@ export async function GET(request: Request) {
                 const calculateUnrealized = (pos: any) => {
                     if (!pos) return 0;
                     const currentPrice = prices[asset] || pos.entryPrice;
-                    const grossPnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, pos.direction);
-                    const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-                    const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
-                    return grossPnl - entryFee - exitFee;
+                    const mark = modeledPositionMark(asset, pos, currentPrice);
+                    return mark.grossPnl - mark.entryFee - mark.exitFee - mark.carryCost;
                 };
 
                 const openUnrealized = calculateUnrealized(portfolio.openPositions?.[asset]);
@@ -430,6 +457,7 @@ export async function GET(request: Request) {
             localLearningRules,
             tradeReviewSignals,
         });
+        const executionLedger = ExecutionLedger.quickStatus();
 
         // Fetch AI Brain Intelligence Data (non-blocking, failures return nulls)
         let aiReflection = null;
@@ -473,6 +501,16 @@ export async function GET(request: Request) {
         }
 
         return NextResponse.json({
+            deployment: {
+                commit: process.env.APP_COMMIT_SHA || null,
+                deployedAt: process.env.APP_DEPLOYED_AT || null,
+                strategyVersion: TRADING_STRATEGY_VERSION,
+                executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+                portfolioRiskPolicyVersion: PORTFOLIO_RISK_POLICY_VERSION,
+                researchHarnessVersion: RESEARCH_HARNESS_VERSION,
+                capitalMode: "PAPER_ONLY",
+            },
+            executionLedger,
             // User (Human) Data
             portfolio: userPortfolioDisplay,
             userPortfolio: userPortfolioDisplay,

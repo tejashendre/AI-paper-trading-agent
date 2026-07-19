@@ -74,6 +74,10 @@ read_scan_id() {
   node -e "const url=process.env.STATUS_URL; const token=process.env.STATUS_AUTH_TOKEN; if (!url) process.exit(2); fetch(url, { headers: token ? { Authorization: 'Bearer ' + token } : {} }).then(async (r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then((j) => { const id = Number(j && j.swingScan && j.swingScan.scanId); if (!Number.isFinite(id) || id <= 0) throw new Error('missing swingScan.scanId'); console.log(id); }).catch((err) => { console.error(err.message || err); process.exit(1); });"
 }
 
+read_deployment_commit() {
+  node -e "const url=process.env.STATUS_URL; const token=process.env.STATUS_AUTH_TOKEN; if (!url) process.exit(2); fetch(url, { headers: token ? { Authorization: 'Bearer ' + token } : {} }).then(async (r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then((j) => { const commit = String(j && j.deployment && j.deployment.commit || ''); if (!commit) throw new Error('missing deployment.commit'); console.log(commit); }).catch((err) => { console.error(err.message || err); process.exit(1); });"
+}
+
 require_cmd git
 require_cmd docker
 require_cmd node
@@ -98,6 +102,12 @@ if [ -n "$EXPECTED_COMMIT" ]; then
     *) fail "Expected commit $EXPECTED_COMMIT but found $CURRENT_COMMIT" ;;
   esac
 fi
+RUNTIME_DRIFT="$(git status --porcelain -- src scripts public package.json package-lock.json docker-compose.yml Dockerfile)"
+if [ -n "$RUNTIME_DRIFT" ]; then
+  echo "$RUNTIME_DRIFT" >&2
+  fail "Runtime source tree differs from the deployed Git commit."
+fi
+echo "Runtime source tree is clean."
 
 section "Disk"
 df -h .
@@ -132,7 +142,41 @@ for container in quant-redis quant-dashboard quant-swing-daemon; do
 done
 echo "Healthchecks passed for Redis, dashboard, and swing daemon."
 
+section "Runtime Source Parity"
+HOST_MANIFEST="$(node scripts/source-manifest.mjs)"
+echo "Host manifest: $HOST_MANIFEST"
+for container in quant-dashboard quant-swing-daemon; do
+  CONTAINER_MANIFEST="$(docker exec "$container" node scripts/source-manifest.mjs)"
+  echo "$container manifest: $CONTAINER_MANIFEST"
+  [ "$CONTAINER_MANIFEST" = "$HOST_MANIFEST" ] || fail "$container runtime files do not match the host Git checkout."
+done
+echo "Every runtime source file matches across Git checkout and both application containers."
+
+if [ -n "$EXPECTED_COMMIT" ]; then
+  section "Image Revision"
+  for container in quant-dashboard quant-swing-daemon; do
+    IMAGE_COMMIT="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$container")"
+    echo "$container image revision: $IMAGE_COMMIT"
+    case "$IMAGE_COMMIT" in
+      "$EXPECTED_COMMIT"*) ;;
+      *) fail "$container image revision $IMAGE_COMMIT does not match $EXPECTED_COMMIT" ;;
+    esac
+  done
+fi
+
+section "Execution Ledger"
+docker compose exec -T quant-dashboard npm run ledger:verify
+
 if [ -n "$STATUS_URL" ]; then
+  if [ -n "$EXPECTED_COMMIT" ]; then
+    LIVE_COMMIT="$(read_deployment_commit)"
+    echo "Status API deployment commit: $LIVE_COMMIT"
+    case "$LIVE_COMMIT" in
+      "$EXPECTED_COMMIT"*) ;;
+      *) fail "Status API deployment commit $LIVE_COMMIT does not match $EXPECTED_COMMIT" ;;
+    esac
+  fi
+
   section "Live Strategy Audit"
   docker compose exec -T \
     -e STATUS_URL="$STATUS_URL" \

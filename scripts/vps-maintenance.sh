@@ -129,6 +129,8 @@ run docker builder prune -af --filter "until=$PRUNE_UNTIL"
 
 if [ "$RESTART" -eq 1 ]; then
   section "Compose Restart"
+  export APP_COMMIT_SHA="$(git rev-parse HEAD)"
+  export APP_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   run docker compose up -d --remove-orphans
 fi
 

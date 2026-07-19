@@ -19,6 +19,8 @@ export interface SetupPerformanceBucket {
   outOfSampleProfitFactor: number | null;
   outOfSampleAvgPnl: number;
   promotionEligible: boolean;
+  quarantined: boolean;
+  requalificationEligible: boolean;
   opportunityCount: number;
   favorableOpportunities: number;
   opportunityFavorableRate: number;
@@ -43,7 +45,7 @@ export interface SetupPerformanceSummary {
   plainFindings: string[];
 }
 
-interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "outOfSampleTradeCount" | "outOfSampleWinRate" | "outOfSampleProfitFactor" | "outOfSampleAvgPnl" | "promotionEligible" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
+interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "outOfSampleTradeCount" | "outOfSampleWinRate" | "outOfSampleProfitFactor" | "outOfSampleAvgPnl" | "promotionEligible" | "quarantined" | "requalificationEligible" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
   grossOpportunityProfitUsd: number;
   grossOpportunityLossUsd: number;
   opportunityNetPnlTotalUsd: number;
@@ -162,6 +164,8 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
     outOfSampleProfitFactor: null,
     outOfSampleAvgPnl: 0,
     promotionEligible: false,
+    quarantined: false,
+    requalificationEligible: false,
     opportunityFavorableRate,
     avgOpportunityMove,
     avgOpportunityNetPnlUsd,
@@ -197,6 +201,26 @@ function enrichWithOutOfSampleEvidence(bucket: SetupPerformanceBucket, holdoutTr
     outOfSampleAvgPnl > 0 &&
     (outOfSampleProfitFactor === null || outOfSampleProfitFactor >= 1.15)
   );
+  const failedHoldout = (
+    outOfSampleTradeCount >= 12 &&
+    outOfSampleAvgPnl < 0 &&
+    outOfSampleProfitFactor !== null &&
+    outOfSampleProfitFactor < 0.85
+  );
+  const requalificationEligible = (
+    bucket.opportunityCount >= 20 &&
+    bucket.opportunityFavorableRate >= 0.6 &&
+    bucket.avgOpportunityNetPnlUsd > 0 &&
+    (bucket.opportunityProfitFactor === null || bucket.opportunityProfitFactor >= 1.15)
+  );
+  const quarantined = failedHoldout && !requalificationEligible;
+  const outOfSampleWarning = (
+    outOfSampleTradeCount >= 8 &&
+    outOfSampleAvgPnl < 0 &&
+    outOfSampleProfitFactor !== null &&
+    outOfSampleProfitFactor < 1
+  );
+  const holdoutAdjustment = quarantined ? -12 : outOfSampleWarning ? -4 : promotionEligible ? 4 : 0;
 
   return {
     ...bucket,
@@ -205,7 +229,13 @@ function enrichWithOutOfSampleEvidence(bucket: SetupPerformanceBucket, holdoutTr
     outOfSampleProfitFactor,
     outOfSampleAvgPnl,
     promotionEligible,
-    confidenceAdjustment: Math.max(-12, Math.min(8, bucket.confidenceAdjustment + (promotionEligible ? 4 : 0))),
+    quarantined,
+    requalificationEligible,
+    confidenceAdjustment: quarantined
+      ? -12
+      : failedHoldout
+        ? Math.min(-8, bucket.confidenceAdjustment + holdoutAdjustment)
+        : Math.max(-12, Math.min(8, bucket.confidenceAdjustment + holdoutAdjustment)),
   };
 }
 
@@ -237,6 +267,10 @@ function buildFindings(summary: Omit<SetupPerformanceSummary, "plainFindings">) 
   }
   if (summary.worstSetup && summary.worstSetup.key !== summary.bestSetup?.key) {
     findings.push(`${summary.worstSetup.label} needs caution until more evidence improves.`);
+  }
+  const quarantinedCount = summary.bySetup.filter((bucket) => bucket.quarantined).length;
+  if (quarantinedCount > 0) {
+    findings.push(`${quarantinedCount} setup${quarantinedCount === 1 ? " is" : "s are"} quarantined after failing later chronological expectancy checks.`);
   }
   if (summary.bySetup.some((bucket) => bucket.opportunityCount > 0 && bucket.tradeCount === 0)) {
     findings.push("Some patterns have opportunity evidence but no closed trades yet; treat them as early signals, not proven edge.");
@@ -270,12 +304,11 @@ export class SetupPerformance {
           holdoutBySetup.set(tag, values);
         }
       }
-      const isProbe = trade.entryMode === "CONTROLLED_PROBE" || trade.decisionState === "PROBE_ENTRY";
-      // Probe trades validate the setup that produced them, but they must not
-      // poison every future strategy on the same asset. Asset-level learning
-      // is reserved for standard entries; probe evidence remains setup-scoped.
-      if (!isProbe) addTrade(upsert(byAsset, trade.asset || "UNKNOWN"), trade);
-      if (!isProbe && holdoutIds.has(trade.id)) {
+      // Every closed position changes capital. Probe size may reduce PnL, but
+      // excluding probe outcomes from asset expectancy allowed repeated probe
+      // losses to bypass the asset-level safety model entirely.
+      addTrade(upsert(byAsset, trade.asset || "UNKNOWN"), trade);
+      if (holdoutIds.has(trade.id)) {
         const assetKey = trade.asset || "UNKNOWN";
         const values = holdoutByAsset.get(assetKey) || [];
         values.push(trade);

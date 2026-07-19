@@ -9,6 +9,10 @@ interface AssetConfig {
   coingeckoId: string;
 }
 
+interface CandleRequestOptions {
+  allowStale?: boolean;
+}
+
 export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
   BTC: { name: "Bitcoin", category: "crypto", krakenPair: "XBTUSD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
   ETH: { name: "Ethereum", category: "crypto", krakenPair: "ETHUSD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
@@ -102,6 +106,14 @@ export class MarketService {
     return Date.now() - latest * 1000 <= this.maxCandleAgeMs(assetKey, timeframe);
   }
 
+  static getCandleSeriesStatus(assetKey: string, timeframe: Timeframe, candles: Candle[]) {
+    const latest = candles[candles.length - 1]?.time;
+    return {
+      fresh: this.candlesAreFresh(assetKey, timeframe, candles),
+      asOf: latest ? new Date(latest * 1000).toISOString() : null,
+    };
+  }
+
   static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number, openInterest?: number }> {
     const config = SUPPORTED_ASSETS[assetKey];
     if (!config || config.category !== 'crypto') return {};
@@ -171,7 +183,12 @@ export class MarketService {
     }
   }
 
-  static async getCandles(timeframe: Timeframe, limit: number = 200, assetKey: string = "BTC"): Promise<Candle[]> {
+  static async getCandles(
+    timeframe: Timeframe,
+    limit: number = 200,
+    assetKey: string = "BTC",
+    options: CandleRequestOptions = {}
+  ): Promise<Candle[]> {
     const redis = getRedis();
     const cacheKey = `cache:candles:${assetKey}:${timeframe}`;
     let staleCandidate: Candle[] | null = null;
@@ -234,9 +251,10 @@ export class MarketService {
       console.error(`Yahoo Finance fallback also failed for ${assetKey}:`, yahooError);
     }
 
-    // Never silently feed stale candles into signal generation. Callers can
-    // decide how to present the unavailable feed, but trading must fail closed.
+    // Trading callers fail closed by default. Read-only callers may explicitly
+    // request the latest historical series for a closed market.
     if (staleCandidate && staleCandidate.length > 0) {
+      if (options.allowStale) return staleCandidate.slice(-limit);
       throw new Error(`Market data for ${assetKey}/${timeframe} is stale after all feed attempts.`);
     }
 

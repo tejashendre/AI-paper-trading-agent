@@ -17,7 +17,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          
+
       - name: Install Dependencies
         run: npm ci
 
@@ -33,6 +33,12 @@ jobs:
       - name: Run Strategy Audit
         run: npm run audit:strategy
 
+      - name: Verify Empty or Local Execution Ledger
+        run: npm run ledger:verify
+
+      - name: Build Runtime Source Manifest
+        run: npm run source:manifest
+
       - name: Deploy to Oracle VPS via SSH
         uses: appleboy/ssh-action@v1.2.5
         with:
@@ -43,16 +49,35 @@ jobs:
           command_timeout: 15m
           script: |
             set -eu
-            echo "🚀 Starting Deployment..."
+            DEPLOY_COMMIT="${{ github.sha }}"
+            DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             cd /home/ubuntu/version-6
-            
-            echo "📥 Pulling latest changes from GitHub..."
-            git pull origin main
-            
-            echo "🐳 Rebuilding and starting Docker containers..."
-            docker compose up -d --build --remove-orphans
-            
-            echo "🧹 Cleaning unused Docker build cache older than seven days..."
+
+            echo "Creating a state-preserving pre-deploy snapshot..."
+            BACKUP_DIR="data/deploy-backups/${DEPLOYED_AT}-${DEPLOY_COMMIT}"
+            mkdir -p "$BACKUP_DIR"
+            git rev-parse HEAD > "$BACKUP_DIR/previous-commit.txt"
+            git status --short > "$BACKUP_DIR/previous-status.txt"
+            git diff --binary > "$BACKUP_DIR/previous-worktree.patch"
+            tar -czf "$BACKUP_DIR/previous-runtime-tree.tar.gz" src scripts public package.json package-lock.json docker-compose.yml Dockerfile
+            if docker inspect quant-redis >/dev/null 2>&1; then
+              docker exec quant-redis redis-cli SAVE
+              docker cp quant-redis:/data/dump.rdb "$BACKUP_DIR/redis-dump.rdb"
+            fi
+
+            echo "Materializing the exact GitHub commit..."
+            git fetch --prune origin main
+            git reset --hard "$DEPLOY_COMMIT"
+            git clean -fd -- src scripts public
+            test "$(git rev-parse HEAD)" = "$DEPLOY_COMMIT"
+
+            echo "Rebuilding and starting application containers..."
+            export APP_COMMIT_SHA="$DEPLOY_COMMIT"
+            export APP_DEPLOYED_AT="$DEPLOYED_AT"
+            docker compose build --pull quant-dashboard swing-daemon
+            docker compose up -d --remove-orphans
+
+            echo "Cleaning unused Docker build cache older than seven days..."
             docker builder prune -f --filter "until=168h"
 
             echo "Verifying deployment health and scan advancement..."
@@ -60,5 +85,5 @@ jobs:
             STATUS_AUTH_TOKEN=SPECTATOR \
             WAIT_SECONDS=75 \
             sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
-            
-            echo "✅ Deployment completed successfully!"
+
+            echo "Deployment completed successfully at $DEPLOY_COMMIT"
