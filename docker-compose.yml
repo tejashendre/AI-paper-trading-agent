@@ -20,15 +20,20 @@ services:
       retries: 5
 
   quant-dashboard:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
+        APP_DEPLOYED_AT: ${APP_DEPLOYED_AT:-unknown}
     container_name: quant-dashboard
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
+      - APP_COMMIT_SHA=${APP_COMMIT_SHA:-unknown}
+      - APP_DEPLOYED_AT=${APP_DEPLOYED_AT:-unknown}
     env_file:
       - .env
     volumes:
@@ -48,11 +53,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
+        APP_DEPLOYED_AT: ${APP_DEPLOYED_AT:-unknown}
     container_name: quant-swing-daemon
     command: npm run daemon:swing
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
+      - APP_COMMIT_SHA=${APP_COMMIT_SHA:-unknown}
+      - APP_DEPLOYED_AT=${APP_DEPLOYED_AT:-unknown}
     env_file:
       - .env
     volumes:

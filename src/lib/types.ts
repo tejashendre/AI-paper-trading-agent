@@ -177,6 +177,7 @@ export interface OpenPosition {
   maxLossUsd?: number;
   admissionScore?: number;
   learningRiskMultiplier?: number;
+  learningAdjustment?: number;
   setupRiskMultiplier?: number;
   setupRiskReason?: string;
   finalConviction?: number;
@@ -210,6 +211,18 @@ export interface OpenPosition {
   targetReachabilityScore?: number;
   rawTakeProfit?: number;
   targetAdjustedReason?: string;
+  netRewardRiskRatio?: number;
+  strategyVersion?: string;
+  marketRegime?: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' | 'UNKNOWN';
+  executionCostModelVersion?: string;
+  executionVenueModel?: string;
+  entryRequestedPrice?: number;
+  entryExecutionCostUsd?: number;
+  entryPriceImpactCostUsd?: number;
+  assumedRoundTripExecutionCostUsd?: number;
+  expectedNetRewardUsd?: number;
+  expectedNetLossUsd?: number;
+  carryCostPaid?: number;
 }
 
 export interface Portfolio {
@@ -235,6 +248,8 @@ export interface Portfolio {
   maxDrawdownPercent: number;
   returns: number[];          // historical trade returns for Sharpe/Sortino
   totalFeesPaid?: number;     // Accumulated transaction fees paid
+  totalExecutionCostsPaid?: number; // Fees + spread/slippage/gap/carry assumptions
+  totalCarryPaid?: number;
   lastUpdated: string;
 }
 
@@ -268,9 +283,31 @@ export interface Trade {
   setupRiskMultiplier?: number;
   setupRiskReason?: string;
   learningRiskMultiplier?: number;
+  learningAdjustment?: number;
   targetReachabilityScore?: number;
   rawTakeProfit?: number;
   targetAdjustedReason?: string;
+  netRewardRiskRatio?: number;
+  strategyVersion?: string;
+  marketRegime?: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' | 'UNKNOWN';
+  executionCostModelVersion?: string;
+  executionVenueModel?: string;
+  requestedPrice?: number;
+  notionalUsd?: number;
+  leverageUsed?: number;
+  riskAmountUsd?: number;
+  maxLossUsd?: number;
+  entryFeeUsd?: number;
+  exitFeeUsd?: number;
+  grossPnlUsd?: number;
+  carryCostUsd?: number;
+  executionCostUsd?: number;
+  entryExecutionCostUsd?: number;
+  exitExecutionCostUsd?: number;
+  totalRoundTripExecutionCostUsd?: number;
+  spreadCostUsd?: number;
+  slippageCostUsd?: number;
+  gapCostUsd?: number;
   reasoning: string;
   isPartialExit?: boolean;
   // Filled when position is closed:

@@ -92,6 +92,12 @@ export class PortfolioManager {
         if (data.totalFeesPaid === undefined) {
             data.totalFeesPaid = 0;
         }
+        if (data.totalExecutionCostsPaid === undefined) {
+            data.totalExecutionCostsPaid = data.totalFeesPaid || 0;
+        }
+        if (data.totalCarryPaid === undefined) {
+            data.totalCarryPaid = 0;
+        }
         if (!data.openPositions) {
             data.openPositions = {};
             if (data.openPosition) {
@@ -145,6 +151,8 @@ export class PortfolioManager {
             maxDrawdownPercent: 0,
             returns: [],
             totalFeesPaid: 0,
+            totalExecutionCostsPaid: 0,
+            totalCarryPaid: 0,
             openPosition: null
         };
         await redis.set(keys.portfolio, initial);

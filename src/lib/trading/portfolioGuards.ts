@@ -71,7 +71,7 @@ function maxOpenPositionsForMode(mode: PortfolioExposureMode) {
 function reduceRuleKeys(rules: LocalLearningRule[] = []) {
   return new Set(
     rules
-      .filter((rule) => rule.action === "REDUCE" && rule.confidenceAdjustment <= -6)
+      .filter((rule) => rule.action !== "BOOST" && rule.confidenceAdjustment <= -6)
       .map((rule) => `${rule.scope}:${rule.key}`)
   );
 }
@@ -94,7 +94,7 @@ function severeReduceRules(input: PortfolioGuardInput) {
       (rule.scope === "setup" && normalizedSetups.has(rule.key));
 
     return matchesCandidate &&
-      rule.action === "REDUCE" &&
+      rule.action !== "BOOST" &&
       rule.confidenceAdjustment <= -8 &&
       rule.sampleSize >= 8 &&
       rule.avgMove < 0;
@@ -150,6 +150,14 @@ export class PortfolioGuards {
       maxWeakDataPositions,
       maxReduceAssetPositions,
     };
+
+    const quarantinedRule = severeReduceRules(input).find((rule) => rule.action === "WATCH_ONLY");
+    if (quarantinedRule) {
+      return emptyDecision(
+        input,
+        `${quarantinedRule.key} is quarantined after failing its later chronological expectancy sample; a different asset/setup must earn admission.`
+      );
+    }
 
     if (activeSwingCount >= maxOpenPositions) {
       return emptyDecision(

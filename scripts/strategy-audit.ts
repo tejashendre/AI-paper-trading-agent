@@ -1,7 +1,7 @@
 import { ASSET_CONTRACT_SPECS, getAssetSpec } from "../src/lib/trading/assetSpecs";
 import { runReplay } from "../src/lib/backtest/replayEngine";
 import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
-import { Candle, IndicatorSnapshot, Portfolio, StatisticalMetrics } from "../src/lib/types";
+import { Candle, IndicatorSnapshot, Portfolio, StatisticalMetrics, Trade } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
 import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
@@ -9,10 +9,24 @@ import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/tradi
 import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
-import { scoreContinuousHtfEvidence } from "../src/lib/swingEngine";
+import {
+  calculateCalibratedConviction,
+  evaluateNetRewardRisk,
+  scoreContinuousHtfEvidence,
+} from "../src/lib/swingEngine";
 import { OpportunityEvaluation, selectIndependentOpportunityEvaluations } from "../src/lib/trading/opportunityJournal";
+import {
+  buildPaperExecutionPlan,
+  estimateCarryCostUsd,
+  fitPaperExecutionPlanToRiskBudget,
+  getExecutionCostProfile,
+} from "../src/lib/trading/executionCostModel";
+import { evaluatePortfolioRiskBudget } from "../src/lib/trading/portfolioRiskBudget";
+import { computeExecutionEventHash, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
+import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 type AuditLevel = "PASS" | "WARN" | "FAIL";
 
@@ -23,6 +37,22 @@ interface AuditResult {
 }
 
 interface LiveStatus {
+  deployment?: {
+    commit?: string | null;
+    strategyVersion?: string;
+    executionCostModelVersion?: string;
+    portfolioRiskPolicyVersion?: string;
+    researchHarnessVersion?: string;
+    capitalMode?: string;
+  };
+  executionLedger?: {
+    files?: number;
+    bytes?: number;
+    headHash?: string | null;
+    lastEventAt?: string | null;
+    strategyVersion?: string;
+    executionCostModelVersion?: string;
+  };
   aiPortfolio?: {
     totalPnl?: number;
     totalTrades?: number;
@@ -318,9 +348,255 @@ function auditTradingRevivalCalibration(): AuditResult[] {
       `${independent.length} independent opportunities selected from five correlated horizon rows.`
     ),
     result(
-      !probeAsset?.tradeCount && probeSetup?.tradeCount === 1 ? "PASS" : "FAIL",
-      "probe learning remains setup-scoped",
+      probeAsset?.tradeCount === 1 && probeSetup?.tradeCount === 1 ? "PASS" : "FAIL",
+      "probe losses reach asset learning",
       `Probe asset trades=${probeAsset?.tradeCount || 0}; probe setup trades=${probeSetup?.tradeCount || 0}.`
+    ),
+  ];
+}
+
+function auditSignalEconomics(): AuditResult[] {
+  const viable = evaluateNetRewardRisk({
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 100,
+    stopLoss: 98.5,
+    takeProfit: 103,
+  });
+  const compressed = evaluateNetRewardRisk({
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 100,
+    stopLoss: 98.5,
+    takeProfit: 101.8,
+  });
+  const weakConviction = calculateCalibratedConviction({
+    htfScore: 8,
+    htfThreshold: 14,
+    triggerScore: 30,
+    triggerThreshold: 14,
+    liquidityScore: 4,
+    microstructureScore: 0,
+    dataQuality: 95,
+    netRewardRiskRatio: 1.8,
+    weeklyBiasAdjustment: 5,
+    learningAdjustment: -12,
+  });
+  const strongConviction = calculateCalibratedConviction({
+    htfScore: 14,
+    htfThreshold: 14,
+    triggerScore: 14,
+    triggerThreshold: 14,
+    liquidityScore: 8,
+    microstructureScore: 4,
+    dataQuality: 95,
+    netRewardRiskRatio: 1.8,
+    weeklyBiasAdjustment: 5,
+    learningAdjustment: 0,
+  });
+
+  return [
+    result(
+      viable.passed && !compressed.passed ? "PASS" : "FAIL",
+      "fee-aware net reward/risk gate",
+      `Viable ratio=${viable.ratio.toFixed(2)}; compressed ratio=${compressed.ratio.toFixed(2)}.`
+    ),
+    result(
+      weakConviction < 70 && strongConviction >= 75 ? "PASS" : "FAIL",
+      "bounded calibrated conviction",
+      `Weak HTF/high-trigger candidate=${weakConviction}; fully aligned candidate=${strongConviction}.`
+    ),
+  ];
+}
+
+function minimalTrade(overrides: Partial<Trade> = {}): Trade {
+  return {
+    id: overrides.id || crypto.randomUUID(),
+    timestamp: overrides.timestamp || new Date().toISOString(),
+    asset: overrides.asset || "BTC",
+    action: overrides.action || "BUY",
+    direction: overrides.direction || "LONG",
+    amount: overrides.amount ?? 0.01,
+    btcAmount: overrides.btcAmount ?? overrides.amount ?? 0.01,
+    price: overrides.price ?? 60_000,
+    usdValue: overrides.usdValue ?? 500,
+    stopLoss: overrides.stopLoss ?? 58_000,
+    takeProfit: overrides.takeProfit ?? 64_000,
+    signalScore: overrides.signalScore ?? 75,
+    reasoning: overrides.reasoning || "Deterministic audit trade",
+    ...overrides,
+  };
+}
+
+function auditExecutionCostModel(): AuditResult[] {
+  const input = {
+    asset: "BTC",
+    direction: "LONG" as const,
+    entryPrice: 60_000,
+    stopLoss: 59_000,
+    takeProfit: 62_000,
+    amount: 0.1,
+    context: {
+      assetMode: "REALTIME_FAST" as const,
+      dataQuality: 90,
+      isPeakLiquidity: false,
+    },
+  };
+  const first = buildPaperExecutionPlan(input);
+  const second = buildPaperExecutionPlan(input);
+  const btcProfile = getExecutionCostProfile("BTC");
+  const oilProfile = getExecutionCostProfile("OIL");
+  const carry = estimateCarryCostUsd({
+    asset: "BTC",
+    notionalUsd: 10_000,
+    openedAt: "2026-07-18T00:00:00.000Z",
+    closedAt: "2026-07-19T00:00:00.000Z",
+  });
+  const fitted = fitPaperExecutionPlanToRiskBudget({ ...input, riskBudgetUsd: 90 });
+
+  return [
+    result(
+      first.entry.fillPrice > input.entryPrice && first.stopExit.fillPrice < input.stopLoss && first.targetExit.fillPrice < input.takeProfit
+        ? "PASS"
+        : "FAIL",
+      "adverse paper fill directions",
+      `Entry ${first.entry.fillPrice.toFixed(2)}, stop ${first.stopExit.fillPrice.toFixed(2)}, target ${first.targetExit.fillPrice.toFixed(2)} all move against the paper trader.`
+    ),
+    result(
+      JSON.stringify(first) === JSON.stringify(second) ? "PASS" : "FAIL",
+      "deterministic execution model",
+      "Identical execution inputs produce identical fills, costs, and net reward/risk."
+    ),
+    result(
+      btcProfile.venueModel !== oilProfile.venueModel && btcProfile.stopGapBps !== oilProfile.stopGapBps && carry > 0 ? "PASS" : "FAIL",
+      "instrument-specific cost profiles",
+      `BTC model=${btcProfile.venueModel}; OIL model=${oilProfile.venueModel}; one-day BTC carry=$${carry.toFixed(2)}.`
+    ),
+    result(
+      fitted.resized && fitted.riskScale < 1 && fitted.plan.netLossUsd <= 90 * 1.01
+        ? "PASS"
+        : "FAIL",
+      "after-cost risk-budget sizing",
+      `Candidate was scaled to ${(fitted.riskScale * 100).toFixed(1)}% and modeled stop loss is $${fitted.plan.netLossUsd.toFixed(2)} against a $90.00 budget.`
+    ),
+  ];
+}
+
+function auditPortfolioRiskBudgets(): AuditResult[] {
+  const candidate = {
+    portfolio: basePortfolio(),
+    trades: [] as Trade[],
+    asset: "BTC",
+    direction: "LONG" as const,
+    candidateNotionalUsd: 2_000,
+    candidateMaxLossUsd: 75,
+    candidateEntryCostUsd: 3,
+    now: new Date("2026-07-19T12:00:00.000Z"),
+  };
+  const allowed = evaluatePortfolioRiskBudget(candidate);
+  const turnover = evaluatePortfolioRiskBudget({
+    ...candidate,
+    trades: [
+      minimalTrade({ timestamp: "2026-07-19T11:20:00.000Z", action: "BUY" }),
+      minimalTrade({ timestamp: "2026-07-19T11:40:00.000Z", action: "BUY" }),
+    ],
+  });
+  const dailyLoss = evaluatePortfolioRiskBudget({
+    ...candidate,
+    trades: [minimalTrade({
+      timestamp: "2026-07-19T10:00:00.000Z",
+      action: "SELL",
+      pnl: -250,
+      pnlPercent: -2.5,
+    })],
+  });
+  const drifted = evaluatePortfolioRiskBudget({
+    ...candidate,
+    portfolio: basePortfolio({ totalPnl: -500, grossProfit: 100, grossLoss: 100 }),
+  });
+  const correlatedPortfolio = basePortfolio({
+    openPositions: {
+      BTC: { asset: "BTC", entryPrice: 60_000, amount: 0.01, btcAmount: 0.01, usdInvested: 200, stopLoss: 59_000, takeProfit: 62_000, entryTime: "2026-07-19T08:00:00.000Z", signalScore: 80, reasoning: "audit", direction: "LONG", maxLossUsd: 30 },
+      ETH: { asset: "ETH", entryPrice: 2_000, amount: 0.2, btcAmount: 0.2, usdInvested: 200, stopLoss: 1_950, takeProfit: 2_100, entryTime: "2026-07-19T08:00:00.000Z", signalScore: 80, reasoning: "audit", direction: "LONG", maxLossUsd: 30 },
+    },
+    usd: 9_600,
+  });
+  const correlation = evaluatePortfolioRiskBudget({ ...candidate, portfolio: correlatedPortfolio, asset: "SOL" });
+
+  return [
+    result(allowed.approved ? "PASS" : "FAIL", "portfolio budget normal admission", allowed.reason),
+    result(!turnover.approved && turnover.reason.includes("hourly") ? "PASS" : "FAIL", "hourly turnover circuit breaker", turnover.reason),
+    result(!dailyLoss.approved && dailyLoss.reason.includes("24-hour") ? "PASS" : "FAIL", "daily loss circuit breaker", dailyLoss.reason),
+    result(!drifted.approved && drifted.reason.includes("Accounting") ? "PASS" : "FAIL", "accounting drift quarantine", drifted.reason),
+    result(!correlation.approved && correlation.reason.includes("Correlated") ? "PASS" : "FAIL", "correlated exposure budget", correlation.reason),
+  ];
+}
+
+function auditExecutionLedgerHashing(): AuditResult[] {
+  const unsigned = {
+    schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
+    id: "audit-event",
+    timestamp: "2026-07-19T12:00:00.000Z",
+    type: "ENTRY_APPROVED" as const,
+    source: "STRATEGY_AUDIT",
+    asset: "BTC",
+    decisionId: "audit-decision",
+    tradeId: "audit-trade",
+    strategyVersion: TRADING_STRATEGY_VERSION,
+    executionCostModelVersion: "paper-cost-v2-2026-07-19",
+    previousHash: null,
+    payload: { price: 60_000, approved: true },
+  };
+  const first = computeExecutionEventHash(unsigned);
+  const second = computeExecutionEventHash(unsigned);
+  const tampered = computeExecutionEventHash({ ...unsigned, payload: { price: 60_001, approved: true } });
+  return [result(
+    first === second && first !== tampered ? "PASS" : "FAIL",
+    "hash-chained execution ledger integrity",
+    "Stable events hash identically and a one-dollar payload change produces a different SHA-256 hash."
+  )];
+}
+
+function auditWalkForwardHarness(): AuditResult[] {
+  const start = new Date("2026-01-01T00:00:00.000Z").getTime();
+  const trades = Array.from({ length: 120 }, (_, index) => {
+    const win = index % 10 < 7;
+    const pnl = win ? 8 : -5;
+    return minimalTrade({
+      id: `wf-${index}`,
+      timestamp: new Date(start + index * 6 * 60 * 60 * 1000).toISOString(),
+      action: index % 2 === 0 ? "SELL" : "COVER",
+      direction: index % 2 === 0 ? "LONG" : "SHORT",
+      pnl,
+      pnlPercent: pnl / 5,
+      strategyVersion: index % 2 === 0 ? "champion-v1" : "challenger-v1",
+      marketRegime: index % 3 === 0 ? "TRENDING" : "CHOPPY",
+      entryMode: index % 5 === 0 ? "CONTROLLED_PROBE" : "STANDARD",
+    });
+  });
+  const report = buildWalkForwardResearchReport({ trades });
+  const championOnly = buildWalkForwardResearchReport({ trades, strategyVersion: "champion-v1" });
+  return [
+    result(
+      report.folds.length > 0 && report.aggregateTest.trades >= 30 && report.readiness.preliminarySampleReady
+        ? "PASS"
+        : "FAIL",
+      "purged walk-forward folds",
+      `${report.folds.length} expanding fold(s), ${report.aggregateTest.trades} unique test trade(s), ${report.numberOfTrials} tracked strategy version(s).`
+    ),
+    result(
+      report.aggregateTest.expectancy95 !== null && report.aggregateTest.profitFactor95 !== null && report.aggregateTest.deflatedSharpeProbability !== null
+        ? "PASS"
+        : "FAIL",
+      "research uncertainty statistics",
+      "Bootstrap expectancy/profit-factor intervals and a trial-adjusted Sharpe probability are present."
+    ),
+    result(
+      championOnly.strategyVersions.length === 1 && championOnly.strategyVersions[0] === "champion-v1" && championOnly.numberOfTrials === 1
+        ? "PASS"
+        : "FAIL",
+      "strategy-version probation isolation",
+      `${championOnly.strategyVersions.join(", ") || "no versions"} included in the filtered probation cohort.`
     ),
   ];
 }
@@ -738,6 +1014,42 @@ function auditLearningConnections(): AuditResult[] {
       : "Chronological holdout evidence did not control setup promotion."
   ));
 
+  const deteriorating = SetupPerformance.build(Array.from({ length: 40 }, (_, index) => (
+    syntheticTrade(index, index < 28 ? 10 : -10)
+  )), {});
+  const deterioratingSetup = deteriorating.bySetup.find((bucket) => bucket.key === "VWAP_REJECTION");
+  checks.push(result(
+    deterioratingSetup?.quarantined === true && deterioratingSetup.confidenceAdjustment === -12 ? "PASS" : "FAIL",
+    "out-of-sample setup quarantine",
+    deterioratingSetup?.quarantined
+      ? `Later ${deterioratingSetup.outOfSampleTradeCount}-trade deterioration quarantines the setup despite positive earlier trades.`
+      : "A setup that collapsed in the chronological holdout remained eligible for new entries."
+  ));
+
+  const requalified = SetupPerformance.build(Array.from({ length: 40 }, (_, index) => (
+    syntheticTrade(index, index < 28 ? 10 : -10)
+  )), {
+    bySetup: {
+      VWAP_REJECTION: {
+        total: 20,
+        favorable: 14,
+        avgMove: 0.01,
+        avgNetPnlUsd: 2,
+        avgNetReturnPercent: 0.01,
+        grossProfitUsd: 60,
+        grossLossUsd: 20,
+      },
+    },
+  });
+  const requalifiedSetup = requalified.bySetup.find((bucket) => bucket.key === "VWAP_REJECTION");
+  checks.push(result(
+    requalifiedSetup?.requalificationEligible === true && !requalifiedSetup.quarantined && requalifiedSetup.confidenceAdjustment <= -8 ? "PASS" : "FAIL",
+    "measured quarantine requalification",
+    requalifiedSetup?.requalificationEligible
+      ? "Twenty positive independent watched outcomes permit only reduced requalification instead of a permanent freeze."
+      : "The quarantine has no evidence-based path to relearn."
+  ));
+
   return checks;
 }
 
@@ -755,6 +1067,8 @@ function auditProductionRegressions(): AuditResult[] {
   const manualSource = read("src", "app", "api", "trade", "manual", "route.ts");
   const backtestSource = read("src", "app", "api", "backtest", "route.ts");
   const chartSource = read("src", "app", "api", "chart", "route.ts");
+  const marketSource = read("src", "lib", "market.ts");
+  const dashboardSource = read("src", "components", "Dashboard.tsx");
   const composeSource = read("docker-compose.yml");
   const deployCheckSource = read("scripts", "vps-deploy-check.sh");
 
@@ -765,7 +1079,12 @@ function auditProductionRegressions(): AuditResult[] {
     feedSource.includes("BYBIT_LINEAR_WS") &&
     websocketSource.includes('channel: "trade"') &&
     websocketSource.includes("publicTrade.") &&
-    [daemonSource, tradeSource, swingTradeSource].every((source) => source.includes("safeForSwingExecution"));
+    daemonSource.includes("safeForSwingExecution");
+  const singleWriterExecution = tradeSource.includes("requestSwingScan") &&
+    !tradeSource.includes("TradeAdmissionController") &&
+    !tradeSource.includes("updatePortfolio") &&
+    swingTradeSource.includes('from "../route"') &&
+    daemonSource.includes("consumeSwingScanRequest");
   const publicBounds = [backtestSource, chartSource].every((source) => source.includes("parsedLimit > 1_000"));
   const manualFeeSafe = manualSource.includes("Number.isFinite(usdAmount)") &&
     manualSource.includes("const netPnl = pnl - entryFee - exitFee");
@@ -774,6 +1093,11 @@ function auditProductionRegressions(): AuditResult[] {
   const recoverySafe = portfolioSource.includes("function isValidPortfolio") &&
     portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
     portfolioSource.includes("if (Array.isArray(backup))");
+  const chartIdentitySafe = chartSource.includes("allowStale: true") &&
+    chartSource.includes("asset,") &&
+    marketSource.includes("options.allowStale") &&
+    dashboardSource.includes("payload.asset !== activeAsset") &&
+    dashboardSource.includes("setChartData(null)");
 
   return [
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
@@ -785,9 +1109,15 @@ function auditProductionRegressions(): AuditResult[] {
     result(feedEnforced ? "PASS" : "FAIL", "dual WebSocket admission gate", feedEnforced
       ? "Both exchange freshness signals feed the daemon and API entry gates."
       : "Autonomous entry can proceed without verified realtime feed health."),
+    result(singleWriterExecution ? "PASS" : "FAIL", "single-writer autonomous execution", singleWriterExecution
+      ? "Admin scan requests are handed to the daemon and cannot bypass its execution model, ledger, or portfolio circuit breakers."
+      : "An API route can still mutate the AI portfolio outside the audited daemon path."),
     result(publicBounds ? "PASS" : "FAIL", "public historical request bounds", publicBounds
       ? "Spectator chart and backtest requests are capped at 1,000 candles."
       : "A public historical endpoint still accepts unbounded work."),
+    result(chartIdentitySafe ? "PASS" : "FAIL", "chart asset identity and closed-market fallback", chartIdentitySafe
+      ? "Read-only charts can show labeled historical candles while stale trading inputs remain fail-closed; mismatched series are rejected."
+      : "The chart can retain or relabel a previous asset when a selected market feed is stale."),
     result(manualFeeSafe ? "PASS" : "FAIL", "manual trade finite and fee accounting", manualFeeSafe
       ? "Manual entries reject non-finite sizes and closes deduct both fee legs."
       : "Manual paper trades can corrupt balances or overstate PnL."),
@@ -897,6 +1227,10 @@ function auditLearningAggregation(): AuditResult[] {
     id: "setup:HTF_TREND_BREAKOUT", scope: "setup", key: "HTF_TREND_BREAKOUT", action: "REDUCE",
     confidenceAdjustment: -8, message: "Weak trend setup", sampleSize: 20, favorableRate: 0.3, avgMove: -1, updatedAt: now,
   }], "OIL", ["4H Structural Uptrend (Hurst: 0.71)"]);
+  const quarantinedSetup = calculateLearningAdjustment([{
+    id: "setup:VWAP_RECLAIM", scope: "setup", key: "VWAP_RECLAIM", action: "WATCH_ONLY",
+    confidenceAdjustment: -12, message: "Failed holdout", sampleSize: 20, favorableRate: 0.3, avgMove: -4, updatedAt: now,
+  }], "BTC", ["VWAP_RECLAIM"]);
 
   return [
     result(
@@ -919,6 +1253,13 @@ function auditLearningAggregation(): AuditResult[] {
       normalizedSetup.adjustment === -5
         ? "Descriptive live structure tags match their stable historical setup category with bounded influence."
         : `Expected normalized setup adjustment -5; got ${normalizedSetup.adjustment}.`
+    ),
+    result(
+      quarantinedSetup.watchOnly ? "PASS" : "FAIL",
+      "setup holdout quarantine reaches admission",
+      quarantinedSetup.watchOnly
+        ? "A setup-level chronological failure now blocks new entries instead of only shrinking them."
+        : "The setup quarantine did not reach the live admission decision."
     ),
   ];
 }
@@ -1047,7 +1388,7 @@ function auditReplayEngine(): AuditResult[] {
       : `${report.watchedSetups} watched setup(s), ${(report.missedOpportunityRate * 100).toFixed(1)}% missed-opportunity rate. A zero-trade replay cannot validate profitability or execution behavior.`
   ));
   const feeMathValid = report.trades.every((trade) => (
-    Math.abs(trade.pnlUsd - (trade.grossPnlUsd - trade.entryFeeUsd - trade.exitFeeUsd)) < 0.000001
+    Math.abs(trade.pnlUsd - (trade.grossPnlUsd - trade.entryFeeUsd - trade.exitFeeUsd - trade.carryCostUsd)) < 0.000001
   ));
   const netTradePnl = report.trades.reduce((sum, trade) => sum + trade.pnlUsd, 0);
   const capitalMathValid = Math.abs(report.totalReturnUsd - netTradePnl) < 0.000001;
@@ -1055,8 +1396,8 @@ function auditReplayEngine(): AuditResult[] {
     feeMathValid && capitalMathValid && report.totalTrades > 0 ? "PASS" : "FAIL",
     "replay net fee accounting",
     feeMathValid && capitalMathValid && report.totalTrades > 0
-      ? "Every replay trade and final capital include both entry and exit fees exactly once."
-      : "Replay fee deductions or final-capital reconciliation are inconsistent."
+      ? "Every replay trade and final capital include modeled fills, both fee legs, and carry exactly once."
+      : "Replay execution-cost deductions or final-capital reconciliation are inconsistent."
   ));
   checks.push(result(
     report.setupStats.length > 0 ? "PASS" : "FAIL",
@@ -1096,6 +1437,32 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
   const opportunitySweep = scan?.opportunitySweep;
   const decisionSummary = scan?.decisionSummary || {};
   const blockerSummary = scan?.blockerSummary || [];
+
+  checks.push(result(
+    status.deployment?.capitalMode === "PAPER_ONLY" ? "PASS" : "FAIL",
+    "paper-only capital boundary",
+    status.deployment?.capitalMode === "PAPER_ONLY"
+      ? `Deployment ${status.deployment.commit || "unknown"} explicitly reports PAPER_ONLY.`
+      : "Live status does not explicitly prove the deployment is restricted to paper capital."
+  ));
+
+  checks.push(result(
+    status.deployment?.strategyVersion === TRADING_STRATEGY_VERSION ? "PASS" : "FAIL",
+    "live strategy version",
+    status.deployment?.strategyVersion === TRADING_STRATEGY_VERSION
+      ? `Live strategy version matches ${TRADING_STRATEGY_VERSION}.`
+      : `Expected ${TRADING_STRATEGY_VERSION}, received ${status.deployment?.strategyVersion || "missing"}.`
+  ));
+
+  const ledger = status.executionLedger;
+  const ledgerReady = Number(ledger?.files || 0) > 0 && Boolean(ledger?.headHash);
+  checks.push(result(
+    ledgerReady ? "PASS" : "FAIL",
+    "live append-only execution ledger",
+    ledgerReady
+      ? `${ledger?.files || 0} ledger file(s), ${ledger?.bytes || 0} byte(s), latest event ${ledger?.lastEventAt || "unknown"}.`
+      : "No durable hash-chained execution ledger head is visible in live status."
+  ));
 
   checks.push(result(
     scan?.scanId && scan.scanId > 0 ? "PASS" : "FAIL",
@@ -1255,6 +1622,11 @@ async function main() {
     ...auditStatisticalRegimes(),
     ...auditTradingRevivalCalibration(),
     ...auditEventCalendar(),
+    ...auditSignalEconomics(),
+    ...auditExecutionCostModel(),
+    ...auditPortfolioRiskBudgets(),
+    ...auditExecutionLedgerHashing(),
+    ...auditWalkForwardHarness(),
     ...auditAdmissionSizing(),
     ...auditTargetReachability(),
     ...auditExitSafety(),

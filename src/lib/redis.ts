@@ -32,6 +32,16 @@ export class LocalRedisProxy {
     }
   }
 
+  async getdel<T>(key: string): Promise<T | null> {
+    const val = await this.client.getdel(key);
+    if (!val) return null;
+    try {
+      return JSON.parse(val) as T;
+    } catch {
+      return val as any as T;
+    }
+  }
+
   async set(key: string, val: any, opts?: { ex?: number; nx?: boolean }): Promise<any> {
     const v = typeof val === 'string' || typeof val === 'number' ? String(val) : JSON.stringify(val);
     if (opts?.ex && opts?.nx) return this.client.set(key, v, 'EX', opts.ex, 'NX');

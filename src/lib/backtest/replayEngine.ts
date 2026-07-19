@@ -1,8 +1,9 @@
 import { computeAllIndicators } from "@/lib/indicators";
 import { Candle, Portfolio } from "@/lib/types";
 import { SUPPORTED_ASSETS } from "@/lib/market";
-import { calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { calculatePnlUsd, getAssetSpec } from "@/lib/trading/assetSpecs";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
+import { estimateCarryCostUsd, estimatePaperFill, fitPaperExecutionPlanToRiskBudget } from "@/lib/trading/executionCostModel";
 
 type ReplayDirection = "LONG" | "SHORT" | "NEUTRAL";
 type ReplayExitReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "TIME_STOP" | "END_REPLAY";
@@ -21,6 +22,8 @@ export interface ReplayTrade {
   exitTime: number;
   entryPrice: number;
   exitPrice: number;
+  requestedEntryPrice: number;
+  requestedExitPrice: number;
   amount: number;
   marginUsd: number;
   notionalUsd: number;
@@ -28,6 +31,10 @@ export interface ReplayTrade {
   grossPnlUsd: number;
   entryFeeUsd: number;
   exitFeeUsd: number;
+  carryCostUsd: number;
+  entryExecutionCostUsd: number;
+  exitExecutionCostUsd: number;
+  totalExecutionCostUsd: number;
   pnlUsd: number;
   pnlPercent: number;
   holdCandles: number;
@@ -37,7 +44,7 @@ export interface ReplayTrade {
   marketStructureScore: number;
   setupTags: string[];
   exitReason: ReplayExitReason;
-  executionPriceSource: "candle.close";
+  executionPriceSource: "modeled.paper.fill";
 }
 
 export interface ReplaySetupStats {
@@ -119,6 +126,7 @@ interface ActiveReplayPosition {
   entryIndex: number;
   entryTime: number;
   entryPrice: number;
+  requestedEntryPrice: number;
   amount: number;
   marginUsd: number;
   notionalUsd: number;
@@ -126,6 +134,7 @@ interface ActiveReplayPosition {
   stopLoss: number;
   takeProfit: number;
   entryFeeUsd: number;
+  entryExecutionCostUsd: number;
   finalConviction: number;
   htfScore: number;
   triggerScore: number;
@@ -172,6 +181,8 @@ function emptyPortfolio(usd: number): Portfolio {
     maxDrawdownPercent: 0,
     returns: [],
     totalFeesPaid: 0,
+    totalExecutionCostsPaid: 0,
+    totalCarryPaid: 0,
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -381,6 +392,8 @@ function markOpenPosition(portfolio: Portfolio, position: ActiveReplayPosition) 
     reasoning: "Replay validation position",
     direction: position.direction,
     entryFeePaid: position.entryFeeUsd,
+    entryRequestedPrice: position.requestedEntryPrice,
+    entryExecutionCostUsd: position.entryExecutionCostUsd,
     notionalUsd: position.notionalUsd,
     leverageUsed: position.leverage,
     finalConviction: position.finalConviction,
@@ -398,10 +411,12 @@ function clearOpenPosition(portfolio: Portfolio, asset: string) {
 function updatePortfolioAfterTrade(portfolio: Portfolio, trade: ReplayTrade) {
   // Entry margin and fee were removed when the position opened. Restore the
   // margin, then settle gross PnL and the exit fee exactly once.
-  portfolio.usd += trade.marginUsd + trade.grossPnlUsd - trade.exitFeeUsd;
+  portfolio.usd += trade.marginUsd + trade.grossPnlUsd - trade.exitFeeUsd - trade.carryCostUsd;
   portfolio.totalPnl += trade.pnlUsd;
   portfolio.totalTrades++;
   portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + trade.exitFeeUsd;
+  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + trade.carryCostUsd;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + trade.exitExecutionCostUsd + trade.carryCostUsd;
   portfolio.returns.push(trade.pnlPercent / 100);
   if (trade.pnlUsd > 0) {
     portfolio.winningTrades++;
@@ -422,24 +437,53 @@ function updatePortfolioAfterTrade(portfolio: Portfolio, trade: ReplayTrade) {
   portfolio.maxDrawdownPercent = portfolio.peakValue > 0 ? Math.max(portfolio.maxDrawdownPercent, (drawdown / portfolio.peakValue) * 100) : 0;
 }
 
-function closePosition(position: ActiveReplayPosition, candle: Candle, index: number, exitPrice: number, reason: ReplayExitReason): ReplayTrade {
-  const grossPnlUsd = calculatePnlUsd(position.asset, position.entryPrice, exitPrice, position.amount, position.direction);
-  const exitFeeUsd = estimateFeeUsd(position.asset, position.amount, exitPrice);
-  const pnlUsd = grossPnlUsd - position.entryFeeUsd - exitFeeUsd;
+function closePosition(position: ActiveReplayPosition, candle: Candle, index: number, requestedExitPrice: number, reason: ReplayExitReason): ReplayTrade {
+  const exit = estimatePaperFill({
+    asset: position.asset,
+    action: position.direction === "SHORT" ? "COVER" : "SELL",
+    requestedPrice: requestedExitPrice,
+    amount: position.amount,
+    context: {
+      reason: reason === "STOP_LOSS"
+        ? "STOP_LOSS"
+        : reason === "TAKE_PROFIT"
+          ? "TAKE_PROFIT"
+          : reason === "END_REPLAY"
+            ? "END_REPLAY"
+            : reason,
+      assetMode: ["BTC", "ETH", "SOL"].includes(position.asset) ? "REALTIME_FAST" : "SLOW_SWING",
+      dataQuality: 100,
+      isPeakLiquidity: false,
+    },
+  });
+  const grossPnlUsd = calculatePnlUsd(position.asset, position.entryPrice, exit.fillPrice, position.amount, position.direction);
+  const carryCostUsd = estimateCarryCostUsd({
+    asset: position.asset,
+    notionalUsd: position.notionalUsd,
+    openedAt: new Date(position.entryTime * 1000).toISOString(),
+    closedAt: new Date(candle.time * 1000).toISOString(),
+  });
+  const pnlUsd = grossPnlUsd - position.entryFeeUsd - exit.feeUsd - carryCostUsd;
   return {
     asset: position.asset,
     direction: position.direction,
     entryTime: position.entryTime,
     exitTime: candle.time,
     entryPrice: position.entryPrice,
-    exitPrice,
+    exitPrice: exit.fillPrice,
+    requestedEntryPrice: position.requestedEntryPrice,
+    requestedExitPrice,
     amount: position.amount,
     marginUsd: position.marginUsd,
     notionalUsd: position.notionalUsd,
     leverage: position.leverage,
     grossPnlUsd,
     entryFeeUsd: position.entryFeeUsd,
-    exitFeeUsd,
+    exitFeeUsd: exit.feeUsd,
+    carryCostUsd,
+    entryExecutionCostUsd: position.entryExecutionCostUsd,
+    exitExecutionCostUsd: exit.totalExecutionCostUsd,
+    totalExecutionCostUsd: position.entryExecutionCostUsd + exit.totalExecutionCostUsd + carryCostUsd,
     pnlUsd,
     pnlPercent: position.marginUsd > 0 ? (pnlUsd / position.marginUsd) * 100 : 0,
     holdCandles: index - position.entryIndex,
@@ -449,7 +493,7 @@ function closePosition(position: ActiveReplayPosition, candle: Candle, index: nu
     marketStructureScore: position.marketStructureScore,
     setupTags: position.setupTags,
     exitReason: reason,
-    executionPriceSource: "candle.close",
+    executionPriceSource: "modeled.paper.fill",
   };
 }
 
@@ -470,7 +514,7 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
   const hasExecutableTrades = report.totalTrades > 0;
   const errorsZero = report.errors.length === 0;
   const noStaleDataTrades = report.staleDataTrades === 0;
-  const allEntriesHaveExecutionPrice = report.trades.every((trade) => trade.entryPrice > 0 && trade.executionPriceSource === "candle.close");
+  const allEntriesHaveExecutionPrice = report.trades.every((trade) => trade.entryPrice > 0 && trade.executionPriceSource === "modeled.paper.fill");
   const scoreDistributionVisible = Object.keys(report.scoreDistribution).length === SCORE_BUCKETS.length;
   const setupCategoryStatsRecorded = report.setupStats.length > 0;
 
@@ -586,7 +630,9 @@ export function runReplay(input: ReplayInput): ReplayReport {
         const timedOut = i - active.entryIndex >= maxHoldCandles;
 
         if (stopHit) {
-          exitPrice = active.stopLoss;
+          exitPrice = active.direction === "LONG"
+            ? Math.min(active.stopLoss, candle.open)
+            : Math.max(active.stopLoss, candle.open);
           exitReason = "STOP_LOSS";
         } else if (takeHit) {
           exitPrice = active.takeProfit;
@@ -625,13 +671,13 @@ export function runReplay(input: ReplayInput): ReplayReport {
       }
 
       if (!active && (signal.entryReady || signal.highAccuracyException) && signal.direction !== "NEUTRAL") {
-        const entryPrice = candle.close;
-        const { stopLoss, takeProfit } = stopTake(asset, signal.direction, entryPrice, candles, i);
+        const requestedEntryPrice = candle.close;
+        const { stopLoss, takeProfit } = stopTake(asset, signal.direction, requestedEntryPrice, candles, i);
         const admission = TradeAdmissionController.evaluate({
           portfolio,
           asset,
           direction: signal.direction,
-          entryPrice,
+          entryPrice: requestedEntryPrice,
           stopLoss,
           takeProfit,
           signalScore: signal.htfScore,
@@ -642,21 +688,48 @@ export function runReplay(input: ReplayInput): ReplayReport {
         });
 
         if (admission.approved) {
-          portfolio.usd -= admission.requiredMarginUsd + admission.entryFeeUsd;
-          portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + admission.entryFeeUsd;
+          const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+            asset,
+            direction: signal.direction,
+            entryPrice: requestedEntryPrice,
+            stopLoss,
+            takeProfit,
+            amount: admission.amount,
+            riskBudgetUsd: admission.riskAmountUsd,
+            context: {
+              assetMode: ["BTC", "ETH", "SOL"].includes(asset) ? "REALTIME_FAST" : "SLOW_SWING",
+              dataQuality: 100,
+              isPeakLiquidity: false,
+            },
+          });
+          const executionPlan = fittedExecution.plan;
+          const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
+          if (
+            executionPlan.netRewardUsd <= 0 ||
+            executionPlan.netRewardRiskRatio < 1.35 ||
+            executionPlan.netLossUsd > admission.riskAmountUsd * 1.01 ||
+            finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd
+          ) {
+            continue;
+          }
+          portfolio.usd -= finalRequiredMarginUsd + executionPlan.entry.feeUsd;
+          portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + executionPlan.entry.feeUsd;
+          portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + executionPlan.entry.totalExecutionCostUsd;
           active = {
             asset,
             direction: signal.direction,
             entryIndex: i,
             entryTime: candle.time,
-            entryPrice,
-            amount: admission.amount,
-            marginUsd: admission.requiredMarginUsd,
-            notionalUsd: admission.notionalUsd,
+            entryPrice: executionPlan.entry.fillPrice,
+            requestedEntryPrice,
+            amount: executionPlan.entry.amount,
+            marginUsd: finalRequiredMarginUsd,
+            notionalUsd: executionPlan.entry.notionalUsd,
             leverage: admission.leverage,
             stopLoss,
             takeProfit,
-            entryFeeUsd: admission.entryFeeUsd,
+            entryFeeUsd: executionPlan.entry.feeUsd,
+            entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,
             finalConviction: signal.finalConviction,
             htfScore: signal.htfScore,
             triggerScore: signal.triggerScore,

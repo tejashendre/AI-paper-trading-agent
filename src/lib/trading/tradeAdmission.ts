@@ -43,7 +43,7 @@ export interface TradeAdmissionResult {
   maxTotalMarginUsd: number;
 }
 
-const BASE_RISK_PERCENT = 0.015;
+const BASE_RISK_PERCENT = 0.01;
 // The admission controller, asset specifications, and dashboard all use this
 // same portfolio cap. It leaves room for exits and prevents correlated trades
 // from turning a short bad regime into a portfolio-level event.
@@ -109,11 +109,11 @@ function feedRiskMultiplier(assetMode?: TradeAdmissionInput["assetMode"]): numbe
 
 function riskMultiplierFromConviction(finalConviction?: number): number {
   const conviction = finalConviction ?? 0;
-  if (conviction >= 90) return 2.25;
-  if (conviction >= 80) return 1.8;
-  if (conviction >= 70) return 1.4;
+  if (conviction >= 90) return 1.5;
+  if (conviction >= 80) return 1.25;
+  if (conviction >= 70) return 1.1;
   if (conviction >= 60) return 1.0;
-  return 0.5;
+  return 0.75;
 }
 
 function learningRiskMultiplier(learningAdjustment?: number): number {
@@ -159,7 +159,7 @@ function setupRiskProfile(input: TradeAdmissionInput): { multiplier: number; rea
       "ASK_PRESSURE_SUPPORTS_SHORT"
     );
 
-  if (provenRejection && conviction >= 78 && learningAdjustment >= 0) {
+  if (provenRejection && conviction >= 78 && learningAdjustment > 0) {
     const boost = learningAdjustment > 0 || conviction >= 88 ? 1.25 : 1.15;
     multiplier *= boost;
     reasons.push("rejection/downtrend setup has enough conviction to receive controlled extra size");
