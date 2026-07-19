@@ -85,12 +85,42 @@ function ruleFromPerformanceBucket(
   if (bucket.tradeCount < 3 && bucket.opportunityCount < 6) return null;
   if (bucket.confidenceAdjustment === 0) return null;
 
-  const action: LocalLearningRule["action"] = bucket.confidenceAdjustment > 0 ? "BOOST" : "REDUCE";
+  const action: LocalLearningRule["action"] = bucket.quarantined
+    ? "WATCH_ONLY"
+    : bucket.confidenceAdjustment > 0
+      ? "BOOST"
+      : "REDUCE";
   if (action === "BOOST" && !bucket.promotionEligible) return null;
-  const sampleSize = bucket.tradeCount > 0 ? bucket.tradeCount : bucket.opportunityCount;
-  const favorableRate = bucket.tradeCount > 0 ? bucket.winRate : bucket.opportunityFavorableRate;
-  const avgMove = bucket.tradeCount > 0 ? bucket.avgPnl : bucket.avgOpportunityMove;
-  const evidenceLabel = bucket.evidence.includes("trade") ? "closed trades" : "watched opportunities";
+  const usesHoldout = bucket.quarantined && bucket.outOfSampleTradeCount > 0;
+  const usesRecoveryEvidence = bucket.requalificationEligible && bucket.opportunityCount > 0;
+  const sampleSize = usesRecoveryEvidence
+    ? bucket.opportunityCount
+    : usesHoldout
+    ? bucket.outOfSampleTradeCount
+    : bucket.tradeCount > 0
+      ? bucket.tradeCount
+      : bucket.opportunityCount;
+  const favorableRate = usesRecoveryEvidence
+    ? bucket.opportunityFavorableRate
+    : usesHoldout
+    ? bucket.outOfSampleWinRate
+    : bucket.tradeCount > 0
+      ? bucket.winRate
+      : bucket.opportunityFavorableRate;
+  const avgMove = usesRecoveryEvidence
+    ? bucket.avgOpportunityNetPnlUsd
+    : usesHoldout
+    ? bucket.outOfSampleAvgPnl
+    : bucket.tradeCount > 0
+      ? bucket.avgPnl
+      : bucket.avgOpportunityMove;
+  const evidenceLabel = usesRecoveryEvidence
+    ? "independent watched opportunities after quarantine"
+    : usesHoldout
+    ? "later chronological closed trades"
+    : bucket.evidence.includes("trade")
+      ? "closed trades"
+      : "watched opportunities";
 
   return {
     id: `${scope}:${bucket.key}`,
@@ -98,7 +128,11 @@ function ruleFromPerformanceBucket(
     key: bucket.key,
     action,
     confidenceAdjustment: Math.max(-12, Math.min(8, bucket.confidenceAdjustment)),
-    message: `${bucket.label} is ${action === "BOOST" ? "performing well in its later closed-trade sample" : "underperforming"} based on ${evidenceLabel}; the bot should ${action === "BOOST" ? "trust it slightly more" : "be more selective here"}.`,
+    message: bucket.quarantined
+      ? `${bucket.label} failed its later chronological sample with negative expectancy and profit factor below 0.85; new entries are quarantined for this pattern.`
+      : bucket.requalificationEligible
+        ? `${bucket.label} failed closed-trade validation but has at least 20 positive independent watched outcomes; only a reduced recovery probe may retest it.`
+      : `${bucket.label} is ${action === "BOOST" ? "performing well in its later closed-trade sample" : "underperforming"} based on ${evidenceLabel}; the bot should ${action === "BOOST" ? "trust it slightly more" : "be more selective here"}.`,
     sampleSize,
     favorableRate,
     avgMove,
@@ -159,14 +193,17 @@ export function calculateLearningAdjustment(
     matched.filter((rule) => rule.scope === "global").map((rule) => rule.confidenceAdjustment)
   )));
 
-  const watchOnly = matched.some((rule) =>
-    rule.scope === "asset" &&
-    rule.action === "REDUCE" &&
-    rule.confidenceAdjustment <= -8 &&
-    rule.favorableRate < 0.25 &&
-    rule.sampleSize >= 6 &&
-    rule.avgMove < -0.05
-  );
+  const watchOnly = matched.some((rule) => (
+    rule.action === "WATCH_ONLY" ||
+    (
+      rule.scope === "asset" &&
+      rule.action === "REDUCE" &&
+      rule.confidenceAdjustment <= -8 &&
+      rule.favorableRate < 0.25 &&
+      rule.sampleSize >= 6 &&
+      rule.avgMove < -0.05
+    )
+  ));
 
   return {
     adjustment: Math.max(-12, Math.min(8, assetAdjustment + setupAdjustment + globalAdjustment)),

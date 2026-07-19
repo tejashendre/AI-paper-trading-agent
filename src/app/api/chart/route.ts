@@ -32,10 +32,14 @@ export async function GET(request: Request) {
   const portfolioType = portfolioValue;
 
   try {
-    const candles = await MarketService.getCandles(interval, limit, asset);
+    const candles = await MarketService.getCandles(interval, limit, asset, { allowStale: true });
+    const seriesStatus = MarketService.getCandleSeriesStatus(asset, interval, candles);
     const indicators = computeAllIndicators(candles);
     
-    const trades = await PortfolioManager.getTrades(portfolioType);
+    const trades = await PortfolioManager.getTrades(portfolioType).catch((error) => {
+      console.warn(`[Chart] Trade overlays unavailable for ${portfolioType}:`, error);
+      return [];
+    });
     const chartTrades = trades
       .filter(t => t.asset === asset)
       .map(t => ({
@@ -44,7 +48,15 @@ export async function GET(request: Request) {
         price: t.price
       }));
 
-    return NextResponse.json({ candles, indicators, trades: chartTrades });
+    return NextResponse.json({
+      asset,
+      interval,
+      candles,
+      indicators,
+      trades: chartTrades,
+      stale: !seriesStatus.fresh,
+      asOf: seriesStatus.asOf,
+    });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

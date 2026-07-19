@@ -1,6 +1,7 @@
 FROM node:20-alpine AS builder
 
 WORKDIR /app
+ARG APP_COMMIT_SHA=unknown
 
 # Install dependencies
 COPY package.json package-lock.json* ./
@@ -19,6 +20,11 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production
+ARG APP_COMMIT_SHA=unknown
+ARG APP_DEPLOYED_AT=unknown
+ENV APP_COMMIT_SHA=$APP_COMMIT_SHA
+ENV APP_DEPLOYED_AT=$APP_DEPLOYED_AT
+LABEL org.opencontainers.image.revision=$APP_COMMIT_SHA
 
 # Copy necessary files
 COPY --from=builder /app/package.json ./

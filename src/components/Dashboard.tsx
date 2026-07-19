@@ -267,6 +267,8 @@ function DashboardContent({ secret }: { secret: string }) {
   const [chartTimezone, setChartTimezone] = useState<"EU" | "UK" | "IST" | "US">("EU");
   const [data, setData] = useState<any>(null);
   const [chartData, setChartData] = useState<any>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState<string | null>(null);
   const [signals, setSignals] = useState<any>(null);
   const [livePrices, setLivePrices] = useState<any>(null);
   const [liveFeed, setLiveFeed] = useState<any>(null);
@@ -367,8 +369,6 @@ function DashboardContent({ secret }: { secret: string }) {
     try {
       const statusPromise = fetcher("/api/user/status")
         .then(async (res) => { if (res.ok) setData(await res.json()); });
-      const chartPromise = fetcher(`/api/chart?interval=${chartInterval}&limit=520&asset=${activeAsset}&portfolio=${viewMode}`)
-        .then(async (res) => { if (res.ok) setChartData(await res.json()); });
       const signalPromise = fetcher(`/api/signals?asset=${activeAsset}`)
         .then(async (res) => { if (res.ok) setSignals(await res.json()); });
       const pricesPromise = fetcher("/api/prices")
@@ -378,12 +378,50 @@ function DashboardContent({ secret }: { secret: string }) {
             setLivePrices(pricesJson.prices);
           }
         });
-      await Promise.allSettled([statusPromise, chartPromise, signalPromise, pricesPromise]);
+      await Promise.allSettled([statusPromise, signalPromise, pricesPromise]);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
+  }, [fetcher, activeAsset]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    setChartLoading(true);
+    setChartError(null);
+    setChartData(null);
+
+    const loadChart = async () => {
+      try {
+        const res = await fetcher(
+          `/api/chart?interval=${chartInterval}&limit=520&asset=${activeAsset}&portfolio=${viewMode}`,
+          { signal: controller.signal }
+        );
+        const payload = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok || !payload || payload.asset !== activeAsset || payload.interval !== chartInterval) {
+          throw new Error(payload?.error || `Chart data for ${activeAsset} is unavailable.`);
+        }
+        setChartData(payload);
+      } catch (error) {
+        if (cancelled || controller.signal.aborted) return;
+        setChartData(null);
+        setChartError(error instanceof Error ? error.message : `Chart data for ${activeAsset} is unavailable.`);
+      } finally {
+        if (!cancelled) setChartLoading(false);
+      }
+    };
+
+    loadChart();
+    const interval = setInterval(loadChart, 30_000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearInterval(interval);
+    };
   }, [fetcher, activeAsset, viewMode, chartInterval]);
 
   // Next Scan Countdown Timer Effect
@@ -424,7 +462,7 @@ function DashboardContent({ secret }: { secret: string }) {
     refresh();
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
-  }, [refresh, activeAsset, viewMode, chartInterval]);
+  }, [refresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -876,13 +914,15 @@ function DashboardContent({ secret }: { secret: string }) {
               <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 border-b ${borderCol} pb-3 gap-3`}>
                 <div className="flex items-center gap-4">
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>{selectedAssetConfig.name} ({selectedAssetConfig.symbol}) / {chartInterval.toUpperCase()} / {viewMode.toUpperCase()} MODE</h2>
-                  {chartData && chartData.candles && chartData.candles.length > 0 && (
+                  {chartData?.asset === activeAsset && chartData.candles?.length > 0 && (
                     (() => {
                       const decimals = selectedAssetConfig.category === 'Forex' ? 5 : 2;
                       const lastCandle = chartData.candles[chartData.candles.length - 1];
                       return (
                         <div className={`flex items-center gap-3 text-[10px] font-mono font-bold border-l pl-4 ${borderCol}`}>
-                          <span className={`${isDark ? "text-blue-400" : "text-blue-600"}`}>LIVE: {lastCandle.close.toFixed(decimals)}</span>
+                          <span className={`${chartData.stale ? "text-amber-500" : (isDark ? "text-blue-400" : "text-blue-600")}`}>
+                            {chartData.stale ? "LAST" : "LIVE"}: {lastCandle.close.toFixed(decimals)}
+                          </span>
                           <span className={`${isDark ? "text-green-400" : "text-green-600"}`}>H: {lastCandle.high.toFixed(decimals)}</span>
                           <span className={`${isDark ? "text-red-400" : "text-red-600"}`}>L: {lastCandle.low.toFixed(decimals)}</span>
                         </div>
@@ -923,8 +963,24 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 </div>
               </div>
-              {chartData && (
+              {chartData?.stale && chartData?.asOf && (
+                <div className={`mb-3 text-[9px] font-mono ${isDark ? "text-amber-400" : "text-amber-700"}`}>
+                  Market closed or delayed. Last candle: {new Date(chartData.asOf).toLocaleString()}.
+                </div>
+              )}
+              {chartLoading && (
+                <div className={`h-[520px] flex items-center justify-center text-xs font-mono ${textMuted}`}>
+                  Loading {selectedAssetConfig.name} chart...
+                </div>
+              )}
+              {!chartLoading && chartError && (
+                <div className={`h-[520px] flex items-center justify-center text-xs font-mono ${isDark ? "text-red-400" : "text-red-700"}`}>
+                  {selectedAssetConfig.name} chart unavailable: {chartError}
+                </div>
+              )}
+              {!chartLoading && !chartError && chartData?.asset === activeAsset && (
                 <TradingChart 
+                  key={`${activeAsset}-${chartInterval}-${viewMode}`}
                   candles={chartData.candles} 
                   trades={chartData.trades} 
                   indicators={chartData.indicators} 
@@ -1994,11 +2050,13 @@ function DashboardContent({ secret }: { secret: string }) {
                   </span>
                 </div>
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard} col-span-2`}>
-                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Commissions & Exchange Fees Paid</span>
+                  <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Modeled Execution Costs</span>
                   <span className="text-md font-bold font-mono text-rose-400 mt-1">
-                    ${(portfolio?.totalFeesPaid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ${(portfolio?.totalExecutionCostsPaid ?? portfolio?.totalFeesPaid ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
-                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Exchange drag on net capital</span>
+                  <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
+                    Fees ${(portfolio?.totalFeesPaid || 0).toFixed(2)} / Carry ${(portfolio?.totalCarryPaid || 0).toFixed(2)}
+                  </span>
                 </div>
               </div>
 

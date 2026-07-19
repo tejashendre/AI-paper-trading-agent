@@ -3,7 +3,8 @@ import path from "path";
 import { getRedis } from "@/lib/redis";
 import { MarketService } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
-import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd } from "@/lib/trading/assetSpecs";
+import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
+import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 
 // V2 starts a clean derived-learning window after fixing duplicate sampling
 // and contract-aware net outcome calculations. V1 data remains preserved in
@@ -235,7 +236,7 @@ function evaluateCandles(record: OpportunityRecord, candles: Candle[], currentPr
 }
 
 function simulatedNetOutcome(
-  record: Pick<OpportunityRecord, "asset" | "direction" | "entryPrice" | "stopLoss" | "takeProfit">,
+  record: Pick<OpportunityRecord, "asset" | "direction" | "entryPrice" | "stopLoss" | "takeProfit"> & { dataQuality?: number },
   path: Pick<OpportunityEvaluation, "firstHit" | "currentPrice"> | { firstHit: OpportunityEvaluation["firstHit"]; currentPrice?: number },
   fallbackCurrentPrice: number
 ) {
@@ -265,11 +266,29 @@ function simulatedNetOutcome(
 
   try {
     const amount = amountFromNotionalUsd(record.asset, notionalUsd, entryPrice);
-    const grossPnlUsd = calculatePnlUsd(record.asset, entryPrice, hypotheticalExitPrice, amount, record.direction);
-    const entryFeeUsd = estimateFeeUsd(record.asset, amount, entryPrice);
-    const exitFeeUsd = estimateFeeUsd(record.asset, amount, hypotheticalExitPrice);
-    const feeDragUsd = entryFeeUsd + exitFeeUsd;
-    const netPnlUsd = grossPnlUsd - feeDragUsd;
+    const assetMode = ["BTC", "ETH", "SOL"].includes(record.asset) ? "REALTIME_FAST" : "SLOW_SWING";
+    const entry = estimatePaperFill({
+      asset: record.asset,
+      action: record.direction === "SHORT" ? "SHORT" : "BUY",
+      requestedPrice: entryPrice,
+      amount,
+      context: { reason: "ENTRY", assetMode, dataQuality: record.dataQuality, isPeakLiquidity: false },
+    });
+    const exit = estimatePaperFill({
+      asset: record.asset,
+      action: record.direction === "SHORT" ? "COVER" : "SELL",
+      requestedPrice: hypotheticalExitPrice,
+      amount,
+      context: {
+        reason: path.firstHit === "STOP_LOSS" ? "STOP_LOSS" : path.firstHit === "TAKE_PROFIT" ? "TAKE_PROFIT" : "MARK",
+        assetMode,
+        dataQuality: record.dataQuality,
+        isPeakLiquidity: false,
+      },
+    });
+    const grossPnlUsd = calculatePnlUsd(record.asset, entry.fillPrice, exit.fillPrice, amount, record.direction);
+    const feeDragUsd = entry.totalExecutionCostUsd + exit.totalExecutionCostUsd;
+    const netPnlUsd = grossPnlUsd - entry.feeUsd - exit.feeUsd;
     return {
       hypotheticalExitPrice,
       grossPnlUsd,

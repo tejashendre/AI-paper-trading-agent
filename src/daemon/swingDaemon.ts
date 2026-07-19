@@ -14,6 +14,11 @@ import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
+import { fitPaperExecutionPlanToRiskBudget } from "../lib/trading/executionCostModel";
+import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
+import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
+import { getAssetSpec } from "../lib/trading/assetSpecs";
+import { consumeSwingScanRequest } from "../lib/trading/scanControl";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -74,6 +79,10 @@ interface SwingScanResult {
   entryGate?: unknown;
   portfolioGuard?: unknown;
   targetReachability?: unknown;
+  netRewardRisk?: unknown;
+  marketRegime?: string;
+  execution?: unknown;
+  portfolioBudget?: unknown;
   timestamp: string;
 }
 
@@ -120,6 +129,8 @@ function ensurePortfolioShape(portfolio: any) {
   portfolio.balances = portfolio.balances || {};
   portfolio.returns = portfolio.returns || [];
   portfolio.totalFeesPaid = portfolio.totalFeesPaid || 0;
+  portfolio.totalExecutionCostsPaid = portfolio.totalExecutionCostsPaid || portfolio.totalFeesPaid || 0;
+  portfolio.totalCarryPaid = portfolio.totalCarryPaid || 0;
 }
 
 function summarizeResults(results: SwingScanResult[]) {
@@ -201,6 +212,53 @@ function summarizeEntryBlockers(results: SwingScanResult[]) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
     .map(([reason, count]) => ({ reason, count }));
+}
+
+function compactLedgerResult(result: SwingScanResult) {
+  const execution = result.execution as any;
+  const portfolioBudget = result.portfolioBudget as any;
+  return {
+    asset: result.asset,
+    action: result.action,
+    reason: result.reason,
+    decisionState: result.decisionState,
+    htfScore: result.htfScore,
+    triggerScore: result.triggerScore,
+    marketStructureScore: result.marketStructureScore,
+    microstructureScore: result.microstructureScore,
+    dataQuality: result.dataQuality,
+    finalConviction: result.finalConviction,
+    price: result.price,
+    signalPrice: result.signalPrice,
+    stopLoss: result.stopLoss,
+    takeProfit: result.takeProfit,
+    paperSize: result.paperSize,
+    entryMode: result.entryMode,
+    assetMode: result.assetMode,
+    setupTags: result.setupTags,
+    marketRegime: result.marketRegime,
+    learningAdjustment: result.learningAdjustment,
+    entryGate: result.entryGate,
+    targetReachability: result.targetReachability,
+    netRewardRisk: result.netRewardRisk,
+    execution: execution ? {
+      modelVersion: execution.modelVersion,
+      entryFillPrice: execution.entry?.fillPrice,
+      targetFillPrice: execution.targetExit?.fillPrice,
+      stopFillPrice: execution.stopExit?.fillPrice,
+      netRewardUsd: execution.netRewardUsd,
+      netLossUsd: execution.netLossUsd,
+      netRewardRiskRatio: execution.netRewardRiskRatio,
+      estimatedRoundTripExecutionCostUsd: execution.estimatedRoundTripExecutionCostUsd,
+    } : undefined,
+    portfolioBudget: portfolioBudget ? {
+      approved: portfolioBudget.approved,
+      reason: portfolioBudget.reason,
+      policyVersion: portfolioBudget.policyVersion,
+      diagnostics: portfolioBudget.diagnostics,
+    } : undefined,
+    timestamp: result.timestamp,
+  };
 }
 
 function emptyLifetimeStats(nowIso: string): LifetimeScanStats {
@@ -367,6 +425,7 @@ async function runEntryScan() {
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
+    const recentTrades = await PortfolioManager.getTrades("ai");
     const learningRules = await LocalLearningMemory.getRules().catch(() => []);
     const feedHealth = await FeedHealthSummary.build().catch(() => null);
     const feedByAsset = new Map((feedHealth?.assets || []).map((row) => [row.asset, row]));
@@ -544,6 +603,8 @@ async function runEntryScan() {
             learningRules: swingSignal.learningRules,
             entryGate: swingSignal.entryGate,
             targetReachability: swingSignal.targetReachability,
+            netRewardRisk: swingSignal.netRewardRisk,
+            marketRegime: swingSignal.marketRegime,
             timestamp,
           });
           continue;
@@ -596,6 +657,8 @@ async function runEntryScan() {
             entryGate: swingSignal.entryGate,
             portfolioGuard,
             targetReachability: swingSignal.targetReachability,
+            netRewardRisk: swingSignal.netRewardRisk,
+            marketRegime: swingSignal.marketRegime,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
@@ -679,25 +742,177 @@ async function runEntryScan() {
             learningRules: swingSignal.learningRules,
             entryGate: swingSignal.entryGate,
             targetReachability: swingSignal.targetReachability,
+            netRewardRisk: swingSignal.netRewardRisk,
+            marketRegime: swingSignal.marketRegime,
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied: ${admission.reason}`);
           continue;
         }
 
-        portfolio.usd -= admission.requiredMarginUsd + admission.entryFeeUsd;
-        portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + admission.entryFeeUsd;
+        const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+          asset,
+          direction: isShort ? "SHORT" : "LONG",
+          entryPrice: swingSignal.entryPrice,
+          stopLoss: swingSignal.stopLoss,
+          takeProfit: swingSignal.takeProfit,
+          amount: admission.amount,
+          riskBudgetUsd: admission.riskAmountUsd,
+          context: {
+            assetMode: swingSignal.assetMode,
+            dataQuality: swingSignal.dataQuality,
+            isPeakLiquidity: session.isPeakLiquidity,
+            liquidityState: swingSignal.liquidityState,
+            orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
+          },
+        });
+        const executionPlan = fittedExecution.plan;
+        const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
+        const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
+        const executionFailure = executionPlan.netRewardUsd <= 0
+          ? "Modeled execution costs eliminate the target reward."
+          : executionPlan.netRewardRiskRatio < minimumExecutionRewardRisk
+            ? `Final modeled reward/risk ${executionPlan.netRewardRiskRatio.toFixed(2)} is below ${minimumExecutionRewardRisk.toFixed(2)}.`
+            : executionPlan.netLossUsd > admission.riskAmountUsd * 1.01
+              ? `Modeled stop loss $${executionPlan.netLossUsd.toFixed(2)} exceeds the approved $${admission.riskAmountUsd.toFixed(2)} risk budget.`
+              : finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd
+                ? `After-cost risk sizing reduced margin below the $${getAssetSpec(asset).minMarginUsd.toFixed(2)} minimum useful size.`
+              : finalRequiredMarginUsd + executionPlan.entry.feeUsd > portfolio.usd
+                ? "Insufficient free cash after the modeled entry fee."
+                : null;
+
+        if (executionFailure) {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason: executionFailure,
+            simpleStatus: "Execution economics blocked this trade",
+            simpleReason: executionFailure,
+            nextStep: "The bot will wait for a wider after-cost edge or smaller stop risk.",
+            decisionState: "BLOCKED_RISK",
+            score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            price: executionPlan.entry.fillPrice,
+            signalPrice: swingSignal.signalPrice,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
+            paperSize: effectivePaperSize,
+            entryMode: effectiveEntryMode,
+            assetMode: swingSignal.assetMode,
+            setupTags: swingSignal.setupTags,
+            directionBias: swingSignal.directionBias,
+            learningAdjustment: swingSignal.learningAdjustment,
+            entryGate: swingSignal.entryGate,
+            targetReachability: swingSignal.targetReachability,
+            netRewardRisk: swingSignal.netRewardRisk,
+            marketRegime: swingSignal.marketRegime,
+            execution: executionPlan,
+            timestamp,
+          });
+          await ExecutionLedger.recordBestEffort({
+            type: "ENTRY_BLOCKED",
+            source: "SWING_DAEMON",
+            asset,
+            payload: { reason: executionFailure, signal: swingSignal, admission, executionPlan },
+          });
+          continue;
+        }
+
+        const portfolioBudget = evaluatePortfolioRiskBudget({
+          portfolio,
+          trades: recentTrades,
+          asset,
+          direction: isShort ? "SHORT" : "LONG",
+          candidateNotionalUsd: executionPlan.entry.notionalUsd,
+          candidateMaxLossUsd: executionPlan.netLossUsd,
+          candidateEntryCostUsd: executionPlan.entry.totalExecutionCostUsd,
+        });
+
+        if (!portfolioBudget.approved) {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason: portfolioBudget.reason,
+            simpleStatus: "Portfolio circuit breaker blocked this trade",
+            simpleReason: portfolioBudget.reason,
+            nextStep: "The bot will wait for rolling turnover, loss, cost, and exposure budgets to recover.",
+            decisionState: "BLOCKED_RISK",
+            score: swingSignal.score,
+            htfScore: swingSignal.htfScore,
+            triggerScore: swingSignal.triggerScore,
+            marketStructureScore: swingSignal.marketStructureScore,
+            microstructureScore: swingSignal.microstructureScore,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            price: executionPlan.entry.fillPrice,
+            signalPrice: swingSignal.signalPrice,
+            stopLoss: swingSignal.stopLoss,
+            takeProfit: swingSignal.takeProfit,
+            paperSize: effectivePaperSize,
+            entryMode: effectiveEntryMode,
+            assetMode: swingSignal.assetMode,
+            setupTags: swingSignal.setupTags,
+            directionBias: swingSignal.directionBias,
+            learningAdjustment: swingSignal.learningAdjustment,
+            entryGate: swingSignal.entryGate,
+            targetReachability: swingSignal.targetReachability,
+            netRewardRisk: swingSignal.netRewardRisk,
+            marketRegime: swingSignal.marketRegime,
+            execution: executionPlan,
+            portfolioBudget,
+            timestamp,
+          });
+          await ExecutionLedger.recordBestEffort({
+            type: "RISK_CIRCUIT_BREAKER",
+            source: "SWING_DAEMON",
+            asset,
+            payload: { signal: swingSignal, admission, executionPlan, portfolioBudget },
+          });
+          continue;
+        }
+
+        const entryTradeId = crypto.randomUUID();
+        await ExecutionLedger.record({
+          type: "ENTRY_APPROVED",
+          source: "SWING_DAEMON",
+          asset,
+          decisionId: entryTradeId,
+          tradeId: entryTradeId,
+          payload: {
+            marketData: {
+              signalPrice: swingSignal.signalPrice,
+              livePrice: swingSignal.livePrice,
+              dataQuality: swingSignal.dataQuality,
+              assetMode: swingSignal.assetMode,
+              liquidityState: swingSignal.liquidityState,
+              marketRegime: swingSignal.marketRegime,
+            },
+            signal: swingSignal,
+            admission,
+            portfolioBudget,
+            executionPlan,
+          },
+        });
+
+        portfolio.usd -= finalRequiredMarginUsd + executionPlan.entry.feeUsd;
+        portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + executionPlan.entry.feeUsd;
+        portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + executionPlan.entry.totalExecutionCostUsd;
 
         if (!isShort) {
-          portfolio.balances[asset] = (portfolio.balances[asset] || 0) + admission.amount;
+          portfolio.balances[asset] = (portfolio.balances[asset] || 0) + executionPlan.entry.amount;
         }
 
         const newPos: OpenPosition = {
           asset,
-          entryPrice: swingSignal.entryPrice,
-          amount: admission.amount,
-          btcAmount: admission.amount,
-          usdInvested: admission.requiredMarginUsd,
+          entryPrice: executionPlan.entry.fillPrice,
+          amount: executionPlan.entry.amount,
+          btcAmount: executionPlan.entry.amount,
+          usdInvested: finalRequiredMarginUsd,
           stopLoss: swingSignal.stopLoss,
           initialStopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
@@ -720,13 +935,14 @@ async function runEntryScan() {
           reasoning: `${swingSignal.simpleStatus}. ${swingSignal.simpleReason} | ${swingSignal.reasoning} | ${recoveryProbeReason ? `${recoveryProbeReason} | ` : ""}${admission.reason}`,
           direction: isShort ? "SHORT" : "LONG",
           isScalp: false,
-          entryFeePaid: admission.entryFeeUsd,
-          notionalUsd: admission.notionalUsd,
+          entryFeePaid: executionPlan.entry.feeUsd,
+          notionalUsd: executionPlan.entry.notionalUsd,
           leverageUsed: admission.leverage,
           riskAmountUsd: admission.riskAmountUsd,
-          maxLossUsd: admission.maxLossUsd,
+          maxLossUsd: executionPlan.netLossUsd,
           admissionScore: admission.admissionScore,
           learningRiskMultiplier: admission.learningRiskMultiplier,
+          learningAdjustment: swingSignal.learningAdjustment,
           setupRiskMultiplier: admission.setupRiskMultiplier,
           setupRiskReason: admission.setupRiskReason,
           strategyType: "swing",
@@ -736,20 +952,37 @@ async function runEntryScan() {
           targetReachabilityScore: swingSignal.targetReachability?.score,
           rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
           targetAdjustedReason: swingSignal.targetReachability?.reason,
+          netRewardRiskRatio: executionPlan.netRewardRiskRatio,
+          strategyVersion: TRADING_STRATEGY_VERSION,
+          marketRegime: swingSignal.marketRegime,
+          executionCostModelVersion: executionPlan.modelVersion,
+          executionVenueModel: executionPlan.entry.venueModel,
+          entryRequestedPrice: swingSignal.entryPrice,
+          entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,
+          entryPriceImpactCostUsd: executionPlan.entry.priceImpactCostUsd,
+          assumedRoundTripExecutionCostUsd: executionPlan.estimatedRoundTripExecutionCostUsd,
+          expectedNetRewardUsd: executionPlan.netRewardUsd,
+          expectedNetLossUsd: executionPlan.netLossUsd,
+          carryCostPaid: 0,
         };
 
         portfolio.openPositions[asset] = newPos;
 
         const entryTrade: Trade = {
-          id: crypto.randomUUID(),
+          id: entryTradeId,
           timestamp: new Date().toISOString(),
           asset,
           action: isShort ? "SHORT" : "BUY",
           direction: isShort ? "SHORT" : "LONG",
-          amount: admission.amount,
-          btcAmount: admission.amount,
-          price: swingSignal.entryPrice,
-          usdValue: admission.requiredMarginUsd,
+          amount: executionPlan.entry.amount,
+          btcAmount: executionPlan.entry.amount,
+          price: executionPlan.entry.fillPrice,
+          requestedPrice: swingSignal.entryPrice,
+          usdValue: finalRequiredMarginUsd,
+          notionalUsd: executionPlan.entry.notionalUsd,
+          leverageUsed: admission.leverage,
+          riskAmountUsd: admission.riskAmountUsd,
+          maxLossUsd: executionPlan.netLossUsd,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
           signalScore: swingSignal.score,
@@ -773,11 +1006,32 @@ async function runEntryScan() {
           rawTakeProfit: swingSignal.targetReachability?.rawTakeProfit,
           targetAdjustedReason: swingSignal.targetReachability?.reason,
           learningRiskMultiplier: admission.learningRiskMultiplier,
+          learningAdjustment: swingSignal.learningAdjustment,
+          netRewardRiskRatio: executionPlan.netRewardRiskRatio,
+          strategyVersion: TRADING_STRATEGY_VERSION,
+          marketRegime: swingSignal.marketRegime,
+          executionCostModelVersion: executionPlan.modelVersion,
+          executionVenueModel: executionPlan.entry.venueModel,
+          entryFeeUsd: executionPlan.entry.feeUsd,
+          executionCostUsd: executionPlan.entry.totalExecutionCostUsd,
+          entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,
+          spreadCostUsd: executionPlan.entry.spreadCostUsd,
+          slippageCostUsd: executionPlan.entry.slippageCostUsd,
+          gapCostUsd: executionPlan.entry.gapCostUsd,
           reasoning: newPos.reasoning,
         };
 
         await updateAIPortfolio(portfolio);
         await logAITrade(entryTrade);
+        recentTrades.unshift(entryTrade);
+        await ExecutionLedger.recordBestEffort({
+          type: "ENTRY_FILLED",
+          source: "SWING_DAEMON",
+          asset,
+          decisionId: entryTradeId,
+          tradeId: entryTradeId,
+          payload: { trade: entryTrade, position: newPos, portfolioBudget, executionPlan },
+        });
 
         results.push({
           asset,
@@ -799,12 +1053,12 @@ async function runEntryScan() {
           liquidityState: swingSignal.liquidityState,
           dataQuality: swingSignal.dataQuality,
           finalConviction: swingSignal.finalConviction,
-          price: swingSignal.entryPrice,
+          price: executionPlan.entry.fillPrice,
           signalPrice: swingSignal.signalPrice,
           slippagePercent: swingSignal.slippagePercent,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
-          margin: admission.requiredMarginUsd,
+          margin: finalRequiredMarginUsd,
           leverage: admission.leverage,
           paperSize: effectivePaperSize,
           entryMode: effectiveEntryMode,
@@ -816,11 +1070,15 @@ async function runEntryScan() {
           learningRules: swingSignal.learningRules,
           entryGate: swingSignal.entryGate,
           targetReachability: swingSignal.targetReachability,
+          netRewardRisk: swingSignal.netRewardRisk,
+          marketRegime: swingSignal.marketRegime,
+          execution: executionPlan,
+          portfolioBudget,
           timestamp,
         });
 
         await Logger.info(
-          `[SWING ENTRY] ${asset} ${isShort ? "SHORT" : "LONG"} @ $${swingSignal.entryPrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Max Loss: $${admission.maxLossUsd.toFixed(2)} | Margin: $${admission.requiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x`
+          `[SWING ENTRY] ${asset} ${isShort ? "SHORT" : "LONG"} @ $${executionPlan.entry.fillPrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Modeled Max Loss: $${executionPlan.netLossUsd.toFixed(2)} | Net R/R: ${executionPlan.netRewardRiskRatio.toFixed(2)} | Margin: $${finalRequiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x`
         );
       } catch (error) {
         results.push({
@@ -840,6 +1098,22 @@ async function runEntryScan() {
     }
 
     await saveScanSnapshot(results, exitSweep, startedAt, opportunitySweep);
+    await ExecutionLedger.recordBestEffort({
+      type: "SCAN_COMPLETED",
+      source: "SWING_DAEMON",
+      timestamp: new Date().toISOString(),
+      payload: {
+        scanId: scanSequence,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        summary: summarizeResults(results),
+        decisionSummary: summarizeDecisionStates(results),
+        blockerSummary: summarizeEntryBlockers(results),
+        exitSweep,
+        opportunitySweep,
+        results: results.map(compactLedgerResult),
+      },
+    });
 
     if (Date.now() - lastSummaryLogTime > 60_000) {
       lastSummaryLogTime = Date.now();
@@ -851,6 +1125,11 @@ async function runEntryScan() {
     }
   } catch (error) {
     await Logger.error(`[SWING SCAN] Core loop failed: ${error instanceof Error ? error.message : String(error)}`);
+    await ExecutionLedger.recordBestEffort({
+      type: "SYSTEM_ERROR",
+      source: "SWING_DAEMON",
+      payload: { scope: "ENTRY_SCAN", error },
+    });
     await saveScanSnapshot(results, exitSweep, startedAt);
   } finally {
     isEntryScanning = false;
@@ -868,11 +1147,23 @@ runEntryScanLocked();
 
 const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
 const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
+const controlIntervalId = setInterval(async () => {
+  if (isEntryScanning) return;
+  try {
+    const request = await consumeSwingScanRequest();
+    if (!request) return;
+    await Logger.info(`[SCAN CONTROL] Consuming ${request.requestedBy} request for ${request.targetAsset}.`);
+    await runEntryScanLocked();
+  } catch (error) {
+    await Logger.error(`[SCAN CONTROL] Failed to consume scan request: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}, 5_000);
 
 const shutdown = async (signal: string) => {
   console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
   clearInterval(entryIntervalId);
   clearInterval(exitWatchdogIntervalId);
+  clearInterval(controlIntervalId);
   try {
     wsMesh.stop();
   } catch {}
