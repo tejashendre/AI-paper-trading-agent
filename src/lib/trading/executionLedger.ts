@@ -4,7 +4,7 @@ import path from "path";
 import { getRedis } from "@/lib/redis";
 import { EXECUTION_COST_MODEL_VERSION } from "./executionCostModel";
 
-export const TRADING_STRATEGY_VERSION = "swing-v4.0.0-2026-07-19";
+export const TRADING_STRATEGY_VERSION = "swing-v4.1.0-2026-07-20";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =

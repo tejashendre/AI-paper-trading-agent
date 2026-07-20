@@ -2,9 +2,10 @@ import fs from "fs";
 import path from "path";
 import { getRedis } from "@/lib/redis";
 import { OpenPosition, Trade } from "@/lib/types";
+import { TRADING_STRATEGY_VERSION } from "./executionLedger";
 
-const REVIEW_KEY = "tradeReview:aiSwing";
-const DIGEST_KEY = "tradeReview:aiSwing:digest";
+const REVIEW_KEY = `tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing`;
+const DIGEST_KEY = `tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing:digest`;
 const MAX_REVIEWS = 300;
 
 export type TradeReviewOutcome =
@@ -36,6 +37,7 @@ export interface TradeReviewRecord {
   triggerScore: number | null;
   dataQuality: number | null;
   setupTags: string[];
+  strategyVersion: string;
   thesisStatus: OpenPosition["thesisStatus"] | null;
   thesisReason: string | null;
   outcome: TradeReviewOutcome;
@@ -219,6 +221,7 @@ function buildReview(trade: Trade, position: OpenPosition): TradeReviewRecord | 
     triggerScore: finiteOrNull(trade.triggerScore ?? position.triggerScore),
     dataQuality: finiteOrNull(trade.dataQuality ?? position.dataQuality),
     setupTags: Array.isArray(trade.setupTags) ? trade.setupTags.slice(0, 8) : [],
+    strategyVersion: trade.strategyVersion || position.strategyVersion || TRADING_STRATEGY_VERSION,
     thesisStatus: position.thesisStatus || null,
     thesisReason: position.thesisReason || null,
     ...classification,

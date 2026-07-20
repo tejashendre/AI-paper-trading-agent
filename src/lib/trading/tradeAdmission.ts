@@ -1,4 +1,4 @@
-import { OpenPosition, Portfolio } from "@/lib/types";
+import { OpenPosition, PaperMarginMode, Portfolio } from "@/lib/types";
 import {
   estimateFeeUsd,
   estimateNotionalUsd,
@@ -20,6 +20,7 @@ export interface TradeAdmissionInput {
   finalConviction?: number;
   learningAdjustment?: number;
   setupTags?: string[];
+  dataQuality?: number;
   /** Crypto can use verified public WebSocket data; other free feeds stay swing-only. */
   assetMode?: "REALTIME_FAST" | "CONDITIONAL_FAST" | "SLOW_SWING";
 }
@@ -32,6 +33,8 @@ export interface TradeAdmissionResult {
   requiredMarginUsd: number;
   entryFeeUsd: number;
   leverage: number;
+  marginMode: PaperMarginMode;
+  marginPolicyVersion: string;
   riskAmountUsd: number;
   maxLossUsd: number;
   admissionScore: number;
@@ -43,6 +46,7 @@ export interface TradeAdmissionResult {
   maxTotalMarginUsd: number;
 }
 
+export const PAPER_MARGIN_POLICY_VERSION = "strong-margin-v1-2026-07-20";
 const BASE_RISK_PERCENT = 0.01;
 // The admission controller, asset specifications, and dashboard all use this
 // same portfolio cap. It leaves room for exits and prevents correlated trades
@@ -76,11 +80,17 @@ function drawdownAdjustedRiskPercent(portfolio: Portfolio): number {
   return BASE_RISK_PERCENT;
 }
 
-function leverageFromConviction(signalScore: number, maxLeverage: number, finalConviction?: number): { leverage: number; admissionScore: number } {
+function leverageFromConviction(
+  signalScore: number,
+  maxLeverage: number,
+  finalConviction: number | undefined,
+  marginMode: PaperMarginMode
+): { leverage: number; admissionScore: number } {
   const admissionScore = Math.max(0, Math.min(100, finalConviction ?? signalScore * 4));
 
   let leverage = 1;
-  if (admissionScore >= 88) leverage = 5;
+  if (marginMode === "STRONG" && admissionScore >= 85) leverage = 5;
+  else if (admissionScore >= 88) leverage = 5;
   else if (admissionScore >= 78) leverage = 3;
   else if (admissionScore >= 68) leverage = 2;
   else if (admissionScore >= 60) leverage = 1.5;
@@ -91,10 +101,15 @@ function leverageFromConviction(signalScore: number, maxLeverage: number, finalC
   };
 }
 
-function marginPercentFromConviction(specMaxMarginPercent: number, finalConviction?: number): number {
+function marginPercentFromConviction(
+  specMaxMarginPercent: number,
+  finalConviction: number | undefined,
+  marginMode: PaperMarginMode
+): number {
   const conviction = finalConviction ?? 0;
   let fractionOfAssetCap = 0.3;
-  if (conviction >= 90) fractionOfAssetCap = 1;
+  if (marginMode === "STRONG") fractionOfAssetCap = 1;
+  else if (conviction >= 90) fractionOfAssetCap = 1;
   else if (conviction >= 80) fractionOfAssetCap = 0.85;
   else if (conviction >= 70) fractionOfAssetCap = 0.7;
   else if (conviction >= 60) fractionOfAssetCap = 0.5;
@@ -107,8 +122,9 @@ function feedRiskMultiplier(assetMode?: TradeAdmissionInput["assetMode"]): numbe
   return assetMode === "SLOW_SWING" ? 0.65 : 1;
 }
 
-function riskMultiplierFromConviction(finalConviction?: number): number {
+function riskMultiplierFromConviction(finalConviction: number | undefined, marginMode: PaperMarginMode): number {
   const conviction = finalConviction ?? 0;
+  if (marginMode === "STRONG") return 1.5;
   if (conviction >= 90) return 1.5;
   if (conviction >= 80) return 1.25;
   if (conviction >= 70) return 1.1;
@@ -174,6 +190,28 @@ function setupRiskProfile(input: TradeAdmissionInput): { multiplier: number; rea
   };
 }
 
+function paperMarginMode(
+  input: TradeAdmissionInput,
+  setupProfile: ReturnType<typeof setupRiskProfile>,
+  marketDataMultiplier: number
+): PaperMarginMode {
+  const conviction = Number(input.finalConviction || 0);
+  const dataQuality = Number(input.dataQuality || 0);
+  const strongEligible = (
+    input.strategyType === "swing" &&
+    conviction >= 85 &&
+    input.assetMode === "REALTIME_FAST" &&
+    dataQuality >= 85 &&
+    Number(input.learningAdjustment || 0) >= 0 &&
+    setupProfile.multiplier >= 1 &&
+    marketDataMultiplier === 1
+  );
+
+  if (strongEligible) return "STRONG";
+  if (conviction >= 68) return "STANDARD";
+  return "PROBE";
+}
+
 export class TradeAdmissionController {
   static evaluate(input: TradeAdmissionInput): TradeAdmissionResult {
     const spec = getAssetSpec(input.asset);
@@ -182,8 +220,9 @@ export class TradeAdmissionController {
     const learningMultiplier = learningRiskMultiplier(input.learningAdjustment);
     const setupProfile = setupRiskProfile(input);
     const marketDataMultiplier = feedRiskMultiplier(input.assetMode);
+    const marginMode = paperMarginMode(input, setupProfile, marketDataMultiplier);
     const combinedRiskMultiplier = learningMultiplier * setupProfile.multiplier * marketDataMultiplier;
-    const convictionMarginPercent = marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction);
+    const convictionMarginPercent = marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction, marginMode);
     // A setup boost can recover some size inside its asset limit, but never
     // silently override the published per-asset maximum margin.
     const effectiveMarginPercent = Math.min(spec.maxMarginPercent, convictionMarginPercent * combinedRiskMultiplier);
@@ -199,6 +238,8 @@ export class TradeAdmissionController {
       requiredMarginUsd: 0,
       entryFeeUsd: 0,
       leverage: 1,
+      marginMode,
+      marginPolicyVersion: PAPER_MARGIN_POLICY_VERSION,
       riskAmountUsd: 0,
       maxLossUsd: 0,
       admissionScore: 0,
@@ -250,7 +291,7 @@ export class TradeAdmissionController {
       return emptyResult("Total portfolio margin cap reached.");
     }
 
-    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction) * combinedRiskMultiplier;
+    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction, marginMode) * combinedRiskMultiplier;
     const riskAmountUsd = equity * riskPercent;
     const usdMovePerUnit = getUsdMovePerUnit(input.asset, input.entryPrice, input.stopLoss);
 
@@ -258,7 +299,12 @@ export class TradeAdmissionController {
       return emptyResult("Invalid stop distance for asset contract.");
     }
 
-    const { leverage, admissionScore } = leverageFromConviction(input.signalScore, spec.maxLeverage, input.finalConviction);
+    const { leverage, admissionScore } = leverageFromConviction(
+      input.signalScore,
+      spec.maxLeverage,
+      input.finalConviction,
+      marginMode
+    );
     const rawAmount = riskAmountUsd / usdMovePerUnit;
     const rawNotionalUsd = estimateNotionalUsd(input.asset, rawAmount, input.entryPrice);
     const requestedMarginCap = input.requestedMarginUsd && input.requestedMarginUsd > 0
@@ -320,7 +366,9 @@ export class TradeAdmissionController {
 
     return {
       approved: true,
-      reason: marketDataMultiplier < 1
+      reason: marginMode === "STRONG"
+        ? "Approved in STRONG paper-margin mode: high conviction, verified real-time data, and non-negative learning evidence. Stop-risk and portfolio circuit breakers remain binding."
+        : marketDataMultiplier < 1
         ? `Approved as a slower cached-feed swing at ${Math.round(marketDataMultiplier * 100)}% of normal risk. Fast/heavy sizing is reserved for verified real-time data.`
         : setupProfile.multiplier !== 1
         ? `Approved with setup-specific sizing (${Math.round(setupProfile.multiplier * 100)}%). ${setupProfile.reason}.`
@@ -334,6 +382,8 @@ export class TradeAdmissionController {
       requiredMarginUsd,
       entryFeeUsd,
       leverage,
+      marginMode,
+      marginPolicyVersion: PAPER_MARGIN_POLICY_VERSION,
       riskAmountUsd,
       maxLossUsd,
       admissionScore,

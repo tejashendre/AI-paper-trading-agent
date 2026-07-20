@@ -5,15 +5,16 @@ import { MarketService } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
+import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 
-// V2 starts a clean derived-learning window after fixing duplicate sampling
-// and contract-aware net outcome calculations. V1 data remains preserved in
-// Redis for audit purposes but no longer controls current trade decisions.
-const HISTORY_KEY = "opportunity:v2:history";
-const PENDING_KEY = "opportunity:v2:pending";
-const EVALUATIONS_KEY = "opportunity:v2:evaluations";
-const SUMMARY_KEY = "opportunity:v2:summary";
-const DEDUPE_KEY_PREFIX = "opportunity:v2:last:";
+// Derived learning is strategy-version scoped. Earlier observations remain in
+// Redis for audit, but cannot quarantine a materially different strategy.
+const OPPORTUNITY_NAMESPACE = `opportunity:${TRADING_STRATEGY_VERSION}:v3`;
+const HISTORY_KEY = `${OPPORTUNITY_NAMESPACE}:history`;
+const PENDING_KEY = `${OPPORTUNITY_NAMESPACE}:pending`;
+const EVALUATIONS_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations`;
+const SUMMARY_KEY = `${OPPORTUNITY_NAMESPACE}:summary`;
+const DEDUPE_KEY_PREFIX = `${OPPORTUNITY_NAMESPACE}:last:`;
 const MAX_HISTORY = 500;
 const MAX_EVALUATIONS = 1000;
 const DEDUPE_SECONDS = 15 * 60;
@@ -42,6 +43,7 @@ export interface OpportunityRecord {
   paperSize?: string;
   entryMode?: string;
   setupTags: string[];
+  strategyVersion: string;
   evaluatedHorizons: EvaluationHorizon[];
 }
 
@@ -73,6 +75,7 @@ export interface OpportunityEvaluation {
   entryMode?: string;
   setupTags: string[];
   finalConviction: number;
+  strategyVersion: string;
   evaluatedAt: string;
 }
 
@@ -352,6 +355,7 @@ export class OpportunityJournal {
       paperSize: result.paperSize,
       entryMode: result.entryMode,
       setupTags: Array.isArray(result.setupTags) ? result.setupTags.slice(0, 8) : [],
+      strategyVersion: TRADING_STRATEGY_VERSION,
       evaluatedHorizons: [],
     };
   }
@@ -431,6 +435,7 @@ export class OpportunityJournal {
           entryMode: record.entryMode,
           setupTags: record.setupTags,
           finalConviction: record.finalConviction,
+          strategyVersion: record.strategyVersion || TRADING_STRATEGY_VERSION,
           evaluatedAt: new Date().toISOString(),
         });
         record.evaluatedHorizons.push(horizon);

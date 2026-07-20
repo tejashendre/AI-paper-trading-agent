@@ -1,8 +1,8 @@
 # Final Mathematical and Scientific Trading-System Upgrade
 
-**Audit date:** 2026-07-18 to 2026-07-19
+**Audit date:** 2026-07-18 to 2026-07-20
 **Scope:** repository, production spectator telemetry, chart behavior, execution mathematics, learning, risk, and deployment readiness
-**Change status:** final implementation verified locally; pending GitHub publication and exact-commit VPS deployment
+**Change status:** v4.0 is deployed; v4.1 strategy-isolation and guarded STRONG paper-margin implementation is verified locally and pending publication/deployment
 **Capital mode:** paper trading only
 
 ## Executive Verdict
@@ -30,6 +30,78 @@ WebSockets, Yahoo fallback candles, Internet routing, and a general Oracle VPS
 are suitable for autonomous paper swing or fast-swing research. They do not
 provide exchange co-location, deterministic microsecond latency, tick-level
 licensed data, or queue-position execution required for genuine HFT.
+
+## Final v4.1 Dormancy Diagnosis and Margin Upgrade
+
+### The bot was scanning; legacy memory was suppressing the new strategy
+
+The final production diagnosis was taken from healthy deployment `8f019f5`.
+All three containers were healthy, the scan counter was advancing, all nine
+assets returned a decision, and the latest scan contained no execution error.
+It nevertheless produced nine `HOLD` decisions and no entry. Seven blockers
+said that local learning had placed the pattern in watch-only mode.
+
+That behavior exposed a provenance defect. The research audit correctly
+reported zero closed trades for the current `swing-v4.0.0-2026-07-19` cohort,
+but live admission still built setup and asset performance from all 276 legacy
+closed trades. Local-learning, opportunity, and trade-review Redis keys were
+also global. The new strategy therefore inherited vetoes learned under old
+entry mathematics even though its own probation cohort contained no trades.
+
+The v4.1 correction preserves every old trade and Redis record for audit, but
+removes their authority over the current strategy:
+
+- setup and asset performance filter to the exact current strategy version;
+- local-learning rules use a strategy-version namespace;
+- opportunity observations, pending evaluations, summaries, and dedupe keys
+  use a strategy-version namespace;
+- trade reviews and their digest use a strategy-version namespace;
+- the status API reports only current-version setup performance;
+- the strategy version advances to `swing-v4.1.0-2026-07-20` so probation starts
+  honestly from zero current-version closes.
+
+This does not force an entry when market structure, liquidity, economics, or
+feeds fail. It removes only the false cross-version veto.
+
+### Guarded STRONG paper-margin policy
+
+The paper engine now persists one of three margin modes on each position,
+entry, scale-in, partial exit, and close:
+
+| Mode | Selection | Sizing behavior |
+| --- | --- | --- |
+| `PROBE` | Conviction below 68 | Smallest conviction-scaled asset allocation |
+| `STANDARD` | Conviction at least 68, or STRONG prerequisites not met | Existing stop-risk, leverage, feed, learning, and asset caps |
+| `STRONG` | Swing; conviction at least 85; `REALTIME_FAST`; data quality at least 85; non-negative learning; setup multiplier at least 1 | Up to the full per-asset 10% margin cap and 5x crypto leverage, still constrained by modeled stop loss and portfolio breakers |
+
+`STRONG` is deliberately an eligibility class, not permission to spend a fixed
+amount. The final amount remains the minimum of stop-risk sizing, available
+cash, the per-asset margin cap, the 40% total portfolio margin cap, and any
+requested-margin limit. Fee drag, realistic after-fee profit, duplicate-asset,
+daily loss, turnover, correlation, stress, and accounting-drift gates remain
+fail-closed.
+
+The base stop-risk budget is 1% of estimated equity before conviction, setup,
+learning, and feed multipliers. Drawdown throttles it to 0.75x above 3%, 0.5x
+above 5%, and 0.25x above 8%. The deterministic audit therefore produced:
+
+```text
+healthy $10,000 portfolio, conviction 85, verified fast data:
+  mode              = STRONG
+  margin            = $1,000.00
+  leverage          = 5x
+  modeled stop loss = $83.33 after the asset margin cap
+
+$9,000 equity at 10% drawdown, conviction 92, verified fast data:
+  base risk         = 1.00% * 0.25 drawdown throttle
+  strong multiplier = 1.50
+  risk budget       = $9,000 * 0.01 * 0.25 * 1.50 = $33.75
+  modeled stop loss = $33.75
+```
+
+A negative learning adjustment removes STRONG eligibility. A slow cached feed
+also removes STRONG eligibility and retains its 0.65 risk multiplier. This is
+the necessary distinction between stronger deployment and reckless sizing.
 
 ## Production Evidence Before This Upgrade
 
@@ -455,7 +527,7 @@ AI position.
 ### Scientific probation and anti-overfitting controls
 
 `npm run research:audit` evaluates only
-`swing-v4.0.0-2026-07-19` by default. Legacy trades cannot inflate or depress
+`swing-v4.1.0-2026-07-20` by default. Legacy trades cannot inflate or depress
 the new strategy's readiness. `--all-versions` is reserved for comparative
 research. The harness provides expanding train/validation/test folds with a
 trade embargo, bootstrap 95% intervals, a trial-adjusted Sharpe probability,

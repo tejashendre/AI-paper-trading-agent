@@ -4,7 +4,7 @@ import { SUPPORTED_ASSETS } from "../lib/market";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
-import { Trade, OpenPosition } from "../lib/types";
+import { Trade, OpenPosition, PaperMarginMode } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
 import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
@@ -68,6 +68,8 @@ interface SwingScanResult {
   takeProfit?: number;
   margin?: number;
   leverage?: number;
+  marginMode?: PaperMarginMode;
+  marginPolicyVersion?: string;
   paperSize?: string;
   entryMode?: string;
   riskMode?: string;
@@ -702,6 +704,7 @@ async function runEntryScan() {
           learningAdjustment: swingSignal.learningAdjustment,
           setupTags: swingSignal.setupTags,
           assetMode: swingSignal.assetMode,
+          dataQuality: swingSignal.dataQuality,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd,
@@ -938,6 +941,8 @@ async function runEntryScan() {
           entryFeePaid: executionPlan.entry.feeUsd,
           notionalUsd: executionPlan.entry.notionalUsd,
           leverageUsed: admission.leverage,
+          marginMode: admission.marginMode,
+          marginPolicyVersion: admission.marginPolicyVersion,
           riskAmountUsd: admission.riskAmountUsd,
           maxLossUsd: executionPlan.netLossUsd,
           admissionScore: admission.admissionScore,
@@ -981,6 +986,8 @@ async function runEntryScan() {
           usdValue: finalRequiredMarginUsd,
           notionalUsd: executionPlan.entry.notionalUsd,
           leverageUsed: admission.leverage,
+          marginMode: admission.marginMode,
+          marginPolicyVersion: admission.marginPolicyVersion,
           riskAmountUsd: admission.riskAmountUsd,
           maxLossUsd: executionPlan.netLossUsd,
           stopLoss: swingSignal.stopLoss,
@@ -1060,6 +1067,8 @@ async function runEntryScan() {
           takeProfit: swingSignal.takeProfit,
           margin: finalRequiredMarginUsd,
           leverage: admission.leverage,
+          marginMode: admission.marginMode,
+          marginPolicyVersion: admission.marginPolicyVersion,
           paperSize: effectivePaperSize,
           entryMode: effectiveEntryMode,
           riskMode: swingSignal.riskMode,
@@ -1078,7 +1087,7 @@ async function runEntryScan() {
         });
 
         await Logger.info(
-          `[SWING ENTRY] ${asset} ${isShort ? "SHORT" : "LONG"} @ $${executionPlan.entry.fillPrice.toLocaleString()} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Modeled Max Loss: $${executionPlan.netLossUsd.toFixed(2)} | Net R/R: ${executionPlan.netRewardRiskRatio.toFixed(2)} | Margin: $${finalRequiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x`
+          `[SWING ENTRY] ${asset} ${isShort ? "SHORT" : "LONG"} @ $${executionPlan.entry.fillPrice.toLocaleString()} | Margin Mode: ${admission.marginMode} | Risk Budget: $${admission.riskAmountUsd.toFixed(2)} | Modeled Max Loss: $${executionPlan.netLossUsd.toFixed(2)} | Net R/R: ${executionPlan.netRewardRiskRatio.toFixed(2)} | Margin: $${finalRequiredMarginUsd.toFixed(2)} | Lev: ${admission.leverage}x`
         );
       } catch (error) {
         results.push({
