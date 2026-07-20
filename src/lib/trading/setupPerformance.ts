@@ -45,6 +45,10 @@ export interface SetupPerformanceSummary {
   plainFindings: string[];
 }
 
+export interface SetupPerformanceBuildOptions {
+  strategyVersion?: string;
+}
+
 interface MutableBucket extends Omit<SetupPerformanceBucket, "winRate" | "profitFactor" | "avgPnl" | "outOfSampleTradeCount" | "outOfSampleWinRate" | "outOfSampleProfitFactor" | "outOfSampleAvgPnl" | "promotionEligible" | "quarantined" | "requalificationEligible" | "opportunityFavorableRate" | "avgOpportunityNetPnlUsd" | "avgOpportunityNetReturnPercent" | "opportunityProfitFactor" | "evidence"> {
   grossOpportunityProfitUsd: number;
   grossOpportunityLossUsd: number;
@@ -279,10 +283,17 @@ function buildFindings(summary: Omit<SetupPerformanceSummary, "plainFindings">) 
 }
 
 export class SetupPerformance {
-  static build(aiTrades: Trade[], opportunitySummary: any): SetupPerformanceSummary {
+  static build(
+    aiTrades: Trade[],
+    opportunitySummary: any,
+    options: SetupPerformanceBuildOptions = {}
+  ): SetupPerformanceSummary {
     const bySetup = new Map<string, MutableBucket>();
     const byAsset = new Map<string, MutableBucket>();
-    const closedTrades = aiTrades.filter((trade) => typeof trade.pnl === "number" && !trade.isPartialExit);
+    const strategyTrades = options.strategyVersion
+      ? aiTrades.filter((trade) => trade.strategyVersion === options.strategyVersion)
+      : aiTrades;
+    const closedTrades = strategyTrades.filter((trade) => typeof trade.pnl === "number" && !trade.isPartialExit);
     const chronologicalClosedTrades = [...closedTrades].sort((a, b) => (
       new Date(a.exitTime || a.timestamp).getTime() - new Date(b.exitTime || b.timestamp).getTime()
     ));
