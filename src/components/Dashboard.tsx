@@ -1784,7 +1784,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         </div>
                         <div className={`grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] font-mono ${textSub}`}>
                           <div>Size: <span className={textPrimary}>{pos.amount.toFixed(5)}</span></div>
-                          <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span></div>
+                          <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span> <span className={pos.marginMode === "STRONG" ? "text-emerald-500 font-bold" : textMuted}>{pos.marginMode || "STANDARD"}</span></div>
                           <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                           <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                         </div>
@@ -2137,7 +2137,7 @@ function DashboardContent({ secret }: { secret: string }) {
                           </div>
                           <div className={`grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] font-mono ${textSub}`}>
                             <div>Size: <span className={textPrimary}>{pos.amount.toFixed(4)}</span></div>
-                            <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span></div>
+                            <div>Margin: <span className={textPrimary}>${pos.usdInvested.toFixed(2)}</span> <span className={pos.marginMode === "STRONG" ? "text-emerald-500 font-bold" : textMuted}>{pos.marginMode || "STANDARD"}</span></div>
                             <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                             <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                           </div>

@@ -1,6 +1,6 @@
 import { ASSET_CONTRACT_SPECS, getAssetSpec } from "../src/lib/trading/assetSpecs";
 import { runReplay } from "../src/lib/backtest/replayEngine";
-import { TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
+import { PAPER_MARGIN_POLICY_VERSION, TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
 import { Candle, IndicatorSnapshot, Portfolio, StatisticalMetrics, Trade } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
@@ -42,6 +42,7 @@ interface LiveStatus {
     strategyVersion?: string;
     executionCostModelVersion?: string;
     portfolioRiskPolicyVersion?: string;
+    paperMarginPolicyVersion?: string;
     researchHarnessVersion?: string;
     capitalMode?: string;
   };
@@ -618,11 +619,11 @@ function auditAdmissionSizing(): AuditResult[] {
   const checks: AuditResult[] = [];
   const portfolio = basePortfolio();
   const scenarios = [
-    { conviction: 58, expected: "watch", maxMargin: 300 },
-    { conviction: 65, expected: "probe", maxMargin: 500 },
-    { conviction: 75, expected: "normal", maxMargin: 700 },
-    { conviction: 85, expected: "strong", maxMargin: 850 },
-    { conviction: 92, expected: "maximum approved", maxMargin: 1_000 },
+    { conviction: 58, expected: "watch", expectedMode: "PROBE", maxMargin: 300 },
+    { conviction: 65, expected: "probe", expectedMode: "PROBE", maxMargin: 500 },
+    { conviction: 75, expected: "normal", expectedMode: "STANDARD", maxMargin: 700 },
+    { conviction: 85, expected: "strong", expectedMode: "STRONG", maxMargin: 1_000 },
+    { conviction: 92, expected: "maximum approved", expectedMode: "STRONG", maxMargin: 1_000 },
   ];
 
   for (const scenario of scenarios) {
@@ -637,15 +638,21 @@ function auditAdmissionSizing(): AuditResult[] {
       reasoning: `Audit ${scenario.expected} scenario`,
       strategyType: "swing",
       finalConviction: scenario.conviction,
+      learningAdjustment: 0,
+      assetMode: "REALTIME_FAST",
+      dataQuality: 92,
     });
 
     const margin = admission.requiredMarginUsd;
-    const marginOk = admission.approved && margin <= scenario.maxMargin + 0.01;
+    const marginOk = admission.approved &&
+      admission.marginMode === scenario.expectedMode &&
+      admission.marginPolicyVersion === PAPER_MARGIN_POLICY_VERSION &&
+      margin <= scenario.maxMargin + 0.01;
     checks.push(result(
       marginOk ? "PASS" : "FAIL",
       `conviction sizing: ${scenario.conviction}`,
       admission.approved
-        ? `${scenario.expected} scenario approved with $${margin.toFixed(2)} margin, ${admission.leverage}x leverage, and $${admission.maxLossUsd.toFixed(2)} planned max loss.`
+        ? `${scenario.expected} scenario approved in ${admission.marginMode} mode with $${margin.toFixed(2)} margin, ${admission.leverage}x leverage, and $${admission.maxLossUsd.toFixed(2)} planned max loss.`
         : `${scenario.expected} scenario rejected: ${admission.reason}`
     ));
   }
@@ -662,6 +669,8 @@ function auditAdmissionSizing(): AuditResult[] {
     strategyType: "swing",
     finalConviction: 85,
     learningAdjustment: 0,
+    assetMode: "REALTIME_FAST",
+    dataQuality: 92,
   });
   const reducedLearning = TradeAdmissionController.evaluate({
     portfolio,
@@ -675,11 +684,15 @@ function auditAdmissionSizing(): AuditResult[] {
     strategyType: "swing",
     finalConviction: 85,
     learningAdjustment: -8,
+    assetMode: "REALTIME_FAST",
+    dataQuality: 92,
   });
 
   checks.push(result(
     normalLearning.approved &&
     reducedLearning.approved &&
+    normalLearning.marginMode === "STRONG" &&
+    reducedLearning.marginMode !== "STRONG" &&
     reducedLearning.learningRiskMultiplier === 0.6 &&
     reducedLearning.requiredMarginUsd < normalLearning.requiredMarginUsd &&
     reducedLearning.maxLossUsd < normalLearning.maxLossUsd
@@ -687,7 +700,7 @@ function auditAdmissionSizing(): AuditResult[] {
       : "FAIL",
     "local learning risk reduction",
     reducedLearning.approved
-      ? `A -8 learning adjustment reduced margin from $${normalLearning.requiredMarginUsd.toFixed(2)} to $${reducedLearning.requiredMarginUsd.toFixed(2)} and planned max loss from $${normalLearning.maxLossUsd.toFixed(2)} to $${reducedLearning.maxLossUsd.toFixed(2)}.`
+      ? `A -8 learning adjustment removed STRONG eligibility and reduced margin from $${normalLearning.requiredMarginUsd.toFixed(2)} to $${reducedLearning.requiredMarginUsd.toFixed(2)} and planned max loss from $${normalLearning.maxLossUsd.toFixed(2)} to $${reducedLearning.maxLossUsd.toFixed(2)}.`
       : `Learning-reduced trade was rejected: ${reducedLearning.reason}`
   ));
 
@@ -704,13 +717,52 @@ function auditAdmissionSizing(): AuditResult[] {
     finalConviction: 92,
     assetMode: "SLOW_SWING",
   });
-  const slowFeedSeparated = slowFeedAdmission.approved && slowFeedAdmission.feedRiskMultiplier === 0.65 && slowFeedAdmission.requiredMarginUsd <= 650;
+  const slowFeedSeparated = slowFeedAdmission.approved &&
+    slowFeedAdmission.marginMode !== "STRONG" &&
+    slowFeedAdmission.feedRiskMultiplier === 0.65 &&
+    slowFeedAdmission.requiredMarginUsd <= 650;
   checks.push(result(
     slowFeedSeparated ? "PASS" : "FAIL",
     "cached-feed sizing separation",
     slowFeedAdmission.approved
-      ? `Cached-feed GOLD is limited to $${slowFeedAdmission.requiredMarginUsd.toFixed(2)} margin at ${Math.round(slowFeedAdmission.feedRiskMultiplier * 100)}% of normal risk.`
+      ? `Cached-feed GOLD remains ${slowFeedAdmission.marginMode} and is limited to $${slowFeedAdmission.requiredMarginUsd.toFixed(2)} margin at ${Math.round(slowFeedAdmission.feedRiskMultiplier * 100)}% of normal risk.`
       : `Cached-feed GOLD was rejected: ${slowFeedAdmission.reason}`
+  ));
+
+  const drawdownPortfolio = basePortfolio({
+    usd: 9_000,
+    peakValue: 10_000,
+    totalPnl: -1_000,
+    maxDrawdown: 1_000,
+    maxDrawdownPercent: 10,
+  });
+  const drawdownStrong = TradeAdmissionController.evaluate({
+    portfolio: drawdownPortfolio,
+    asset: "BTC",
+    direction: "LONG",
+    entryPrice: 60_000,
+    stopLoss: 59_000,
+    takeProfit: 62_000,
+    signalScore: 22,
+    reasoning: "Audit STRONG mode under recovery drawdown",
+    strategyType: "swing",
+    finalConviction: 92,
+    learningAdjustment: 0,
+    assetMode: "REALTIME_FAST",
+    dataQuality: 92,
+  });
+  const drawdownRiskLimitUsd = drawdownPortfolio.usd * 0.01 * 0.25 * 1.5;
+  checks.push(result(
+    drawdownStrong.approved &&
+    drawdownStrong.marginMode === "STRONG" &&
+    drawdownStrong.riskAmountUsd <= drawdownRiskLimitUsd + 0.01 &&
+    drawdownStrong.maxLossUsd <= drawdownStrong.riskAmountUsd * 1.01
+      ? "PASS"
+      : "FAIL",
+    "STRONG drawdown circuit breaker",
+    drawdownStrong.approved
+      ? `At 10% drawdown, STRONG mode remains bounded to $${drawdownStrong.riskAmountUsd.toFixed(2)} risk and $${drawdownStrong.maxLossUsd.toFixed(2)} stop loss.`
+      : `Drawdown STRONG scenario was rejected: ${drawdownStrong.reason}`
   ));
 
   const portfolioWithExposure = basePortfolio({
@@ -1050,6 +1102,21 @@ function auditLearningConnections(): AuditResult[] {
       : "The quarantine has no evidence-based path to relearn."
   ));
 
+  const isolatedPerformance = SetupPerformance.build([
+    { ...syntheticTrade(100, -100), strategyVersion: "legacy-v3" },
+    { ...syntheticTrade(101, 25), strategyVersion: TRADING_STRATEGY_VERSION },
+  ], {}, { strategyVersion: TRADING_STRATEGY_VERSION });
+  const isolatedAsset = isolatedPerformance.byAsset.find((bucket) => bucket.key === "BTC");
+  checks.push(result(
+    isolatedPerformance.closedTradeCount === 1 && isolatedAsset?.tradeCount === 1 && isolatedAsset.realizedPnl === 25
+      ? "PASS"
+      : "FAIL",
+    "strategy-version performance isolation",
+    isolatedPerformance.closedTradeCount === 1
+      ? `Only the ${TRADING_STRATEGY_VERSION} trade contributes to current setup and asset learning.`
+      : `${isolatedPerformance.closedTradeCount} trades leaked into the strategy-scoped performance cohort.`
+  ));
+
   return checks;
 }
 
@@ -1059,6 +1126,7 @@ function auditProductionRegressions(): AuditResult[] {
   const redisSource = read("src", "lib", "redis.ts");
   const learningSource = read("src", "lib", "trading", "localLearning.ts");
   const opportunitySource = read("src", "lib", "trading", "opportunityJournal.ts");
+  const tradeReviewSource = read("src", "lib", "trading", "tradeReviewJournal.ts");
   const feedSource = read("src", "lib", "data", "feedHealthSummary.ts");
   const daemonSource = read("src", "daemon", "swingDaemon.ts");
   const websocketSource = read("src", "daemon", "websocketDataMesh.ts");
@@ -1073,8 +1141,11 @@ function auditProductionRegressions(): AuditResult[] {
   const deployCheckSource = read("scripts", "vps-deploy-check.sh");
 
   const lockSafe = redisSource.includes("compareAndDelete") && portfolioSource.includes("redis.compareAndDelete(key, token)");
-  const learningVersioned = learningSource.includes('learning:v2:localRules');
-  const opportunityVersioned = opportunitySource.includes('opportunity:v2:') && opportunitySource.includes("DEDUPE_SECONDS");
+  const learningVersioned = learningSource.includes('learning:${TRADING_STRATEGY_VERSION}:localRules') &&
+    learningSource.includes("strategyVersion: TRADING_STRATEGY_VERSION");
+  const opportunityVersioned = opportunitySource.includes('opportunity:${TRADING_STRATEGY_VERSION}:v3') &&
+    opportunitySource.includes("DEDUPE_SECONDS");
+  const reviewVersioned = tradeReviewSource.includes('tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing');
   const feedEnforced = feedSource.includes("KRAKEN_SPOT_WS") &&
     feedSource.includes("BYBIT_LINEAR_WS") &&
     websocketSource.includes('channel: "trade"') &&
@@ -1103,8 +1174,8 @@ function auditProductionRegressions(): AuditResult[] {
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
       ? "Redis releases a write lock only when the caller still owns its token."
       : "Portfolio lock release can delete a replacement lock after TTL expiry."),
-    result(learningVersioned && opportunityVersioned ? "PASS" : "FAIL", "derived-learning state migration", learningVersioned && opportunityVersioned
-      ? "Polluted learning/opportunity aggregates use versioned keys and observations are deduplicated."
+    result(learningVersioned && opportunityVersioned && reviewVersioned ? "PASS" : "FAIL", "strategy-isolated learning state", learningVersioned && opportunityVersioned && reviewVersioned
+      ? "Setup performance, opportunity observations, local rules, and trade reviews are isolated by strategy version."
       : "Derived learning state may reuse polluted production aggregates."),
     result(feedEnforced ? "PASS" : "FAIL", "dual WebSocket admission gate", feedEnforced
       ? "Both exchange freshness signals feed the daemon and API entry gates."
@@ -1452,6 +1523,14 @@ function auditLiveStatus(status: LiveStatus | null): AuditResult[] {
     status.deployment?.strategyVersion === TRADING_STRATEGY_VERSION
       ? `Live strategy version matches ${TRADING_STRATEGY_VERSION}.`
       : `Expected ${TRADING_STRATEGY_VERSION}, received ${status.deployment?.strategyVersion || "missing"}.`
+  ));
+
+  checks.push(result(
+    status.deployment?.paperMarginPolicyVersion === PAPER_MARGIN_POLICY_VERSION ? "PASS" : "FAIL",
+    "live paper-margin policy version",
+    status.deployment?.paperMarginPolicyVersion === PAPER_MARGIN_POLICY_VERSION
+      ? `Live paper-margin policy matches ${PAPER_MARGIN_POLICY_VERSION}.`
+      : `Expected ${PAPER_MARGIN_POLICY_VERSION}, received ${status.deployment?.paperMarginPolicyVersion || "missing"}.`
   ));
 
   const ledger = status.executionLedger;

@@ -15,6 +15,7 @@ import { SUPPORTED_ASSETS } from "@/lib/market";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { EXECUTION_COST_MODEL_VERSION, estimateCarryCostUsd, estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { PORTFOLIO_RISK_POLICY_VERSION } from "@/lib/trading/portfolioRiskBudget";
+import { PAPER_MARGIN_POLICY_VERSION } from "@/lib/trading/tradeAdmission";
 import { RESEARCH_HARNESS_VERSION } from "@/lib/research/walkForward";
 
 export const dynamic = "force-dynamic";
@@ -440,7 +441,9 @@ export async function GET(request: Request) {
 
         const userProfitByAsset = calculateProfitByAsset(userTrades, userPortfolio, userSync.prices);
         const aiProfitByAsset = calculateProfitByAsset(aiTrades, aiPortfolio, aiSync.prices);
-        const setupPerformance = SetupPerformance.build(aiTrades, opportunitySummary);
+        const setupPerformance = SetupPerformance.build(aiTrades, opportunitySummary, {
+            strategyVersion: TRADING_STRATEGY_VERSION,
+        });
         const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
         const userEquityTrades = buildEquityCurveTrades(userTrades);
         const aiEquityTrades = buildEquityCurveTrades(aiTrades);
@@ -507,6 +510,7 @@ export async function GET(request: Request) {
                 strategyVersion: TRADING_STRATEGY_VERSION,
                 executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
                 portfolioRiskPolicyVersion: PORTFOLIO_RISK_POLICY_VERSION,
+                paperMarginPolicyVersion: PAPER_MARGIN_POLICY_VERSION,
                 researchHarnessVersion: RESEARCH_HARNESS_VERSION,
                 capitalMode: "PAPER_ONLY",
             },

@@ -683,6 +683,8 @@ export function runReplay(input: ReplayInput): ReplayReport {
           signalScore: signal.htfScore,
           finalConviction: signal.finalConviction,
           setupTags: signal.setupTags,
+          assetMode: ["BTC", "ETH", "SOL"].includes(asset) ? "REALTIME_FAST" : "SLOW_SWING",
+          dataQuality: 100,
           reasoning: "Replay strategy admission",
           strategyType: "swing",
         });

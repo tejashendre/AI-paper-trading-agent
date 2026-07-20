@@ -155,6 +155,8 @@ export interface RiskParameters {
 
 // ==================== Position & Portfolio ========================
 
+export type PaperMarginMode = 'PROBE' | 'STANDARD' | 'STRONG';
+
 export interface OpenPosition {
   asset: string;          // E.g., 'BTC', 'ETH', 'EURUSD', 'GOLD'
   entryPrice: number;
@@ -173,6 +175,8 @@ export interface OpenPosition {
   entryFeePaid?: number;
   notionalUsd?: number;
   leverageUsed?: number;
+  marginMode?: PaperMarginMode;
+  marginPolicyVersion?: string;
   riskAmountUsd?: number;
   maxLossUsd?: number;
   admissionScore?: number;
@@ -295,6 +299,8 @@ export interface Trade {
   requestedPrice?: number;
   notionalUsd?: number;
   leverageUsed?: number;
+  marginMode?: PaperMarginMode;
+  marginPolicyVersion?: string;
   riskAmountUsd?: number;
   maxLossUsd?: number;
   entryFeeUsd?: number;
