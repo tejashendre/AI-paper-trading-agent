@@ -5,8 +5,9 @@ import { PortfolioManager } from "@/lib/portfolio";
 import { OpportunityJournal } from "./opportunityJournal";
 import { normalizeSetupTags, SetupPerformance, SetupPerformanceBucket } from "./setupPerformance";
 import { TradeReviewJournal, TradeReviewAssetSignal } from "./tradeReviewJournal";
+import { TRADING_STRATEGY_VERSION } from "./executionLedger";
 
-const RULES_KEY = "learning:v2:localRules";
+const RULES_KEY = `learning:${TRADING_STRATEGY_VERSION}:localRules`;
 
 export interface LocalLearningRule {
   id: string;
@@ -225,7 +226,9 @@ export class LocalLearningMemory {
     }
 
     const aiTrades = await PortfolioManager.getTrades("ai");
-    const setupPerformance = SetupPerformance.build(aiTrades, summary);
+    const setupPerformance = SetupPerformance.build(aiTrades, summary, {
+      strategyVersion: TRADING_STRATEGY_VERSION,
+    });
     for (const bucket of setupPerformance.byAsset) {
       const rule = ruleFromPerformanceBucket("asset", bucket);
       if (rule) ruleMap.set(rule.id, rule);
