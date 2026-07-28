@@ -9,17 +9,22 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const STALE_THRESHOLD_MS = 30_000;
 const SOURCE_RETENTION_SECONDS = 90;
 const EXECUTION_PRICE_RETENTION_SECONDS = 75;
+const SOURCE_PERSIST_INTERVAL_MS = 1_000;
 
 export class WebsocketDataMesh {
     private krakenWs: WebSocket | null = null;
     private bybitWs: WebSocket | null = null;
+    private binanceWs: WebSocket | null = null;
     private isRunning = false;
     private krakenReconnectTimeout: NodeJS.Timeout | null = null;
     private bybitReconnectTimeout: NodeJS.Timeout | null = null;
+    private binanceReconnectTimeout: NodeJS.Timeout | null = null;
     private krakenLastMarketDataAt = 0;
     private bybitLastMarketDataAt = 0;
+    private binanceLastMarketDataAt = 0;
     private krakenConnectedAt = 0;
     private bybitConnectedAt = 0;
+    private binanceConnectedAt = 0;
     private heartbeatInterval: NodeJS.Timeout | null = null;
     private lastPersistedAt = new Map<string, number>();
 
@@ -30,7 +35,7 @@ export class WebsocketDataMesh {
     private async writeLiveTick(symbol: string, price: number, source: string, imbalance?: number) {
         const persistenceKey = `${source}:${symbol}`;
         const now = Date.now();
-        if (now - (this.lastPersistedAt.get(persistenceKey) || 0) < 500) return;
+        if (now - (this.lastPersistedAt.get(persistenceKey) || 0) < SOURCE_PERSIST_INTERVAL_MS) return;
         this.lastPersistedAt.set(persistenceKey, now);
 
         const redis = getRedis();
@@ -64,6 +69,7 @@ export class WebsocketDataMesh {
         await Logger.info("WebSocket Data Mesh starting...");
         this.connectKraken();
         this.connectBybit();
+        this.connectBinance();
         this.heartbeatInterval = setInterval(() => this.checkStaleness(), HEARTBEAT_INTERVAL_MS);
     }
 
@@ -71,9 +77,11 @@ export class WebsocketDataMesh {
         this.isRunning = false;
         if (this.krakenReconnectTimeout) clearTimeout(this.krakenReconnectTimeout);
         if (this.bybitReconnectTimeout) clearTimeout(this.bybitReconnectTimeout);
+        if (this.binanceReconnectTimeout) clearTimeout(this.binanceReconnectTimeout);
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         this.krakenReconnectTimeout = null;
         this.bybitReconnectTimeout = null;
+        this.binanceReconnectTimeout = null;
         this.heartbeatInterval = null;
         if (this.krakenWs) {
             this.krakenWs.terminate();
@@ -82,6 +90,10 @@ export class WebsocketDataMesh {
         if (this.bybitWs) {
             this.bybitWs.terminate();
             this.bybitWs = null;
+        }
+        if (this.binanceWs) {
+            this.binanceWs.terminate();
+            this.binanceWs = null;
         }
     }
 
@@ -110,6 +122,18 @@ export class WebsocketDataMesh {
                 this.scheduleReconnect("bybit");
             } else {
                 try { this.bybitWs.send(JSON.stringify({ op: "ping" })); } catch { /* no-op */ }
+            }
+        }
+
+        if (this.binanceWs?.readyState === WebSocket.OPEN) {
+            const reference = this.binanceLastMarketDataAt || this.binanceConnectedAt;
+            if (reference > 0 && now - reference > STALE_THRESHOLD_MS) {
+                Logger.warn(`Binance WS stale (${Math.round((now - reference) / 1000)}s since last market tick). Forcing reconnect.`);
+                this.binanceWs.terminate();
+                this.binanceWs = null;
+                this.scheduleReconnect("binance");
+            } else {
+                try { this.binanceWs.ping(); } catch { /* no-op */ }
             }
         }
     }
@@ -250,14 +274,74 @@ export class WebsocketDataMesh {
         }
     }
 
-    private scheduleReconnect(source: "kraken" | "bybit") {
+    private connectBinance() {
+        if (!this.isRunning) return;
+        if (this.binanceWs && (
+            this.binanceWs.readyState === WebSocket.OPEN ||
+            this.binanceWs.readyState === WebSocket.CONNECTING
+        )) return;
+
+        try {
+            const ws = new WebSocket("wss://data-stream.binance.vision/ws");
+            this.binanceWs = ws;
+            this.binanceLastMarketDataAt = 0;
+            this.binanceConnectedAt = Date.now();
+
+            ws.on("open", () => {
+                if (this.binanceReconnectTimeout) clearTimeout(this.binanceReconnectTimeout);
+                this.binanceReconnectTimeout = null;
+                this.binanceConnectedAt = Date.now();
+                Logger.info("Connected to Binance Spot market-data WebSocket");
+                ws.send(JSON.stringify({
+                    method: "SUBSCRIBE",
+                    params: this.getCryptoAssets().map((asset) => `${asset.toLowerCase()}usdt@trade`),
+                    id: 1,
+                }));
+            });
+
+            ws.on("message", async (data) => {
+                try {
+                    const parsed = JSON.parse(data.toString());
+                    if (parsed?.e !== "trade" || !parsed?.s) return;
+
+                    const symbol = String(parsed.s).replace("USDT", "");
+                    const price = Number(parsed.p);
+                    if (!Number.isFinite(price) || price <= 0) return;
+
+                    this.binanceLastMarketDataAt = Date.now();
+                    await this.writeLiveTick(symbol, price, "BINANCE_SPOT_WS");
+                } catch {
+                    // Ignore malformed exchange frames; staleness detection
+                    // reconnects the source if valid market data stops.
+                }
+            });
+
+            ws.on("close", () => {
+                if (this.binanceWs === ws) this.binanceWs = null;
+                Logger.warn("Binance WebSocket disconnected. Reconnecting in 5s...");
+                this.scheduleReconnect("binance");
+            });
+
+            ws.on("error", (error) => {
+                console.error("Binance WebSocket Error:", error);
+            });
+        } catch (error) {
+            console.error("Failed to start Binance WebSocket:", error);
+            this.scheduleReconnect("binance");
+        }
+    }
+
+    private scheduleReconnect(source: "kraken" | "bybit" | "binance") {
         if (!this.isRunning) return;
         if (source === "kraken") {
             if (this.krakenReconnectTimeout) clearTimeout(this.krakenReconnectTimeout);
             this.krakenReconnectTimeout = setTimeout(() => this.connectKraken(), 5_000);
-        } else {
+        } else if (source === "bybit") {
             if (this.bybitReconnectTimeout) clearTimeout(this.bybitReconnectTimeout);
             this.bybitReconnectTimeout = setTimeout(() => this.connectBybit(), 5_000);
+        } else {
+            if (this.binanceReconnectTimeout) clearTimeout(this.binanceReconnectTimeout);
+            this.binanceReconnectTimeout = setTimeout(() => this.connectBinance(), 5_000);
         }
     }
 }

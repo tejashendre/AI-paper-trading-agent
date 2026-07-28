@@ -22,7 +22,8 @@ export interface AssetFeedHealthSummary {
   updatedAt: string;
 }
 
-const WEBSOCKET_SOURCES = ["KRAKEN_SPOT_WS", "BYBIT_LINEAR_WS"] as const;
+const WEBSOCKET_SOURCES = ["KRAKEN_SPOT_WS", "BYBIT_LINEAR_WS", "BINANCE_SPOT_WS"] as const;
+const MIN_REDUNDANT_WEBSOCKET_SOURCES = 2;
 const WEBSOCKET_FRESHNESS_MS = 45_000;
 
 function websocketTimestamp(meta: any): number {
@@ -89,14 +90,14 @@ function summarizeReport(
 ): AssetFeedHealthSummary {
   const mode = assetMode(asset, category, health);
   const websocketUnavailable = mode === "REALTIME_FAST" && freshWebsocketSources === 0;
-  const websocketDegraded = mode === "REALTIME_FAST" && freshWebsocketSources === 1;
+  const websocketDegraded = mode === "REALTIME_FAST" && freshWebsocketSources < MIN_REDUNDANT_WEBSOCKET_SOURCES;
   const displayStatus = websocketUnavailable
     ? "BAD"
     : (health.stale || websocketDegraded) && health.status === "GOOD"
       ? "DEGRADED"
       : health.status;
   const warnings = health.warnings.slice(0, 4);
-  if (websocketUnavailable) warnings.unshift("Both realtime WebSocket sources are stale or unavailable");
+  if (websocketUnavailable) warnings.unshift("All realtime WebSocket sources are stale or unavailable");
   else if (websocketDegraded) warnings.unshift("Only one realtime WebSocket source is fresh");
   const score = websocketUnavailable
     ? Math.min(health.score, 40)
@@ -104,7 +105,7 @@ function summarizeReport(
       ? Math.min(health.score, 75)
       : health.score;
   const safeForSwingExecution = !websocketUnavailable && health.status !== "BAD" && !health.stale && score >= 50;
-  const safeForFastExecution = mode === "REALTIME_FAST" && freshWebsocketSources === 2 && displayStatus === "GOOD" && score >= 80 && !health.stale;
+  const safeForFastExecution = mode === "REALTIME_FAST" && freshWebsocketSources >= MIN_REDUNDANT_WEBSOCKET_SOURCES && displayStatus === "GOOD" && score >= 80 && !health.stale;
 
   return {
     asset,

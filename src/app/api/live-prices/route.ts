@@ -48,7 +48,7 @@ export async function GET(request: Request) {
 
   await Promise.all(assets.map(async (asset) => {
     const mode = cryptoMode(asset);
-    const [livePrice, liveMeta, cachedPrice, krakenPrice, krakenMeta, bybitPrice, bybitMeta] = await Promise.all([
+    const [livePrice, liveMeta, cachedPrice, krakenPrice, krakenMeta, bybitPrice, bybitMeta, binancePrice, binanceMeta] = await Promise.all([
       redis.get<number | string>(`market:live:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:${asset}`).catch(() => null),
       redis.get<number | string>(`cache:price:${asset}`).catch(() => null),
@@ -56,6 +56,8 @@ export async function GET(request: Request) {
       redis.get<any>(`market:liveMeta:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
       redis.get<number | string>(`market:live:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
+      redis.get<number | string>(`market:live:BINANCE_SPOT_WS:${asset}`).catch(() => null),
+      redis.get<any>(`market:liveMeta:BINANCE_SPOT_WS:${asset}`).catch(() => null),
     ]);
 
     const liveNumber = Number(livePrice);
@@ -66,6 +68,7 @@ export async function GET(request: Request) {
       ? [
           { provider: "KRAKEN_SPOT_WS", price: Number(krakenPrice), meta: krakenMeta },
           { provider: "BYBIT_LINEAR_WS", price: Number(bybitPrice), meta: bybitMeta },
+          { provider: "BINANCE_SPOT_WS", price: Number(binancePrice), meta: binanceMeta },
         ].filter((source) => Number.isFinite(source.price) && source.price > 0).map((source) => {
           const sourceUpdatedAt = source.meta?.updatedAt || null;
           const sourceAge = ageSeconds(sourceUpdatedAt);
@@ -161,7 +164,7 @@ export async function GET(request: Request) {
   const cached = snapshots.filter((snapshot) => snapshot.source === "RECENT_CACHE").length;
   const missing = snapshots.filter((snapshot) => snapshot.source === "REALTIME_UNAVAILABLE").length;
   const assetsWithDualWebsocket = snapshots.filter((snapshot) => (
-    snapshot.independentSources?.filter((source) => source.fresh).length === 2
+    (snapshot.independentSources?.filter((source) => source.fresh).length || 0) >= 2
   )).length;
   const independentWebsocketFeeds = snapshots.reduce(
     (sum, snapshot) => sum + (snapshot.independentSources?.filter((source) => source.fresh).length || 0),
