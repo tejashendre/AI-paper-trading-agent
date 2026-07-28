@@ -216,6 +216,12 @@ export function calculateLearningAdjustment(
 }
 
 export class LocalLearningMemory {
+  static async clearCurrentStrategyState() {
+    const redis = getRedis();
+    await redis.del(RULES_KEY);
+    writeJsonBackup("local_learning_rules.json", []);
+  }
+
   static async rebuildRules() {
     const summary = await OpportunityJournal.getSummary();
     const ruleMap = new Map<string, LocalLearningRule>();

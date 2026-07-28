@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { PortfolioManager } from "@/lib/portfolio";
 import { Logger } from "@/lib/logger";
 import { verifyAuth } from "@/lib/auth";
+import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
+import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 
 export const dynamic = "force-dynamic";
 
@@ -41,8 +45,30 @@ export async function POST(request: Request) {
             PortfolioManager.resetPortfolio("user", capital),
             PortfolioManager.resetPortfolio("ai", capital)
         ]);
+        await Promise.all([
+            LocalLearningMemory.clearCurrentStrategyState(),
+            OpportunityJournal.clearCurrentStrategyState(),
+            TradeReviewJournal.clearCurrentStrategyState(),
+        ]);
+        await ExecutionLedger.recordBestEffort({
+            type: "SYSTEM_RESET",
+            source: "ADMIN_DASHBOARD",
+            payload: {
+                capital,
+                portfolios: ["user", "ai"],
+                clearedStrategyVersion: TRADING_STRATEGY_VERSION,
+                preservedVersionedHistory: true,
+            },
+        });
         await Logger.info(`[${auth.source}] Admin reset both Human and AI portfolios with starting capital $${capital.toLocaleString()} USD.`);
-        return NextResponse.json({ success: true, message: `Competition reset! Both Human and AI portfolios set to $${capital.toLocaleString()} USD.` });
+        return NextResponse.json({
+            success: true,
+            message: `Competition reset! Both Human and AI portfolios set to $${capital.toLocaleString()} USD.`,
+            strategyState: {
+                clearedVersion: TRADING_STRATEGY_VERSION,
+                priorVersionHistoryPreserved: true,
+            },
+        });
     } catch (error) {
         return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
     } finally {

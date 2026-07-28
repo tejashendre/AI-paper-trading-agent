@@ -366,6 +366,17 @@ function buildAssetSignals(reviews: TradeReviewRecord[]): TradeReviewAssetSignal
 }
 
 export class TradeReviewJournal {
+  static async clearCurrentStrategyState() {
+    const redis = getRedis();
+    const digest = buildDigest([]);
+    await Promise.all([
+      redis.del(REVIEW_KEY),
+      redis.del(DIGEST_KEY),
+    ]);
+    writeJsonBackup("trade_review_journal.json", []);
+    writeJsonBackup("trade_review_digest.json", digest);
+  }
+
   static async recordSwingClose(trade: Trade, position: OpenPosition): Promise<TradeReviewRecord | null> {
     const review = buildReview(trade, position);
     if (!review) return null;

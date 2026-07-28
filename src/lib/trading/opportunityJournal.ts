@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { getRedis } from "@/lib/redis";
-import { MarketService } from "@/lib/market";
+import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
@@ -331,6 +331,27 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
 }
 
 export class OpportunityJournal {
+  static async clearCurrentStrategyState() {
+    const redis = getRedis();
+    const keys = [
+      HISTORY_KEY,
+      PENDING_KEY,
+      EVALUATIONS_KEY,
+      SUMMARY_KEY,
+      ...Object.keys(SUPPORTED_ASSETS).map((asset) => `${DEDUPE_KEY_PREFIX}${asset}`),
+    ];
+    await Promise.all(keys.map((key) => redis.del(key)));
+    writeJsonBackup("opportunity_summary.json", {
+      totalEvaluated: 0,
+      favorableRate: 0,
+      bestMissed: null,
+      byAsset: {},
+      bySetup: {},
+      lastUpdated: null,
+    });
+    writeJsonBackup("opportunity_evaluations.json", []);
+  }
+
   static buildFromScanResult(result: any): OpportunityRecord | null {
     if (!shouldRecord(result)) return null;
     const entryPrice = Number(result.price || result.livePrice || result.signalPrice || 0);

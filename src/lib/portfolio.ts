@@ -233,7 +233,9 @@ export class PortfolioManager {
             return t as Trade;
         }).filter(t => t !== null) as Trade[];
 
-        // If data is empty or failed to parse into an object, try to recover from backup
+        // If data is empty or failed to parse into an object, try to recover from backup.
+        // A valid empty backup is an intentional empty history (for example, after
+        // an admin reset), not evidence of Redis corruption.
         if (parsed.length === 0) {
             try {
                 const fs = require('fs');
@@ -242,13 +244,16 @@ export class PortfolioManager {
                 if (fs.existsSync(backupPath)) {
                     const backupRaw = fs.readFileSync(backupPath, 'utf-8');
                     const backup = JSON.parse(backupRaw) as unknown;
-                    if (Array.isArray(backup)) {
+                    if (Array.isArray(backup) && backup.length > 0) {
                         parsed = backup as Trade[];
                         await Logger.info(`Redis trades [${type.toUpperCase()}] corrupted/missing. Auto-recovered from local JSON backup.`);
                         await redis.del(keys.trades);
                         for (let i = parsed.length - 1; i >= 0; i--) {
                             await redis.lpush(keys.trades, JSON.stringify(parsed[i]));
                         }
+                    } else if (Array.isArray(backup) && rawTrades.length > 0) {
+                        await redis.del(keys.trades);
+                        await Logger.warn(`Redis trades [${type.toUpperCase()}] contained invalid rows and the local backup was empty. Invalid rows were cleared.`);
                     }
                 }
             } catch (e) {

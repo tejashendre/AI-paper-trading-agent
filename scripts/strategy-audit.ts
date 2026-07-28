@@ -1131,6 +1131,7 @@ function auditProductionRegressions(): AuditResult[] {
   const daemonSource = read("src", "daemon", "swingDaemon.ts");
   const websocketSource = read("src", "daemon", "websocketDataMesh.ts");
   const tradeSource = read("src", "app", "api", "trade", "route.ts");
+  const resetSource = read("src", "app", "api", "user", "reset", "route.ts");
   const swingTradeSource = read("src", "app", "api", "trade", "swing", "route.ts");
   const manualSource = read("src", "app", "api", "trade", "manual", "route.ts");
   const backtestSource = read("src", "app", "api", "backtest", "route.ts");
@@ -1148,8 +1149,13 @@ function auditProductionRegressions(): AuditResult[] {
   const reviewVersioned = tradeReviewSource.includes('tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing');
   const feedEnforced = feedSource.includes("KRAKEN_SPOT_WS") &&
     feedSource.includes("BYBIT_LINEAR_WS") &&
+    feedSource.includes("BINANCE_SPOT_WS") &&
+    feedSource.includes("freshWebsocketSources >= MIN_REDUNDANT_WEBSOCKET_SOURCES") &&
     websocketSource.includes('channel: "trade"') &&
     websocketSource.includes("publicTrade.") &&
+    websocketSource.includes("data-stream.binance.vision") &&
+    websocketSource.includes('parsed?.e !== "trade"') &&
+    websocketSource.includes("SOURCE_PERSIST_INTERVAL_MS = 1_000") &&
     daemonSource.includes("safeForSwingExecution");
   const singleWriterExecution = tradeSource.includes("requestSwingScan") &&
     !tradeSource.includes("TradeAdmissionController") &&
@@ -1163,7 +1169,15 @@ function auditProductionRegressions(): AuditResult[] {
   const deploymentWaitsForHealth = deployCheckSource.includes('-ge 36') && deployCheckSource.includes('sleep 5');
   const recoverySafe = portfolioSource.includes("function isValidPortfolio") &&
     portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
-    portfolioSource.includes("if (Array.isArray(backup))");
+    portfolioSource.includes("if (Array.isArray(backup) && backup.length > 0)") &&
+    portfolioSource.includes("rawTrades.length > 0");
+  const resetClearsCurrentState = resetSource.includes("LocalLearningMemory.clearCurrentStrategyState()") &&
+    resetSource.includes("OpportunityJournal.clearCurrentStrategyState()") &&
+    resetSource.includes("TradeReviewJournal.clearCurrentStrategyState()") &&
+    resetSource.includes('type: "SYSTEM_RESET"') &&
+    learningSource.includes("static async clearCurrentStrategyState()") &&
+    opportunitySource.includes("static async clearCurrentStrategyState()") &&
+    tradeReviewSource.includes("static async clearCurrentStrategyState()");
   const chartIdentitySafe = chartSource.includes("allowStale: true") &&
     chartSource.includes("asset,") &&
     marketSource.includes("options.allowStale") &&
@@ -1177,8 +1191,8 @@ function auditProductionRegressions(): AuditResult[] {
     result(learningVersioned && opportunityVersioned && reviewVersioned ? "PASS" : "FAIL", "strategy-isolated learning state", learningVersioned && opportunityVersioned && reviewVersioned
       ? "Setup performance, opportunity observations, local rules, and trade reviews are isolated by strategy version."
       : "Derived learning state may reuse polluted production aggregates."),
-    result(feedEnforced ? "PASS" : "FAIL", "dual WebSocket admission gate", feedEnforced
-      ? "Both exchange freshness signals feed the daemon and API entry gates."
+    result(feedEnforced ? "PASS" : "FAIL", "redundant WebSocket admission gate", feedEnforced
+      ? "Kraken, Bybit, and Binance feed independent prices while fast admission requires at least two fresh sources."
       : "Autonomous entry can proceed without verified realtime feed health."),
     result(singleWriterExecution ? "PASS" : "FAIL", "single-writer autonomous execution", singleWriterExecution
       ? "Admin scan requests are handed to the daemon and cannot bypass its execution model, ledger, or portfolio circuit breakers."
@@ -1199,8 +1213,11 @@ function auditProductionRegressions(): AuditResult[] {
       ? "Deployment verification waits for container health instead of failing during startup."
       : "Deployment verification can fail while healthy containers are still starting."),
     result(recoverySafe ? "PASS" : "FAIL", "validated atomic recovery backups", recoverySafe
-      ? "Portfolio backups are structurally validated and replaced atomically."
+      ? "Portfolio backups are structurally validated and replaced atomically; an intentional empty trade history is not misreported as corruption."
       : "Crash recovery can accept malformed state or expose partially written JSON."),
+    result(resetClearsCurrentState ? "PASS" : "FAIL", "truthful current-strategy reset", resetClearsCurrentState
+      ? "An admin reset clears current learning, opportunity, and review state, preserves older strategy history, and records the reset."
+      : "The reset can leave active strategy-derived restrictions behind or omit its audit event."),
   ];
 }
 

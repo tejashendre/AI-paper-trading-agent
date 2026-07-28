@@ -8,6 +8,7 @@ export const TRADING_STRATEGY_VERSION = "swing-v4.1.0-2026-07-20";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =
+  | "SYSTEM_RESET"
   | "SCAN_COMPLETED"
   | "ENTRY_APPROVED"
   | "ENTRY_FILLED"
