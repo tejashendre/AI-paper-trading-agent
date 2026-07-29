@@ -161,6 +161,8 @@ function printHumanReport(report: ReturnType<typeof runReplay>) {
   for (const message of report.acceptance.messages) {
     console.log(`- ${message}`);
   }
+  console.log(`Engineering integrity: ${report.acceptance.integrityPassed ? "PASS" : "FAIL"}`);
+  console.log(`Research quality: ${report.acceptance.researchQualityPassed ? "PASS" : "FAIL"}`);
   console.log(report.acceptance.passed ? "RESULT: PASS" : "RESULT: FAIL");
 }
 

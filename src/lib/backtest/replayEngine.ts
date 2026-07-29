@@ -68,6 +68,11 @@ export interface ReplayAssetStats {
 
 export interface ReplayAcceptance {
   passed: boolean;
+  integrityPassed: boolean;
+  researchQualityPassed: boolean;
+  sampleSizePassed: boolean;
+  positiveAfterCostReturn: boolean;
+  profitFactorPassed: boolean;
   hasExecutableTrades: boolean;
   errorsZero: boolean;
   noStaleDataTrades: boolean;
@@ -533,6 +538,17 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
     strategyType: "swing",
   });
   const score14CannotCreateNormalSize = !weakAdmission.approved || weakAdmission.requiredMarginUsd <= INITIAL_CAPITAL * 0.05;
+  const integrityPassed = hasExecutableTrades
+    && errorsZero
+    && noStaleDataTrades
+    && allEntriesHaveExecutionPrice
+    && scoreDistributionVisible
+    && score14CannotCreateNormalSize
+    && setupCategoryStatsRecorded;
+  const sampleSizePassed = report.totalTrades >= 30;
+  const positiveAfterCostReturn = report.totalReturnUsd > 0 && report.averageReturnPercent > 0;
+  const profitFactorPassed = report.profitFactor >= 1.1;
+  const researchQualityPassed = sampleSizePassed && positiveAfterCostReturn && profitFactorPassed;
 
   if (!hasExecutableTrades) messages.push("Replay produced no executable trades, so entry, exit, and fee accounting were not validated.");
   if (!errorsZero) messages.push(`${report.errors.length} replay error(s) detected.`);
@@ -541,18 +557,21 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
   if (!scoreDistributionVisible) messages.push("Score distribution is incomplete.");
   if (!score14CannotCreateNormalSize) messages.push("Score 14 can create a normal-sized trade, which violates the sizing guard.");
   if (!setupCategoryStatsRecorded) messages.push("No setup category stats were recorded.");
-  if (messages.length === 0) messages.push("Replay acceptance checks passed.");
+  if (integrityPassed) messages.push("Replay engineering-integrity checks passed.");
+  if (!sampleSizePassed) messages.push(`Research sample is too small: ${report.totalTrades} closed replay trades; at least 30 are required.`);
+  if (!positiveAfterCostReturn) messages.push("Replay expectancy is not positive after modeled fills, fees, and carry.");
+  if (!profitFactorPassed) messages.push(`Replay profit factor ${report.profitFactor.toFixed(2)} is below the 1.10 research minimum.`);
+  if (researchQualityPassed) messages.push("Replay research-quality checks passed.");
 
-  const passed = hasExecutableTrades
-    && errorsZero
-    && noStaleDataTrades
-    && allEntriesHaveExecutionPrice
-    && scoreDistributionVisible
-    && score14CannotCreateNormalSize
-    && setupCategoryStatsRecorded;
+  const passed = integrityPassed && researchQualityPassed;
 
   return {
     passed,
+    integrityPassed,
+    researchQualityPassed,
+    sampleSizePassed,
+    positiveAfterCostReturn,
+    profitFactorPassed,
     hasExecutableTrades,
     errorsZero,
     noStaleDataTrades,

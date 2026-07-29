@@ -3,7 +3,7 @@
  * Agent Status CLI - read-only terminal dashboard for the live paper agent.
  *
  * Environment variables:
- *   STATUS_URL        defaults to https://ai-quant-trader.duckdns.org/api/user/status
+ *   STATUS_URL        defaults to https://trader.tejashendre.com/api/user/status
  *   STATUS_AUTH_TOKEN defaults to SPECTATOR
  */
 

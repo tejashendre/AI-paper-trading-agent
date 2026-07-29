@@ -23,7 +23,7 @@ export class Logger {
             details,
         };
 
-        // 1. Console Log (for Vercel logs)
+        // 1. Console log (captured by the container runtime)
         const consoleMethod =
             level === "ERROR" ? console.error : level === "WARN" ? console.warn : console.log;
         consoleMethod(`[${level}] ${message}`, details ?? "");
