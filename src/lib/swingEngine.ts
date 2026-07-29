@@ -686,7 +686,7 @@ function simpleStateText(state: SwingDecisionState, direction: "LONG" | "SHORT" 
   return direction === "SHORT" ? "No clear short opportunity yet" : direction === "LONG" ? "No clear buy opportunity yet" : "No clear opportunity yet";
 }
 
-function buildEntryGateDiagnostics(input: {
+export function buildEntryGateDiagnostics(input: {
   assetMode: SwingSignal["assetMode"];
   htfScore: number;
   triggerScore: number;
@@ -722,6 +722,11 @@ function buildEntryGateDiagnostics(input: {
   if (!htfPassed && !exceptionHtfPassed) missing.push("higher-timeframe evidence is still too weak");
   if (!triggerPassed) missing.push("short-term trigger is not confirmed yet");
   if (!convictionPassed) missing.push("final conviction is below the entry minimum");
+
+  const entryPathSatisfied = input.normalEntry || input.exceptionEntry || input.controlledProbeEntry;
+  if (!entryPathSatisfied && missing.length === 0) {
+    missing.push("no complete normal, exception, or controlled-probe entry path is satisfied");
+  }
 
   return {
     htfPassed,

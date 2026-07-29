@@ -53,6 +53,39 @@ const ASSETS = [
   { key: "SILVER", name: "Silver (Spot)", category: "Commodities", symbol: "SI=F" }
 ];
 
+type ChartTimezone = "EU" | "UK" | "IST" | "US";
+
+const CHART_TIMEZONE_STORAGE_KEY = "dashboard_chart_timezone";
+
+function isChartTimezone(value: string | null): value is ChartTimezone {
+  return value === "EU" || value === "UK" || value === "IST" || value === "US";
+}
+
+function detectChartTimezone(): ChartTimezone {
+  const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (localZone === "Asia/Kolkata" || localZone === "Asia/Calcutta") return "IST";
+  if (localZone === "Europe/London") return "UK";
+  if (localZone.startsWith("America/")) return "US";
+  return "EU";
+}
+
+function chartTimezoneName(timezone: ChartTimezone) {
+  if (timezone === "IST") return "Asia/Kolkata";
+  if (timezone === "UK") return "Europe/London";
+  if (timezone === "US") return "America/New_York";
+  return "Europe/Paris";
+}
+
+function formatChartTimestamp(iso: string | undefined, timezone: ChartTimezone) {
+  if (!iso) return "--:--";
+  return new Date(iso).toLocaleTimeString("en-GB", {
+    timeZone: chartTimezoneName(timezone),
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function calculateDisplayPnl(assetKey: string, pos: any, currentPrice: number) {
   const isShort = pos.direction === "SHORT";
   const signedMove = isShort
@@ -264,7 +297,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [activeAsset, setActiveAsset] = useState("BTC");
   const [activeTab, setActiveTab] = useState<"Crypto" | "Forex" | "Commodities">("Crypto");
   const [chartInterval, setChartInterval] = useState("1h");
-  const [chartTimezone, setChartTimezone] = useState<"EU" | "UK" | "IST" | "US">("EU");
+  const [chartTimezone, setChartTimezone] = useState<ChartTimezone>("EU");
   const [data, setData] = useState<any>(null);
   const [chartData, setChartData] = useState<any>(null);
   const [chartLoading, setChartLoading] = useState(false);
@@ -307,6 +340,16 @@ function DashboardContent({ secret }: { secret: string }) {
     const saved = localStorage.getItem("dashboard_theme");
     if (saved === "light" || saved === "dark") setTheme(saved);
   }, []);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(CHART_TIMEZONE_STORAGE_KEY);
+    setChartTimezone(isChartTimezone(saved) ? saved : detectChartTimezone());
+  }, []);
+
+  const selectChartTimezone = (timezone: ChartTimezone) => {
+    setChartTimezone(timezone);
+    localStorage.setItem(CHART_TIMEZONE_STORAGE_KEY, timezone);
+  };
 
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -912,19 +955,27 @@ function DashboardContent({ secret }: { secret: string }) {
           <div className="lg:col-span-3 space-y-6">
             <div className={`border rounded-2xl p-5 ${bgCard}`}>
               <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 border-b ${borderCol} pb-3 gap-3`}>
-                <div className="flex items-center gap-4">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>{selectedAssetConfig.name} ({selectedAssetConfig.symbol}) / {chartInterval.toUpperCase()} / {viewMode.toUpperCase()} MODE</h2>
                   {chartData?.asset === activeAsset && chartData.candles?.length > 0 && (
                     (() => {
                       const decimals = selectedAssetConfig.category === 'Forex' ? 5 : 2;
                       const lastCandle = chartData.candles[chartData.candles.length - 1];
                       return (
-                        <div className={`flex items-center gap-3 text-[10px] font-mono font-bold border-l pl-4 ${borderCol}`}>
+                        <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono font-bold border-l pl-4 ${borderCol}`}>
+                          {Number(activeLivePrice?.price || 0) > 0 && (
+                            <span className={isDark ? "text-blue-400" : "text-blue-600"}>
+                              PRICE: {Number(activeLivePrice.price).toFixed(decimals)}
+                            </span>
+                          )}
                           <span className={`${chartData.stale ? "text-amber-500" : (isDark ? "text-blue-400" : "text-blue-600")}`}>
-                            {chartData.stale ? "LAST" : "LIVE"}: {lastCandle.close.toFixed(decimals)}
+                            {chartData.stale ? "LAST CANDLE" : "CANDLE"}: {lastCandle.close.toFixed(decimals)}
                           </span>
                           <span className={`${isDark ? "text-green-400" : "text-green-600"}`}>H: {lastCandle.high.toFixed(decimals)}</span>
                           <span className={`${isDark ? "text-red-400" : "text-red-600"}`}>L: {lastCandle.low.toFixed(decimals)}</span>
+                          <span className={textMuted}>
+                            OPENED: {formatChartTimestamp(chartData.asOf, chartTimezone)} {chartTimezone}
+                          </span>
                         </div>
                       );
                     })()
@@ -935,7 +986,7 @@ function DashboardContent({ secret }: { secret: string }) {
                     {["EU", "UK", "IST", "US"].map(tz => (
                       <button 
                         key={tz} 
-                        onClick={() => setChartTimezone(tz as any)} 
+                        onClick={() => selectChartTimezone(tz as ChartTimezone)}
                         className={`px-3 py-1 text-[9px] font-mono font-bold transition-all ${
                           chartTimezone === tz 
                             ? "bg-blue-600 text-white shadow-xs" 

@@ -175,7 +175,7 @@ export class LLMProxy {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${apiKey}`,
-            "HTTP-Referer": "https://ai-quant-trader.duckdns.org",
+            "HTTP-Referer": "https://trader.tejashendre.com",
             "X-Title": "AI Paper Trading Agent"
           },
           body: JSON.stringify({

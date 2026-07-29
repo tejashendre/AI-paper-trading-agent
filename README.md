@@ -4,6 +4,8 @@ An explainable, autonomous paper-trading system for observing markets, evaluatin
 
 **Live spectator dashboard:** [trader.tejashendre.com](https://trader.tejashendre.com)
 **Repository:** [tejashendre/AI-paper-trading-agent](https://github.com/tejashendre/AI-paper-trading-agent)
+**Current architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+**Latest post-reset audit:** [docs/POST_RESET_SYSTEM_AUDIT_2026-07-29.md](docs/POST_RESET_SYSTEM_AUDIT_2026-07-29.md)
 
 ## What This Project Does
 
@@ -145,6 +147,17 @@ npm run build
 npm run audit:strategy
 npm run agent:audit
 ```
+
+Run the live-window replay separately:
+
+```bash
+npm run replay:strategy
+```
+
+The replay reports engineering integrity and research quality independently. It
+exits unsuccessfully when the strategy lacks at least 30 trades, positive
+after-cost return, or a 1.10 profit factor; a mechanically correct losing replay
+must not be treated as strategy approval.
 
 Useful read-only CLI views:
 

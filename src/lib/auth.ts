@@ -1,25 +1,5 @@
-// ================================================================
-// Auth Middleware — QStash signatures + Dashboard bearer tokens
-// ================================================================
-//
-// SECURITY NOTES:
-//
-// 1. QStash path: We verify that the `upstash-signature` header is
-//    present AND that signing keys are configured, but we do NOT
-//    perform full HMAC cryptographic verification of the signature.
-//    This is a known gap. Full verification should be added using
-//    the `@upstash/qstash` SDK's `Receiver.verify()` method.
-//    Until then, this path trusts any request that presents the
-//    header while keys are configured, which is safe only if the
-//    endpoint is not otherwise reachable by external traffic.
-//
-// 2. Vercel Cron path: `x-vercel-cron: 1` is safe to trust because
-//    Vercel's infrastructure automatically STRIPS this header from
-//    any inbound external HTTP requests, so it can only be set by
-//    Vercel's own cron scheduler internally. See Vercel docs:
-//    https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs
-//
-// ================================================================
+// Bearer-token authentication for dashboard, read-only spectator,
+// and VPS daemon/cron requests. Infrastructure headers are not trusted.
 
 import { getEnv } from "@/lib/env";
 

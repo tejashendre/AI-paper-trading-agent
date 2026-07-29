@@ -10,6 +10,7 @@ import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
 import {
+  buildEntryGateDiagnostics,
   calculateCalibratedConviction,
   evaluateNetRewardRisk,
   scoreContinuousHtfEvidence,
@@ -1463,10 +1464,37 @@ function auditReplayEngine(): AuditResult[] {
   });
 
   const checks: AuditResult[] = [];
+  const incompleteEntryPath = buildEntryGateDiagnostics({
+    assetMode: "SLOW_SWING",
+    htfScore: 10,
+    triggerScore: 14,
+    finalConviction: 75,
+    dataQuality: 92,
+    slippageOk: true,
+    rewardRiskPassed: true,
+    structureAligned: true,
+    microstructureAligned: true,
+    learningWatchOnly: false,
+    normalEntry: false,
+    exceptionEntry: false,
+    controlledProbeEntry: false,
+  });
   checks.push(result(
-    report.acceptance.passed ? "PASS" : "FAIL",
-    "replay acceptance gates",
-    report.acceptance.messages.join(" ")
+    incompleteEntryPath.primaryBlocker !== "all entry gates passed" && incompleteEntryPath.missing.length === 1 ? "PASS" : "FAIL",
+    "truthful incomplete entry-path diagnostics",
+    incompleteEntryPath.primaryBlocker
+  ));
+  checks.push(result(
+    report.acceptance.integrityPassed ? "PASS" : "FAIL",
+    "replay engineering-integrity gates",
+    report.acceptance.integrityPassed
+      ? "Execution, stale-data, score-distribution, and sizing checks passed."
+      : report.acceptance.messages.join(" ")
+  ));
+  checks.push(result(
+    report.acceptance.researchQualityPassed ? "PASS" : "WARN",
+    "replay research-quality gate",
+    `${report.totalTrades} trade(s), ${report.totalReturnPercent.toFixed(2)}% net return, profit factor ${report.profitFactor.toFixed(2)}. Research promotion requires at least 30 trades, positive after-cost return, and profit factor >= 1.10.`
   ));
   checks.push(result(
     report.totalTrades > 0 && Object.keys(report.scoreDistribution).length >= 5 ? "PASS" : "WARN",
