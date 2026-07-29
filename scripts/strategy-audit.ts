@@ -1202,6 +1202,11 @@ function auditProductionRegressions(): AuditResult[] {
   const resetClearsCurrentState = resetSource.includes("LocalLearningMemory.clearCurrentStrategyState()") &&
     resetSource.includes("OpportunityJournal.clearCurrentStrategyState()") &&
     resetSource.includes("TradeReviewJournal.clearCurrentStrategyState()") &&
+    resetSource.includes("swing:cooldown:") &&
+    resetSource.includes('"swing:lastExitSweep:ai"') &&
+    resetSource.includes('"swing:lastExitSweep:user"') &&
+    resetSource.includes('"swing:scan:request"') &&
+    resetSource.includes("clearedTransientKeys: transientKeys") &&
     resetSource.includes('type: "SYSTEM_RESET"') &&
     learningSource.includes("static async clearCurrentStrategyState()") &&
     opportunitySource.includes("static async clearCurrentStrategyState()") &&
@@ -1244,7 +1249,7 @@ function auditProductionRegressions(): AuditResult[] {
       ? "Portfolio backups are structurally validated and replaced atomically; an intentional empty trade history is not misreported as corruption."
       : "Crash recovery can accept malformed state or expose partially written JSON."),
     result(resetClearsCurrentState ? "PASS" : "FAIL", "truthful current-strategy reset", resetClearsCurrentState
-      ? "An admin reset clears current learning, opportunity, and review state, preserves older strategy history, and records the reset."
+      ? "An admin reset clears portfolios, current learning, opportunities, reviews, cooldowns, exit snapshots, and pending scan requests while preserving older strategy history."
       : "The reset can leave active strategy-derived restrictions behind or omit its audit event."),
   ];
 }
