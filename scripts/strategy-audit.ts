@@ -25,6 +25,7 @@ import {
 import { evaluatePortfolioRiskBudget } from "../src/lib/trading/portfolioRiskBudget";
 import { computeExecutionEventHash, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
 import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
+import { marketPriceCacheKey, primaryMarketDataProvider, SUPPORTED_ASSETS } from "../src/lib/market";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -212,6 +213,32 @@ function auditAssetSpecs(): AuditResult[] {
 
   const forexOk = forexAssets.every((spec) => spec.maxMarginPercent <= 0.1);
   checks.push(result(forexOk ? "PASS" : "WARN", "forex slower-risk treatment", forexOk ? "Forex starts from conservative margin caps in free-data mode." : "Forex margin caps are aggressive; verify live feed quality first."));
+
+  const instrumentIdentityOk = REQUIRED_ASSETS.every((asset) => {
+    const config = SUPPORTED_ASSETS[asset];
+    if (config.category === "crypto") {
+      return primaryMarketDataProvider(asset) === "KRAKEN" && config.krakenPair.length > 0;
+    }
+    return primaryMarketDataProvider(asset) === "YAHOO" && config.krakenPair.length === 0;
+  });
+  checks.push(result(
+    instrumentIdentityOk ? "PASS" : "FAIL",
+    "instrument-aligned market providers",
+    instrumentIdentityOk
+      ? "Kraken is restricted to liquid crypto instruments; forex and commodity execution use their matching Yahoo symbols."
+      : "A non-crypto asset can still resolve through a mismatched or illiquid Kraken instrument."
+  ));
+
+  const providerScopedCaches = REQUIRED_ASSETS.every((asset) => (
+    marketPriceCacheKey(asset).includes(`:${primaryMarketDataProvider(asset)}:${asset}`)
+  ));
+  checks.push(result(
+    providerScopedCaches ? "PASS" : "FAIL",
+    "provider-scoped execution price caches",
+    providerScopedCaches
+      ? "Execution price caches encode the provider policy so mixed-source values cannot survive a release."
+      : "At least one execution price cache does not encode its provider identity."
+  ));
 
   return checks;
 }
@@ -1423,7 +1450,7 @@ function auditTradeReviewMemory(): AuditResult[] {
   return checks;
 }
 
-function syntheticCandles(startPrice: number, drift: number, count = 260): Candle[] {
+function syntheticCandles(startPrice: number, drift: number, count = 2_080): Candle[] {
   const candles: Candle[] = [];
   let price = startPrice;
   const startTime = 1_725_000_000;

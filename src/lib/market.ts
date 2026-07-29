@@ -17,13 +17,26 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
   BTC: { name: "Bitcoin", category: "crypto", krakenPair: "XBTUSD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
   ETH: { name: "Ethereum", category: "crypto", krakenPair: "ETHUSD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
   SOL: { name: "Solana", category: "crypto", krakenPair: "SOLUSD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
-  EURUSD: { name: "EUR/USD", category: "forex", krakenPair: "EURUSD", yahooTicker: "EURUSD=X", coingeckoId: "" },
-  GBPUSD: { name: "GBP/USD", category: "forex", krakenPair: "GBPUSD", yahooTicker: "GBPUSD=X", coingeckoId: "" },
-  USDJPY: { name: "USD/JPY", category: "forex", krakenPair: "USDJPY", yahooTicker: "USDJPY=X", coingeckoId: "" },
-  GOLD: { name: "Gold", category: "commodity", krakenPair: "PAXGUSD", yahooTicker: "GC=F", coingeckoId: "" },
+  EURUSD: { name: "EUR/USD", category: "forex", krakenPair: "", yahooTicker: "EURUSD=X", coingeckoId: "" },
+  GBPUSD: { name: "GBP/USD", category: "forex", krakenPair: "", yahooTicker: "GBPUSD=X", coingeckoId: "" },
+  USDJPY: { name: "USD/JPY", category: "forex", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
+  GOLD: { name: "Gold", category: "commodity", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
   OIL: { name: "Crude Oil", category: "commodity", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
   SILVER: { name: "Silver", category: "commodity", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
 };
+
+export function primaryMarketDataProvider(assetKey: string): "KRAKEN" | "YAHOO" {
+  const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
+  return config.category === "crypto" ? "KRAKEN" : "YAHOO";
+}
+
+export function marketPriceCacheKey(assetKey: string): string {
+  return `cache:price:instrument-v2:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
+}
+
+function marketCandleCacheKey(assetKey: string, timeframe: Timeframe): string {
+  return `cache:candles:instrument-v2:${primaryMarketDataProvider(assetKey)}:${assetKey}:${timeframe}`;
+}
 
 export class MarketService {
   private static normalizeCandles(assetKey: string, timeframe: Timeframe, candles: Candle[]): Candle[] {
@@ -190,7 +203,7 @@ export class MarketService {
     options: CandleRequestOptions = {}
   ): Promise<Candle[]> {
     const redis = getRedis();
-    const cacheKey = `cache:candles:${assetKey}:${timeframe}`;
+    const cacheKey = marketCandleCacheKey(assetKey, timeframe);
     let staleCandidate: Candle[] | null = null;
     
     // Attempt cache check first
@@ -211,8 +224,8 @@ export class MarketService {
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
     const fetchLimit = Math.max(720, limit); // Always fetch at least 720 candles to keep the cache rich
 
-    // Try Kraken first (Primary institutional feed)
-    if (config.krakenPair) {
+    // Kraken is primary only for the matching liquid crypto instruments.
+    if (primaryMarketDataProvider(assetKey) === "KRAKEN" && config.krakenPair) {
       try {
         const candles = this.normalizeCandles(assetKey, timeframe, await this.fetchKrakenCandles(config.krakenPair, timeframe, fetchLimit));
         if (candles && candles.length > 0) {
@@ -406,32 +419,34 @@ export class MarketService {
 
   static async getCurrentPrice(assetKey: string = "BTC"): Promise<number> {
     const redis = getRedis();
+    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
+    const provider = primaryMarketDataProvider(assetKey);
 
     // 1. Live WebSocket Feed. The timestamp is authoritative so a retained
     // value cannot be mistaken for a fresh execution price.
-    try {
-      const [livePrice, liveMeta] = await Promise.all([
-        redis.get<number>(`market:live:${assetKey}`),
-        redis.get<any>(`market:liveMeta:${assetKey}`),
-      ]);
-      const updatedAt = new Date(liveMeta?.updatedAt || 0).getTime();
-      const ageMs = Date.now() - updatedAt;
-      if (livePrice && Number.isFinite(Number(livePrice)) && ageMs >= 0 && ageMs <= 45_000) {
-        return Number(livePrice);
-      }
-    } catch {}
+    if (provider === "KRAKEN") {
+      try {
+        const [livePrice, liveMeta] = await Promise.all([
+          redis.get<number>(`market:live:${assetKey}`),
+          redis.get<any>(`market:liveMeta:${assetKey}`),
+        ]);
+        const updatedAt = new Date(liveMeta?.updatedAt || 0).getTime();
+        const ageMs = Date.now() - updatedAt;
+        if (livePrice && Number.isFinite(Number(livePrice)) && ageMs >= 0 && ageMs <= 45_000) {
+          return Number(livePrice);
+        }
+      } catch {}
+    }
 
     // 2. HTTP Cache Fallback
-    const cacheKey = `cache:price:${assetKey}`;
+    const cacheKey = marketPriceCacheKey(assetKey);
     try {
       const cached = await redis.get<number>(cacheKey);
       if (cached) return Number(cached);
     } catch {}
 
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-
     // Kraken Primary
-    if (config.krakenPair) {
+    if (provider === "KRAKEN" && config.krakenPair) {
       try {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), 5000);
@@ -491,42 +506,43 @@ export class MarketService {
 
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
 
-    // Try Kraken
-    try {
-      const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${config.krakenPair}`, {
-        signal: controller.signal
-      });
-      clearTimeout(id);
+    if (primaryMarketDataProvider(assetKey) === "KRAKEN" && config.krakenPair) {
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${config.krakenPair}`, {
+          signal: controller.signal
+        });
+        clearTimeout(id);
 
-      if (res.ok) {
-        const data = await res.json();
-        const pairKey = Object.keys(data.result)[0];
-        const ticker = data.result[pairKey];
+        if (res.ok) {
+          const data = await res.json();
+          const pairKey = Object.keys(data.result)[0];
+          const ticker = data.result[pairKey];
 
-        const getVal = (val: any, index: number) => {
-          if (Array.isArray(val)) return val[index] !== undefined ? val[index] : val[0];
-          return val;
-        };
+          const getVal = (val: any, index: number) => {
+            if (Array.isArray(val)) return val[index] !== undefined ? val[index] : val[0];
+            return val;
+          };
 
-        const open = parseFloat(getVal(ticker.o, 0));
-        const close = parseFloat(getVal(ticker.c, 0));
-        const change = close - open;
-        const changePercent = open > 0 ? (change / open) * 100 : 0;
+          const open = parseFloat(getVal(ticker.o, 0));
+          const close = parseFloat(getVal(ticker.c, 0));
+          const change = close - open;
+          const changePercent = open > 0 ? (change / open) * 100 : 0;
 
-        const stats = {
-          priceChange: change,
-          priceChangePercent: changePercent,
-          volume: parseFloat(getVal(ticker.v, 1)),
-          high: parseFloat(getVal(ticker.h, 1)),
-          low: parseFloat(getVal(ticker.l, 1))
-        };
+          const stats = {
+            priceChange: change,
+            priceChangePercent: changePercent,
+            volume: parseFloat(getVal(ticker.v, 1)),
+            high: parseFloat(getVal(ticker.h, 1)),
+            low: parseFloat(getVal(ticker.l, 1))
+          };
 
-        await redis.set(cacheKey, JSON.stringify(stats), { ex: 60 });
-        return stats;
-      }
-    } catch {}
+          await redis.set(cacheKey, JSON.stringify(stats), { ex: 60 });
+          return stats;
+        }
+      } catch {}
+    }
 
     // Try Yahoo
     try {

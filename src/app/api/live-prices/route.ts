@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
 import { getRedis } from "@/lib/redis";
-import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
+import { marketPriceCacheKey, MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,7 @@ export async function GET(request: Request) {
     const [livePrice, liveMeta, cachedPrice, krakenPrice, krakenMeta, bybitPrice, bybitMeta, binancePrice, binanceMeta] = await Promise.all([
       redis.get<number | string>(`market:live:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:${asset}`).catch(() => null),
-      redis.get<number | string>(`cache:price:${asset}`).catch(() => null),
+      redis.get<number | string>(marketPriceCacheKey(asset)).catch(() => null),
       redis.get<number | string>(`market:live:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
       redis.get<any>(`market:liveMeta:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
       redis.get<number | string>(`market:live:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
@@ -82,7 +82,7 @@ export async function GET(request: Request) {
         })
       : undefined;
 
-    if (Number.isFinite(liveNumber) && liveNumber > 0) {
+    if (mode === "REALTIME_FAST" && Number.isFinite(liveNumber) && liveNumber > 0) {
       prices[asset] = {
         price: liveNumber,
         source: "WEBSOCKET",
