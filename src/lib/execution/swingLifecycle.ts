@@ -53,10 +53,6 @@ function ensurePortfolioStats(portfolio: Portfolio) {
 }
 
 async function getLivePrice(asset: string): Promise<number> {
-  const redis = getRedis();
-  const livePrice = await redis.get<number | string>(`market:live:${asset}`);
-  const parsedLivePrice = typeof livePrice === "string" ? parseFloat(livePrice) : Number(livePrice);
-  if (Number.isFinite(parsedLivePrice) && parsedLivePrice > 0) return parsedLivePrice;
   return MarketService.getCurrentPrice(asset);
 }
 

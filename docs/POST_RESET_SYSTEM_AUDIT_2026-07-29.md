@@ -450,16 +450,61 @@ A next release should not be called complete until:
 - the open USDJPY position and its watchdog state survive the deployment
   without duplicate entry, accounting drift, or ledger discontinuity.
 
+## Post-Deployment Instrument-Identity Incident
+
+The release reached production at
+`9249b0a387650f6246b15813b2d1560cb9cf94ab` and preserved the open USDJPY
+position across the container restart. The daemon advanced normally and
+reported zero scan errors. At `2026-07-29T12:44:43.943Z`, however, the exit
+watchdog closed the position at a modeled fill of `162.508709` even though the
+protective stop was `165.031999`.
+
+This was not accepted as trustworthy strategy evidence. Runtime reconstruction
+found that:
+
+- the bot treated Kraken's `USDJPY` fiat pair as the primary execution and
+  candle source;
+- Kraken's observed market was extremely thin, with bid `162.600`, ask
+  `164.902`, and last trade `162.600`;
+- Yahoo's matching `USDJPY=X` instrument simultaneously reported about
+  `163.772`;
+- the feed-health layer described non-crypto data as Yahoo-only even though
+  `MarketService` could still select Kraken;
+- Gold had the same identity risk because PAXG/USD was being used as a
+  substitute for the GC futures instrument.
+
+The resulting `-$17.51` paper close is therefore a source-policy contamination
+event. It must not be used as proof of strategy failure or success.
+
+The local corrective release:
+
+1. restricts Kraken candle and ticker usage to BTC, ETH, and SOL;
+2. uses Yahoo's matching symbols for forex and commodity analysis, entry, and
+   exit;
+3. removes direct raw-Redis price reads from the exit lifecycle and delegates
+   freshness validation to `MarketService`;
+4. versions price and candle caches by provider policy so old mixed-source
+   values cannot survive deployment;
+5. adds strategy-audit regressions for instrument identity and provider-scoped
+   caches.
+
+After that correction is deployed, an explicit admin reset should be approved
+to remove the contaminated USDJPY outcome from the current strategy's learning
+cohort. Historical evidence should remain available only in the audit record.
+
 ## Final Answer
 
 The reset did not destroy the bot. It produced a clean current-version learning
-cohort, the runtime is actively evaluating markets, and the first observed
-post-reset USDJPY controlled probe proves that autonomous entry and management
-still work. The long initial wait was mostly a consequence of strict structure
-and economics gates, with three earlier candidates blocked by the minimum
+cohort and the runtime is actively evaluating markets. The first observed
+post-reset USDJPY controlled probe proved that autonomous entry, restart
+recovery, watchdog management, and accounting execute, but its outcome is not
+valid strategy evidence because the instrument-source policy was contaminated.
+The long initial wait was mostly a consequence of strict structure and
+economics gates, with three earlier candidates blocked by the minimum
 useful-profit floor.
 
 The system should not be forced into mass trading today. The latest replay does
-not show an edge. The best next move is to deploy the transparency and research
-gate fixes, preserve the current thresholds, collect clean paper evidence, and
+not show an edge. The immediate next move is to deploy the instrument-identity
+correction, reset the contaminated current-version evidence with explicit
+approval, preserve the current thresholds, collect clean paper evidence, and
 research any higher-cadence candidate as a separate strategy version.
