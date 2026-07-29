@@ -6,6 +6,8 @@ import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executi
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
+import { getRedis } from "@/lib/redis";
+import { SUPPORTED_ASSETS } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +52,14 @@ export async function POST(request: Request) {
             OpportunityJournal.clearCurrentStrategyState(),
             TradeReviewJournal.clearCurrentStrategyState(),
         ]);
+        const redis = getRedis();
+        const transientKeys = [
+            ...Object.keys(SUPPORTED_ASSETS).map((asset) => `swing:cooldown:${asset}`),
+            "swing:lastExitSweep:ai",
+            "swing:lastExitSweep:user",
+            "swing:scan:request",
+        ];
+        await Promise.all(transientKeys.map((key) => redis.del(key)));
         await ExecutionLedger.recordBestEffort({
             type: "SYSTEM_RESET",
             source: "ADMIN_DASHBOARD",
@@ -57,6 +67,7 @@ export async function POST(request: Request) {
                 capital,
                 portfolios: ["user", "ai"],
                 clearedStrategyVersion: TRADING_STRATEGY_VERSION,
+                clearedTransientKeys: transientKeys,
                 preservedVersionedHistory: true,
             },
         });
