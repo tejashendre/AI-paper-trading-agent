@@ -20,6 +20,14 @@ interface LiveTickDetails {
     providerEventTime?: number | string;
 }
 
+interface BybitMarketState {
+    price?: number;
+    bid?: number;
+    ask?: number;
+    bidQty?: number;
+    askQty?: number;
+}
+
 export class WebsocketDataMesh {
     private krakenWs: WebSocket | null = null;
     private bybitWs: WebSocket | null = null;
@@ -36,6 +44,7 @@ export class WebsocketDataMesh {
     private binanceConnectedAt = 0;
     private heartbeatInterval: NodeJS.Timeout | null = null;
     private lastPersistedAt = new Map<string, number>();
+    private bybitMarketState = new Map<string, BybitMarketState>();
 
     private getCryptoAssets() {
         return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].category === "crypto");
@@ -234,6 +243,7 @@ export class WebsocketDataMesh {
             this.bybitWs = ws;
             this.bybitLastMarketDataAt = 0;
             this.bybitConnectedAt = Date.now();
+            this.bybitMarketState.clear();
 
             ws.on("open", () => {
                 if (this.bybitReconnectTimeout) clearTimeout(this.bybitReconnectTimeout);
@@ -254,32 +264,39 @@ export class WebsocketDataMesh {
                     const isTrade = parsed.topic?.startsWith("publicTrade.");
                     if ((!isTicker && !isTrade) || !parsed.data) return;
 
-                    // Public trades prove the socket is alive, but only the
-                    // ticker carries the selected venue's bid/ask context.
-                    // Letting high-frequency trades share the persistence
-                    // throttle can starve ticker snapshots and erase spread
-                    // and imbalance provenance.
-                    if (isTrade) {
-                        this.bybitLastMarketDataAt = Date.now();
-                        return;
-                    }
-
                     const trades = isTrade && Array.isArray(parsed.data) ? parsed.data : [];
                     const trade = trades.length > 0 ? trades[trades.length - 1] : null;
                     const symbol = String(isTicker ? parsed.topic.split(".")[1] : trade?.s || "").replace("USDT", "");
-                    const price = Number(isTicker ? parsed.data.lastPrice : trade?.p);
-                    if (!Number.isFinite(price) || price <= 0) return;
+                    if (!symbol) return;
+
+                    // Bybit ticker frames are deltas. Merge them with the last
+                    // complete quote, and let public trades refresh price
+                    // without erasing bid/ask or imbalance context.
+                    const previous = this.bybitMarketState.get(symbol) || {};
+                    const nextValue = (candidate: unknown, fallback?: number) => {
+                        const value = Number(candidate);
+                        return Number.isFinite(value) && value > 0 ? value : fallback;
+                    };
+                    const state: BybitMarketState = {
+                        price: nextValue(isTicker ? parsed.data.lastPrice : trade?.p, previous.price),
+                        bid: nextValue(isTicker ? parsed.data.bid1Price : undefined, previous.bid),
+                        ask: nextValue(isTicker ? parsed.data.ask1Price : undefined, previous.ask),
+                        bidQty: nextValue(isTicker ? parsed.data.bid1Size : undefined, previous.bidQty),
+                        askQty: nextValue(isTicker ? parsed.data.ask1Size : undefined, previous.askQty),
+                    };
+                    this.bybitMarketState.set(symbol, state);
+                    if (!Number.isFinite(state.price) || Number(state.price) <= 0) return;
 
                     this.bybitLastMarketDataAt = Date.now();
-                    const bidQty = Number(isTicker ? parsed.data.bid1Size : undefined);
-                    const askQty = Number(isTicker ? parsed.data.ask1Size : undefined);
+                    const bidQty = Number(state.bidQty);
+                    const askQty = Number(state.askQty);
                     const imbalance = Number.isFinite(bidQty) && Number.isFinite(askQty) && bidQty + askQty > 0
                         ? (bidQty - askQty) / (bidQty + askQty)
                         : undefined;
-                    await this.writeLiveTick(symbol, price, "BYBIT_LINEAR_WS", {
+                    await this.writeLiveTick(symbol, Number(state.price), "BYBIT_LINEAR_WS", {
                         imbalance,
-                        bid: Number(isTicker ? parsed.data.bid1Price : undefined),
-                        ask: Number(isTicker ? parsed.data.ask1Price : undefined),
+                        bid: state.bid,
+                        ask: state.ask,
                         providerEventTime: Number(isTicker ? parsed.ts : trade?.T),
                     });
                 } catch {

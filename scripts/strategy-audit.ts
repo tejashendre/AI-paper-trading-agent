@@ -1296,6 +1296,10 @@ function auditProductionRegressions(): AuditResult[] {
     daemonSource.includes("entryMode: effectiveEntryMode") &&
     admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
     admissionSource.includes('return "PROBE"');
+  const bybitDeltaSafe = websocketSource.includes("bybitMarketState") &&
+    websocketSource.includes("Bybit ticker frames are deltas") &&
+    websocketSource.includes("trade?.p, previous.price") &&
+    websocketSource.includes("parsed.data.bid1Price : undefined, previous.bid");
 
   return [
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
@@ -1334,6 +1338,9 @@ function auditProductionRegressions(): AuditResult[] {
     result(selectedVenueRouting ? "PASS" : "FAIL", "selected-venue execution provenance", selectedVenueRouting
       ? "Crypto signals, fills, lifecycle prices, and persisted provenance are bound to Bybit linear while comparison feeds remain source-scoped."
       : "Crypto execution can still mix venues or lose its selected-instrument provenance."),
+    result(bybitDeltaSafe ? "PASS" : "FAIL", "Bybit delta ticker continuity", bybitDeltaSafe
+      ? "Ticker deltas and public trades merge into one complete selected-venue quote without erasing bid, ask, or price state."
+      : "Sparse Bybit ticker deltas can make a healthy selected quote appear stale or incomplete."),
   ];
 }
 

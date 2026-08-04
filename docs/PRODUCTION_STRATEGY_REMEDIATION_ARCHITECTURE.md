@@ -18,7 +18,7 @@ The operator explicitly approved implementation and a new paper-state reset. The
 - Negative learning can no longer enter through exception or controlled-probe paths.
 - Three correlated full-stop losses quarantine that risk cluster; four portfolio-wide full-stop losses quarantine all new entries.
 - Strategy and policy versions are advanced to `swing-v4.2.0-2026-08-04`, `strong-margin-v2-2026-08-04`, and `portfolio-budget-v2-2026-08-04`.
-- Local TypeScript validation passed and the deterministic strategy audit passed `93` checks with `0` warnings and `0` failures.
+- Local TypeScript validation passed and the deterministic strategy audit passed `94` checks with `0` warnings and `0` failures.
 
 Still pending at this checkpoint:
 
