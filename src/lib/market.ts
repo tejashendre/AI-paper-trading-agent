@@ -4,6 +4,7 @@ import { getRedis } from "@/lib/redis";
 interface AssetConfig {
   name: string;
   category: "crypto" | "forex" | "commodity";
+  bybitLinearSymbol: string;
   krakenPair: string;
   yahooTicker: string;
   coingeckoId: string;
@@ -14,28 +15,60 @@ interface CandleRequestOptions {
 }
 
 export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
-  BTC: { name: "Bitcoin", category: "crypto", krakenPair: "XBTUSD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
-  ETH: { name: "Ethereum", category: "crypto", krakenPair: "ETHUSD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
-  SOL: { name: "Solana", category: "crypto", krakenPair: "SOLUSD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
-  EURUSD: { name: "EUR/USD", category: "forex", krakenPair: "", yahooTicker: "EURUSD=X", coingeckoId: "" },
-  GBPUSD: { name: "GBP/USD", category: "forex", krakenPair: "", yahooTicker: "GBPUSD=X", coingeckoId: "" },
-  USDJPY: { name: "USD/JPY", category: "forex", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
-  GOLD: { name: "Gold", category: "commodity", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
-  OIL: { name: "Crude Oil", category: "commodity", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
-  SILVER: { name: "Silver", category: "commodity", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
+  BTC: { name: "Bitcoin", category: "crypto", bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
+  ETH: { name: "Ethereum", category: "crypto", bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
+  SOL: { name: "Solana", category: "crypto", bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
+  EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "EURUSD=X", coingeckoId: "" },
+  GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "GBPUSD=X", coingeckoId: "" },
+  USDJPY: { name: "USD/JPY", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
+  GOLD: { name: "Gold", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
+  OIL: { name: "Crude Oil", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
+  SILVER: { name: "Silver", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
 };
 
-export function primaryMarketDataProvider(assetKey: string): "KRAKEN" | "YAHOO" {
+export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
+export const CRYPTO_EXECUTION_SOURCE = "BYBIT_LINEAR_WS" as const;
+
+export type PrimaryMarketDataProvider = typeof CRYPTO_EXECUTION_PROVIDER | "YAHOO";
+
+export interface MarketPriceSnapshot {
+  price: number;
+  provider: string;
+  source: "WEBSOCKET" | "HTTP";
+  venue: string;
+  instrument: string;
+  updatedAt: string;
+  bid?: number;
+  ask?: number;
+}
+
+export function marketLivePriceKey(source: string, assetKey: string): string {
+  return `market:live:${source}:${assetKey}`;
+}
+
+export function marketLiveMetaKey(source: string, assetKey: string): string {
+  return `market:liveMeta:${source}:${assetKey}`;
+}
+
+export function marketImbalanceKey(source: string, assetKey: string): string {
+  return `market:imbalance:${source}:${assetKey}`;
+}
+
+export function primaryMarketDataProvider(assetKey: string): PrimaryMarketDataProvider {
   const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-  return config.category === "crypto" ? "KRAKEN" : "YAHOO";
+  return config.category === "crypto" ? CRYPTO_EXECUTION_PROVIDER : "YAHOO";
 }
 
 export function marketPriceCacheKey(assetKey: string): string {
-  return `cache:price:instrument-v2:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
+  return `cache:price:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
+}
+
+function marketPriceMetaCacheKey(assetKey: string): string {
+  return `cache:priceMeta:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
 }
 
 function marketCandleCacheKey(assetKey: string, timeframe: Timeframe): string {
-  return `cache:candles:instrument-v2:${primaryMarketDataProvider(assetKey)}:${assetKey}:${timeframe}`;
+  return `cache:candles:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}:${timeframe}`;
 }
 
 export class MarketService {
@@ -127,60 +160,71 @@ export class MarketService {
     };
   }
 
+  private static async fetchBybitJson(path: string, timeoutMs = 8_000): Promise<any> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`https://api.bybit.com${path}`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Bybit API HTTP error: ${response.status}`);
+      const data = await response.json();
+      if (Number(data?.retCode) !== 0) {
+        throw new Error(`Bybit API error ${data?.retCode}: ${data?.retMsg || "unknown error"}`);
+      }
+      return data;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private static async fetchBybitTicker(symbol: string): Promise<any> {
+    const data = await this.fetchBybitJson(
+      `/v5/market/tickers?category=linear&symbol=${encodeURIComponent(symbol)}`,
+      5_000
+    );
+    const ticker = data?.result?.list?.[0];
+    if (!ticker) throw new Error(`Bybit returned no ticker for ${symbol}`);
+    return { ...ticker, serverTime: Number(data?.time) || Date.now() };
+  }
+
   static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number, openInterest?: number }> {
     const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || config.category !== 'crypto') return {};
+    if (!config || config.category !== "crypto" || !config.bybitLinearSymbol) return {};
 
     const redis = getRedis();
-    const cacheKey = `cache:deep_sensors:${assetKey}`;
-    
+    const cacheKey = `cache:deep_sensors:v2:${CRYPTO_EXECUTION_PROVIDER}:${assetKey}`;
     try {
       const cached = await redis.get<string>(cacheKey);
-      if (cached) {
-        return typeof cached === "string" ? JSON.parse(cached) : cached;
-      }
+      if (cached) return typeof cached === "string" ? JSON.parse(cached) : cached;
     } catch {}
 
     try {
-      const symbol = `${assetKey}USDT`;
-      
-      const [fundingRes, oiRes] = await Promise.allSettled([
-        fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`),
-        fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`)
-      ]);
-
-      const sensors: { fundingRate?: number, openInterest?: number } = {};
-
-      if (fundingRes.status === 'fulfilled' && fundingRes.value.ok) {
-        const data = await fundingRes.value.json();
-        sensors.fundingRate = parseFloat(data.lastFundingRate);
+      const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
+      const fundingRate = Number(ticker.fundingRate);
+      const openInterest = Number(ticker.openInterest);
+      const sensors = {
+        ...(Number.isFinite(fundingRate) ? { fundingRate } : {}),
+        ...(Number.isFinite(openInterest) ? { openInterest } : {}),
+      };
+      if (Object.keys(sensors).length > 0) {
+        await redis.set(cacheKey, JSON.stringify(sensors), { ex: 60 });
       }
-
-      if (oiRes.status === 'fulfilled' && oiRes.value.ok) {
-        const data = await oiRes.value.json();
-        sensors.openInterest = parseFloat(data.openInterest);
-      }
-
-      if (sensors.fundingRate !== undefined || sensors.openInterest !== undefined) {
-        await redis.set(cacheKey, JSON.stringify(sensors), { ex: 300 }); // Cache for 5 mins
-      }
-
       return sensors;
     } catch (err) {
-      console.warn(`[MarketService] Failed to fetch deep sensors for ${assetKey}:`, err);
+      console.warn(`[MarketService] Failed to fetch Bybit sensors for ${assetKey}:`, err);
       return {};
     }
   }
 
-  private static getKrakenMinutes(timeframe: Timeframe): number {
+  private static getBybitInterval(timeframe: Timeframe | "1w"): string {
     switch (timeframe) {
-      case "1m": return 1;
-      case "5m": return 5;
-      case "15m": return 15;
-      case "30m": return 30;
-      case "1h": return 60;
-      case "4h": return 240;
-      default: return 60;
+      case "1m": return "1";
+      case "5m": return "5";
+      case "15m": return "15";
+      case "30m": return "30";
+      case "1h": return "60";
+      case "4h": return "240";
+      case "1w": return "W";
+      default: return "60";
     }
   }
 
@@ -224,10 +268,16 @@ export class MarketService {
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
     const fetchLimit = Math.max(720, limit); // Always fetch at least 720 candles to keep the cache rich
 
-    // Kraken is primary only for the matching liquid crypto instruments.
-    if (primaryMarketDataProvider(assetKey) === "KRAKEN" && config.krakenPair) {
+    // Crypto signals, entries, and lifecycle prices must all describe the same
+    // Bybit USDT perpetual instrument. Comparison venues never become hidden
+    // execution fallbacks.
+    if (config.category === "crypto" && config.bybitLinearSymbol) {
       try {
-        const candles = this.normalizeCandles(assetKey, timeframe, await this.fetchKrakenCandles(config.krakenPair, timeframe, fetchLimit));
+        const candles = this.normalizeCandles(
+          assetKey,
+          timeframe,
+          await this.fetchBybitLinearCandles(config.bybitLinearSymbol, timeframe, fetchLimit)
+        );
         if (candles && candles.length > 0) {
           if (this.candlesAreFresh(assetKey, timeframe, candles)) {
             const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
@@ -236,12 +286,17 @@ export class MarketService {
           }
           staleCandidate = candles;
         }
-      } catch (krakenError) {
-        console.warn(`Kraken feed failed for ${assetKey}, trying Yahoo Finance fallback...`, krakenError);
+      } catch (bybitError) {
+        console.warn(`Bybit linear candle feed failed for ${assetKey}.`, bybitError);
       }
+
+      if (staleCandidate && staleCandidate.length > 0 && options.allowStale) {
+        return staleCandidate.slice(-limit);
+      }
+      throw new Error(`Selected Bybit linear candle feed is unavailable or stale for ${assetKey}/${timeframe}.`);
     }
 
-    // Fallback to Yahoo Finance (Secondary unblocked feed)
+    // Yahoo is the selected instrument family for FX and commodities.
     try {
       // Fix 3: For 4h timeframe, fetch 4× as many 1h candles then downsample to real 4h OHLCV.
       // This gives ~17 days of true 4h history instead of just ~4 days.
@@ -261,7 +316,7 @@ export class MarketService {
         staleCandidate = candles;
       }
     } catch (yahooError) {
-      console.error(`Yahoo Finance fallback also failed for ${assetKey}:`, yahooError);
+      console.error(`Selected Yahoo instrument feed failed for ${assetKey}:`, yahooError);
     }
 
     // Trading callers fail closed by default. Read-only callers may explicitly
@@ -274,37 +329,28 @@ export class MarketService {
     throw new Error(`Failed to fetch candles for asset ${assetKey} from all data feeds.`);
   }
 
-  private static async fetchKrakenCandles(pair: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
-    const interval = this.getKrakenMinutes(timeframe);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const res = await fetch(`https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}`, {
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-
-    if (!res.ok) throw new Error(`Kraken API HTTP error: ${res.status}`);
-    const data = await res.json();
-
-    if (data.error && data.error.length > 0) {
-      throw new Error(`Kraken API error: ${data.error.join(", ")}`);
-    }
-
-    const resultKeys = Object.keys(data.result).filter(k => k !== "last");
-    const candlesRaw = data.result[resultKeys[0]] || [];
-
-    const candles: Candle[] = candlesRaw.map((c: any) => ({
-      time: parseInt(c[0]),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
-      volume: parseFloat(c[6])
-    }));
-
-    // Downsample/slice to match limit
-    return candles.slice(-limit);
+  private static async fetchBybitLinearCandles(
+    symbol: string,
+    timeframe: Timeframe | "1w",
+    limit: number
+  ): Promise<Candle[]> {
+    const boundedLimit = Math.max(1, Math.min(1_000, limit));
+    const interval = this.getBybitInterval(timeframe);
+    const data = await this.fetchBybitJson(
+      `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${boundedLimit}`
+    );
+    const rows = Array.isArray(data?.result?.list) ? data.result.list : [];
+    return rows
+      .map((row: any[]) => ({
+        time: Math.floor(Number(row?.[0]) / 1_000),
+        open: Number(row?.[1]),
+        high: Number(row?.[2]),
+        low: Number(row?.[3]),
+        close: Number(row?.[4]),
+        volume: Number(row?.[5] || 0),
+      }))
+      .sort((a: Candle, b: Candle) => a.time - b.time)
+      .slice(-boundedLimit);
   }
 
   private static async fetchYahooCandles(ticker: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
@@ -401,92 +447,120 @@ export class MarketService {
     return result;
   }
 
-  private static async fetchCoinGeckoPrice(coingeckoId: string): Promise<number> {
-    if (!coingeckoId) throw new Error('No CoinGecko ID for this asset');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timeoutId);
-    if (!res.ok) throw new Error(`CoinGecko HTTP error: ${res.status}`);
-    const data = await res.json();
-    const price = data[coingeckoId]?.usd;
-    if (!price || isNaN(price)) throw new Error('CoinGecko returned invalid price');
-    return price;
-  }
-
-  static async getCurrentPrice(assetKey: string = "BTC"): Promise<number> {
+  static async getCurrentPriceSnapshot(assetKey: string = "BTC"): Promise<MarketPriceSnapshot> {
     const redis = getRedis();
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const provider = primaryMarketDataProvider(assetKey);
+    const cacheKey = marketPriceCacheKey(assetKey);
+    const cacheMetaKey = marketPriceMetaCacheKey(assetKey);
 
-    // 1. Live WebSocket Feed. The timestamp is authoritative so a retained
-    // value cannot be mistaken for a fresh execution price.
-    if (provider === "KRAKEN") {
+    if (config.category === "crypto") {
       try {
         const [livePrice, liveMeta] = await Promise.all([
-          redis.get<number>(`market:live:${assetKey}`),
-          redis.get<any>(`market:liveMeta:${assetKey}`),
+          redis.get<number | string>(marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
+          redis.get<any>(marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
         ]);
-        const updatedAt = new Date(liveMeta?.updatedAt || 0).getTime();
-        const ageMs = Date.now() - updatedAt;
-        if (livePrice && Number.isFinite(Number(livePrice)) && ageMs >= 0 && ageMs <= 45_000) {
-          return Number(livePrice);
+        const price = Number(livePrice);
+        const updatedAt = String(liveMeta?.providerEventTime || liveMeta?.updatedAt || "");
+        const timestamp = new Date(updatedAt).getTime();
+        const ageMs = Date.now() - timestamp;
+        if (Number.isFinite(price) && price > 0 && Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 5_000) {
+          return {
+            price,
+            provider: CRYPTO_EXECUTION_SOURCE,
+            source: "WEBSOCKET",
+            venue: CRYPTO_EXECUTION_PROVIDER,
+            instrument: config.bybitLinearSymbol,
+            updatedAt: new Date(timestamp).toISOString(),
+            ...(Number.isFinite(Number(liveMeta?.bid)) ? { bid: Number(liveMeta.bid) } : {}),
+            ...(Number.isFinite(Number(liveMeta?.ask)) ? { ask: Number(liveMeta.ask) } : {}),
+          };
         }
       } catch {}
+
+      try {
+        const [cachedPrice, cachedMeta] = await Promise.all([
+          redis.get<number | string>(cacheKey),
+          redis.get<MarketPriceSnapshot>(cacheMetaKey),
+        ]);
+        const price = Number(cachedPrice);
+        const timestamp = new Date(cachedMeta?.updatedAt || 0).getTime();
+        const ageMs = Date.now() - timestamp;
+        if (
+          Number.isFinite(price) && price > 0 &&
+          cachedMeta?.venue === CRYPTO_EXECUTION_PROVIDER &&
+          cachedMeta?.instrument === config.bybitLinearSymbol &&
+          Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 5_000
+        ) {
+          return { ...cachedMeta, price };
+        }
+      } catch {}
+
+      try {
+        const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
+        const price = Number(ticker.lastPrice);
+        if (!Number.isFinite(price) || price <= 0) throw new Error("Bybit returned an invalid last price");
+        const updatedAt = new Date(Number(ticker.serverTime) || Date.now()).toISOString();
+        const snapshot: MarketPriceSnapshot = {
+          price,
+          provider: `${CRYPTO_EXECUTION_PROVIDER}_HTTP`,
+          source: "HTTP",
+          venue: CRYPTO_EXECUTION_PROVIDER,
+          instrument: config.bybitLinearSymbol,
+          updatedAt,
+          ...(Number.isFinite(Number(ticker.bid1Price)) ? { bid: Number(ticker.bid1Price) } : {}),
+          ...(Number.isFinite(Number(ticker.ask1Price)) ? { ask: Number(ticker.ask1Price) } : {}),
+        };
+        await Promise.all([
+          redis.set(cacheKey, price, { ex: 10 }),
+          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
+        ]);
+        return snapshot;
+      } catch (error) {
+        throw new Error(`Selected Bybit linear price feed failed for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
-    // 2. HTTP Cache Fallback
-    const cacheKey = marketPriceCacheKey(assetKey);
     try {
-      const cached = await redis.get<number>(cacheKey);
-      if (cached) return Number(cached);
+      const [cachedPrice, cachedMeta] = await Promise.all([
+        redis.get<number | string>(cacheKey),
+        redis.get<MarketPriceSnapshot>(cacheMetaKey),
+      ]);
+      const price = Number(cachedPrice);
+      if (
+        Number.isFinite(price) && price > 0 &&
+        cachedMeta?.venue === "YAHOO" &&
+        cachedMeta?.instrument === config.yahooTicker
+      ) {
+        return { ...cachedMeta, price };
+      }
     } catch {}
 
-    // Kraken Primary
-    if (provider === "KRAKEN" && config.krakenPair) {
-      try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${config.krakenPair}`, {
-          signal: controller.signal
-        });
-        clearTimeout(id);
-
-        if (res.ok) {
-          const data = await res.json();
-          const pairKey = Object.keys(data.result)[0];
-          const price = parseFloat(data.result[pairKey].c[0]);
-          if (!isNaN(price)) {
-            await redis.set(cacheKey, price, { ex: 10 });
-            return price;
-          }
-        }
-      } catch {}
-    }
-
-    // Yahoo Fallback
     try {
       const candles = await this.fetchYahooCandles(config.yahooTicker, "15m", 1);
       if (candles.length > 0) {
-        const price = candles[candles.length - 1].close;
-        await redis.set(cacheKey, price, { ex: 10 });
-        return price;
+        const candle = candles[candles.length - 1];
+        const price = candle.close;
+        const snapshot: MarketPriceSnapshot = {
+          price,
+          provider: "YAHOO",
+          source: "HTTP",
+          venue: "YAHOO",
+          instrument: config.yahooTicker,
+          updatedAt: new Date(candle.time * 1_000).toISOString(),
+        };
+        await Promise.all([
+          redis.set(cacheKey, price, { ex: 10 }),
+          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
+        ]);
+        return snapshot;
       }
     } catch {}
 
-    // CoinGecko Tertiary Fallback
-    try {
-      if (config.coingeckoId) {
-        const price = await this.fetchCoinGeckoPrice(config.coingeckoId);
-        await redis.set(cacheKey, price, { ex: 10 });
-        return price;
-      }
-    } catch {}
+    throw new Error(`Failed to retrieve selected-instrument price for ${assetKey}`);
+  }
 
-    throw new Error(`Failed to retrieve live price for ${assetKey}`);
+  static async getCurrentPrice(assetKey: string = "BTC"): Promise<number> {
+    return (await this.getCurrentPriceSnapshot(assetKey)).price;
   }
 
   static async get24hStats(assetKey: string = "BTC"): Promise<{
@@ -497,7 +571,7 @@ export class MarketService {
     low: number;
   }> {
     const redis = getRedis();
-    const cacheKey = `cache:stats24h:${assetKey}`;
+    const cacheKey = `cache:stats24h:v2:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
 
     try {
       const cached = await redis.get<string>(cacheKey);
@@ -506,45 +580,28 @@ export class MarketService {
 
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
 
-    if (primaryMarketDataProvider(assetKey) === "KRAKEN" && config.krakenPair) {
+    if (config.category === "crypto" && config.bybitLinearSymbol) {
       try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${config.krakenPair}`, {
-          signal: controller.signal
-        });
-        clearTimeout(id);
-
-        if (res.ok) {
-          const data = await res.json();
-          const pairKey = Object.keys(data.result)[0];
-          const ticker = data.result[pairKey];
-
-          const getVal = (val: any, index: number) => {
-            if (Array.isArray(val)) return val[index] !== undefined ? val[index] : val[0];
-            return val;
-          };
-
-          const open = parseFloat(getVal(ticker.o, 0));
-          const close = parseFloat(getVal(ticker.c, 0));
-          const change = close - open;
-          const changePercent = open > 0 ? (change / open) * 100 : 0;
-
-          const stats = {
-            priceChange: change,
-            priceChangePercent: changePercent,
-            volume: parseFloat(getVal(ticker.v, 1)),
-            high: parseFloat(getVal(ticker.h, 1)),
-            low: parseFloat(getVal(ticker.l, 1))
-          };
-
+        const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
+        const close = Number(ticker.lastPrice);
+        const open = Number(ticker.prevPrice24h);
+        const stats = {
+          priceChange: close - open,
+          priceChangePercent: Number(ticker.price24hPcnt) * 100,
+          volume: Number(ticker.volume24h),
+          high: Number(ticker.highPrice24h),
+          low: Number(ticker.lowPrice24h),
+        };
+        if (Object.values(stats).every(Number.isFinite)) {
           await redis.set(cacheKey, JSON.stringify(stats), { ex: 60 });
           return stats;
         }
       } catch {}
+
+      return { priceChange: 0, priceChangePercent: 0, volume: 0, high: 0, low: 0 };
     }
 
-    // Try Yahoo
+    // FX and commodity statistics stay in the same Yahoo instrument family.
     try {
       const candles = await this.fetchYahooCandles(config.yahooTicker, "1h", 24);
       if (candles.length > 0) {
@@ -579,8 +636,13 @@ export class MarketService {
   static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean }> {
     const redis = getRedis();
     try {
-      const liveImbalanceStr = await redis.get<string>(`market:imbalance:${assetKey}`);
-      if (liveImbalanceStr) {
+      const [liveImbalanceStr, liveMeta] = await Promise.all([
+        redis.get<string>(marketImbalanceKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
+        redis.get<any>(marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
+      ]);
+      const providerTimestamp = new Date(liveMeta?.providerEventTime || liveMeta?.updatedAt || 0).getTime();
+      const ageMs = Date.now() - providerTimestamp;
+      if (liveImbalanceStr && Number.isFinite(providerTimestamp) && ageMs >= 0 && ageMs <= 5_000) {
         const imbalance = parseFloat(liveImbalanceStr);
         // Ratio = Bids / Asks. Since imbalance = (B - A)/(B + A) => B/A = (1 + imbalance)/(1 - imbalance)
         const ratio = (1 - imbalance) !== 0 ? (1 + imbalance) / (1 - imbalance) : 1;
@@ -597,38 +659,19 @@ export class MarketService {
     }
 
     const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || !config.krakenPair) {
+    if (!config || config.category !== "crypto" || !config.bybitLinearSymbol) {
       return { bidVolume: 0, askVolume: 0, imbalanceRatio: 1, isBullish: false, isBearish: false };
     }
 
     try {
-      const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`https://api.kraken.com/0/public/Depth?pair=${config.krakenPair}&count=100`, {
-        signal: controller.signal
-      });
-      clearTimeout(id);
-
-      if (!res.ok) throw new Error("Failed to fetch Kraken depth");
-      const data = await res.json();
-      const pairKey = Object.keys(data.result)[0];
-      const depth = data.result[pairKey];
-
-      let bidVolume = 0;
-      let askVolume = 0;
-
-      // Depth arrays are [price, volume, timestamp]
-      depth.bids.forEach((bid: string[]) => {
-        bidVolume += parseFloat(bid[1]);
-      });
-
-      depth.asks.forEach((ask: string[]) => {
-        askVolume += parseFloat(ask[1]);
-      });
-
-      // Ratio: Bids / Asks. 
-      // > 1.5 means massive buy walls (bullish)
-      // < 0.66 means massive sell walls (bearish)
+      const data = await this.fetchBybitJson(
+        `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(config.bybitLinearSymbol)}&limit=50`,
+        5_000
+      );
+      const bids = Array.isArray(data?.result?.b) ? data.result.b : [];
+      const asks = Array.isArray(data?.result?.a) ? data.result.a : [];
+      const bidVolume = bids.reduce((sum: number, bid: any[]) => sum + Number(bid?.[1] || 0), 0);
+      const askVolume = asks.reduce((sum: number, ask: any[]) => sum + Number(ask?.[1] || 0), 0);
       const ratio = askVolume > 0 ? bidVolume / askVolume : 1;
 
       return {
@@ -649,7 +692,7 @@ export class MarketService {
   static async getWeeklyCandles(limit: number = 20, assetKey: string = "BTC"): Promise<Candle[]> {
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
     const redis = getRedis();
-    const cacheKey = `cache:candles:${assetKey}:1w`;
+    const cacheKey = `cache:candles:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}:1w`;
 
     try {
       const cached = await redis.get<string>(cacheKey);
@@ -658,6 +701,17 @@ export class MarketService {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(-limit);
       }
     } catch {}
+
+    if (config.category === "crypto" && config.bybitLinearSymbol) {
+      try {
+        const candles = await this.fetchBybitLinearCandles(config.bybitLinearSymbol, "1w", Math.max(limit, 26));
+        if (candles.length > 0) {
+          await redis.set(cacheKey, JSON.stringify(candles), { ex: 3600 });
+          return candles.slice(-limit);
+        }
+      } catch {}
+      return [];
+    }
 
     try {
       const controller = new AbortController();

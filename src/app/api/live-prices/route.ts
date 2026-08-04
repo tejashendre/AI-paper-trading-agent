@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
 import { getRedis } from "@/lib/redis";
-import { marketPriceCacheKey, MarketService, SUPPORTED_ASSETS } from "@/lib/market";
+import {
+  CRYPTO_EXECUTION_SOURCE,
+  marketLiveMetaKey,
+  marketLivePriceKey,
+  MarketService,
+  SUPPORTED_ASSETS,
+} from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -48,21 +54,17 @@ export async function GET(request: Request) {
 
   await Promise.all(assets.map(async (asset) => {
     const mode = cryptoMode(asset);
-    const [livePrice, liveMeta, cachedPrice, krakenPrice, krakenMeta, bybitPrice, bybitMeta, binancePrice, binanceMeta] = await Promise.all([
-      redis.get<number | string>(`market:live:${asset}`).catch(() => null),
-      redis.get<any>(`market:liveMeta:${asset}`).catch(() => null),
-      redis.get<number | string>(marketPriceCacheKey(asset)).catch(() => null),
-      redis.get<number | string>(`market:live:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
-      redis.get<any>(`market:liveMeta:KRAKEN_SPOT_WS:${asset}`).catch(() => null),
-      redis.get<number | string>(`market:live:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
-      redis.get<any>(`market:liveMeta:BYBIT_LINEAR_WS:${asset}`).catch(() => null),
-      redis.get<number | string>(`market:live:BINANCE_SPOT_WS:${asset}`).catch(() => null),
-      redis.get<any>(`market:liveMeta:BINANCE_SPOT_WS:${asset}`).catch(() => null),
+    const [krakenPrice, krakenMeta, bybitPrice, bybitMeta, binancePrice, binanceMeta] = await Promise.all([
+      redis.get<number | string>(marketLivePriceKey("KRAKEN_SPOT_WS", asset)).catch(() => null),
+      redis.get<any>(marketLiveMetaKey("KRAKEN_SPOT_WS", asset)).catch(() => null),
+      redis.get<number | string>(marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, asset)).catch(() => null),
+      redis.get<any>(marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, asset)).catch(() => null),
+      redis.get<number | string>(marketLivePriceKey("BINANCE_SPOT_WS", asset)).catch(() => null),
+      redis.get<any>(marketLiveMetaKey("BINANCE_SPOT_WS", asset)).catch(() => null),
     ]);
 
-    const liveNumber = Number(livePrice);
-    const cachedNumber = Number(cachedPrice);
-    const updatedAt = liveMeta?.updatedAt || null;
+    const liveNumber = Number(bybitPrice);
+    const updatedAt = bybitMeta?.providerEventTime || bybitMeta?.updatedAt || null;
     const liveAge = ageSeconds(updatedAt);
     const independentSources = mode === "REALTIME_FAST"
       ? [
@@ -82,13 +84,13 @@ export async function GET(request: Request) {
         })
       : undefined;
 
-    if (mode === "REALTIME_FAST" && Number.isFinite(liveNumber) && liveNumber > 0) {
+    if (mode === "REALTIME_FAST" && Number.isFinite(liveNumber) && liveNumber > 0 && liveAge !== null && liveAge <= 45) {
       prices[asset] = {
         price: liveNumber,
         source: "WEBSOCKET",
-        provider: liveMeta?.source || "CRYPTO_WS",
+        provider: CRYPTO_EXECUTION_SOURCE,
         mode,
-        fresh: liveAge === null ? true : liveAge <= 10,
+        fresh: liveAge <= 10,
         updatedAt,
         ageSeconds: liveAge,
         change24h: 0,
@@ -101,36 +103,18 @@ export async function GET(request: Request) {
       return;
     }
 
-    if (Number.isFinite(cachedNumber) && cachedNumber > 0) {
-      prices[asset] = {
-        price: cachedNumber,
-        source: "RECENT_CACHE",
-        provider: mode === "REALTIME_FAST" ? "HTTP_FALLBACK_CACHE" : "SLOW_FEED_CACHE",
-        mode,
-        fresh: mode === "SLOW_SWING",
-        updatedAt: null,
-        ageSeconds: null,
-        change24h: 0,
-        changePercent24h: 0,
-        high24h: 0,
-        low24h: 0,
-        volume24h: 0,
-        independentSources,
-      };
-      return;
-    }
-
     try {
-      const fallbackPrice = await MarketService.getCurrentPrice(asset);
-      if (Number.isFinite(fallbackPrice) && fallbackPrice > 0) {
+      const fallback = await MarketService.getCurrentPriceSnapshot(asset);
+      if (Number.isFinite(fallback.price) && fallback.price > 0) {
+        const fallbackAge = ageSeconds(fallback.updatedAt);
         prices[asset] = {
-          price: fallbackPrice,
-          source: "RECENT_CACHE",
-          provider: mode === "REALTIME_FAST" ? "HTTP_FALLBACK_FETCH" : "SLOW_FEED_FETCH",
+          price: fallback.price,
+          source: fallback.source === "WEBSOCKET" ? "WEBSOCKET" : "RECENT_CACHE",
+          provider: fallback.provider,
           mode,
-          fresh: mode === "SLOW_SWING",
-          updatedAt: new Date().toISOString(),
-          ageSeconds: 0,
+          fresh: fallbackAge !== null && fallbackAge <= (mode === "REALTIME_FAST" ? 45 : 8 * 60 * 60),
+          updatedAt: fallback.updatedAt,
+          ageSeconds: fallbackAge,
           change24h: 0,
           changePercent24h: 0,
           high24h: 0,

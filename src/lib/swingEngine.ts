@@ -74,6 +74,13 @@ export interface SwingSignal {
   learningAdjustment: number;
   learningRules: string[];
   livePrice: number;
+  marketDataProvider: string;
+  marketDataSource: "WEBSOCKET" | "HTTP" | "UNAVAILABLE";
+  marketDataVenue: string;
+  marketDataInstrument: string;
+  marketDataTimestamp: string;
+  marketDataBid?: number;
+  marketDataAsk?: number;
   signalPrice: number;
   slippagePercent: number;
   oldScoreOverride: boolean;
@@ -142,6 +149,11 @@ function emptySignal(assetKey: string, reason: string): SwingSignal {
     learningAdjustment: 0,
     learningRules: [],
     livePrice: 0,
+    marketDataProvider: "UNAVAILABLE",
+    marketDataSource: "UNAVAILABLE",
+    marketDataVenue: "UNAVAILABLE",
+    marketDataInstrument: assetKey,
+    marketDataTimestamp: new Date(0).toISOString(),
     signalPrice: 0,
     slippagePercent: 0,
     oldScoreOverride: false,
@@ -755,14 +767,14 @@ export class SwingEngine {
     try {
       const assetMode = getAssetMode(assetKey);
       // 1. Fetch multi-timeframe candles (Higher Timeframes)
-      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceResult, orderbookResult, deepSensors] = await Promise.all([
+      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceSnapshot, orderbookResult, deepSensors] = await Promise.all([
         MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("15m", 100, assetKey),
         MarketService.getCandles("1h", 100, assetKey),
         MarketService.getCandles("4h", 100, assetKey),
         MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
-        MarketService.getCurrentPrice(assetKey).catch(() => 0),
+        MarketService.getCurrentPriceSnapshot(assetKey),
         assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
         assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null)
       ]);
@@ -785,7 +797,10 @@ export class SwingEngine {
       const stats4h = computeStatistics(candles4h, snap4h, ind4h.atr);
       
       const signalPrice = snap15m.price;
-      const livePrice = Number(livePriceResult) > 0 ? Number(livePriceResult) : signalPrice;
+      const livePrice = Number(livePriceSnapshot.price);
+      if (!Number.isFinite(livePrice) || livePrice <= 0) {
+        return emptySignal(assetKey, "Selected market venue returned an invalid execution price");
+      }
       const dataQuality = scoreDataQuality(assetMode, livePrice, signalPrice, candles15m, candles1h, candles4h);
 
       // 2. Regime Filter Setup (Based on 1H structural data)
@@ -968,7 +983,7 @@ export class SwingEngine {
       });
       const requiredConviction = liquidity.score < 4 ? 65 : 60;
       const probeEconomicsPassed = netRewardRisk.ratio >= 1.5;
-      const probeLearningPassed = learning.adjustment >= -4;
+      const probeLearningPassed = learning.adjustment >= 0;
       const nearNormalHtf = htfScore >= Math.max(8, thresholds.htf - 2);
       const normalEntry =
         !learning.watchOnly &&
@@ -982,6 +997,7 @@ export class SwingEngine {
         netRewardRisk.passed;
       const exceptionEntry =
         !learning.watchOnly &&
+        learning.adjustment >= 0 &&
         liquidity.aligned &&
         liquidity.score >= 6 &&
         microstructure.aligned &&
@@ -1108,6 +1124,13 @@ export class SwingEngine {
           learningAdjustment: learning.adjustment,
           learningRules: learning.rules.map((rule) => rule.message),
           livePrice,
+          marketDataProvider: livePriceSnapshot.provider,
+          marketDataSource: livePriceSnapshot.source,
+          marketDataVenue: livePriceSnapshot.venue,
+          marketDataInstrument: livePriceSnapshot.instrument,
+          marketDataTimestamp: livePriceSnapshot.updatedAt,
+          marketDataBid: livePriceSnapshot.bid,
+          marketDataAsk: livePriceSnapshot.ask,
           signalPrice,
           slippagePercent,
           oldScoreOverride: false,
@@ -1162,6 +1185,13 @@ export class SwingEngine {
         learningAdjustment: learning.adjustment,
         learningRules: learning.rules.map((rule) => rule.message),
         livePrice,
+        marketDataProvider: livePriceSnapshot.provider,
+        marketDataSource: livePriceSnapshot.source,
+        marketDataVenue: livePriceSnapshot.venue,
+        marketDataInstrument: livePriceSnapshot.instrument,
+        marketDataTimestamp: livePriceSnapshot.updatedAt,
+        marketDataBid: livePriceSnapshot.bid,
+        marketDataAsk: livePriceSnapshot.ask,
         signalPrice,
         slippagePercent,
         oldScoreOverride: exceptionEntry,

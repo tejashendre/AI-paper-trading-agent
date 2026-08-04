@@ -16,6 +16,7 @@ export interface TradeAdmissionInput {
   signalScore: number;
   reasoning: string;
   strategyType: "swing" | "manual" | "scalp";
+  entryMode?: "STANDARD" | "CONTROLLED_PROBE";
   requestedMarginUsd?: number;
   finalConviction?: number;
   learningAdjustment?: number;
@@ -46,7 +47,7 @@ export interface TradeAdmissionResult {
   maxTotalMarginUsd: number;
 }
 
-export const PAPER_MARGIN_POLICY_VERSION = "strong-margin-v1-2026-07-20";
+export const PAPER_MARGIN_POLICY_VERSION = "strong-margin-v2-2026-08-04";
 const BASE_RISK_PERCENT = 0.01;
 // The admission controller, asset specifications, and dashboard all use this
 // same portfolio cap. It leaves room for exits and prevents correlated trades
@@ -90,10 +91,9 @@ function leverageFromConviction(
 
   let leverage = 1;
   if (marginMode === "STRONG" && admissionScore >= 85) leverage = 5;
-  else if (admissionScore >= 88) leverage = 5;
-  else if (admissionScore >= 78) leverage = 3;
-  else if (admissionScore >= 68) leverage = 2;
-  else if (admissionScore >= 60) leverage = 1.5;
+  else if (marginMode === "STANDARD" && admissionScore >= 78) leverage = 3;
+  else if (marginMode === "STANDARD" && admissionScore >= 68) leverage = 2;
+  else if (marginMode === "STANDARD" && admissionScore >= 60) leverage = 1.5;
 
   return {
     leverage: Math.min(leverage, maxLeverage),
@@ -109,6 +109,7 @@ function marginPercentFromConviction(
   const conviction = finalConviction ?? 0;
   let fractionOfAssetCap = 0.3;
   if (marginMode === "STRONG") fractionOfAssetCap = 1;
+  else if (marginMode === "PROBE") fractionOfAssetCap = 0.35;
   else if (conviction >= 90) fractionOfAssetCap = 1;
   else if (conviction >= 80) fractionOfAssetCap = 0.85;
   else if (conviction >= 70) fractionOfAssetCap = 0.7;
@@ -125,6 +126,7 @@ function feedRiskMultiplier(assetMode?: TradeAdmissionInput["assetMode"]): numbe
 function riskMultiplierFromConviction(finalConviction: number | undefined, marginMode: PaperMarginMode): number {
   const conviction = finalConviction ?? 0;
   if (marginMode === "STRONG") return 1.5;
+  if (marginMode === "PROBE") return 0.6;
   if (conviction >= 90) return 1.5;
   if (conviction >= 80) return 1.25;
   if (conviction >= 70) return 1.1;
@@ -197,6 +199,7 @@ function paperMarginMode(
 ): PaperMarginMode {
   const conviction = Number(input.finalConviction || 0);
   const dataQuality = Number(input.dataQuality || 0);
+  if (input.entryMode === "CONTROLLED_PROBE") return "PROBE";
   const strongEligible = (
     input.strategyType === "swing" &&
     conviction >= 85 &&
@@ -291,7 +294,11 @@ export class TradeAdmissionController {
       return emptyResult("Total portfolio margin cap reached.");
     }
 
-    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio) * riskMultiplierFromConviction(input.finalConviction, marginMode) * combinedRiskMultiplier;
+    const entryModeRiskMultiplier = input.entryMode === "CONTROLLED_PROBE" ? 0.35 : 1;
+    const riskPercent = drawdownAdjustedRiskPercent(input.portfolio)
+      * riskMultiplierFromConviction(input.finalConviction, marginMode)
+      * combinedRiskMultiplier
+      * entryModeRiskMultiplier;
     const riskAmountUsd = equity * riskPercent;
     const usdMovePerUnit = getUsdMovePerUnit(input.asset, input.entryPrice, input.stopLoss);
 
@@ -366,7 +373,9 @@ export class TradeAdmissionController {
 
     return {
       approved: true,
-      reason: marginMode === "STRONG"
+      reason: input.entryMode === "CONTROLLED_PROBE"
+        ? "Approved as a 1x controlled probe with reduced stop-risk and margin. Probe status cannot be promoted by conviction alone."
+        : marginMode === "STRONG"
         ? "Approved in STRONG paper-margin mode: high conviction, verified real-time data, and non-negative learning evidence. Stop-risk and portfolio circuit breakers remain binding."
         : marketDataMultiplier < 1
         ? `Approved as a slower cached-feed swing at ${Math.round(marketDataMultiplier * 100)}% of normal risk. Fast/heavy sizing is reserved for verified real-time data.`

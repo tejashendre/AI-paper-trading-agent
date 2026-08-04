@@ -220,6 +220,13 @@ export interface OpenPosition {
   marketRegime?: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' | 'UNKNOWN';
   executionCostModelVersion?: string;
   executionVenueModel?: string;
+  marketDataProvider?: string;
+  marketDataSource?: string;
+  marketDataVenue?: string;
+  marketDataInstrument?: string;
+  marketDataTimestamp?: string;
+  marketDataBid?: number;
+  marketDataAsk?: number;
   entryRequestedPrice?: number;
   entryExecutionCostUsd?: number;
   entryPriceImpactCostUsd?: number;
@@ -296,6 +303,13 @@ export interface Trade {
   marketRegime?: 'TRENDING' | 'MEAN_REVERTING' | 'CHOPPY' | 'UNKNOWN';
   executionCostModelVersion?: string;
   executionVenueModel?: string;
+  marketDataProvider?: string;
+  marketDataSource?: string;
+  marketDataVenue?: string;
+  marketDataInstrument?: string;
+  marketDataTimestamp?: string;
+  marketDataBid?: number;
+  marketDataAsk?: number;
   requestedPrice?: number;
   notionalUsd?: number;
   leverageUsed?: number;
@@ -385,7 +399,7 @@ export interface SignalSnapshot {
 export type FeedHealthStatus = 'GOOD' | 'DEGRADED' | 'BAD';
 
 /** Source that provided the market data. */
-export type DataSource = 'KRAKEN' | 'YAHOO' | 'COINGECKO' | 'CACHE';
+export type DataSource = 'BYBIT_LINEAR' | 'KRAKEN' | 'YAHOO' | 'COINGECKO' | 'CACHE';
 
 /** Crypto market sentiment snapshot from free public APIs. */
 export interface SentimentSnapshot {
