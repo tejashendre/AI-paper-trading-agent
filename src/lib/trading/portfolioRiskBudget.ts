@@ -1,7 +1,7 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import { estimateFeeUsd } from "./assetSpecs";
 
-export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v1-2026-07-19";
+export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v2-2026-08-04";
 
 export interface PortfolioRiskBudgetInput {
   portfolio: Portfolio;
@@ -35,6 +35,8 @@ export interface PortfolioRiskBudgetDecision {
     expectedShortfallUsd: number;
     stressLossUsd: number;
     correlatedSameDirectionCount: number;
+    consecutiveFullStopLosses: number;
+    correlatedFullStopLosses: number;
     accountingDriftUsd: number;
   };
   limits: {
@@ -49,6 +51,8 @@ export interface PortfolioRiskBudgetDecision {
     maxPlannedRiskUsd: number;
     maxStressLossUsd: number;
     maxCorrelatedSameDirection: number;
+    maxConsecutiveFullStopLosses: number;
+    maxCorrelatedFullStopLosses: number;
     hardDrawdownPercent: number;
   };
 }
@@ -109,6 +113,29 @@ function exposureKey(asset: string, direction: OpenPosition["direction"]): strin
   return `${asset}:${direction}`;
 }
 
+function riskCluster(asset: string): string {
+  if (["BTC", "ETH", "SOL"].includes(asset)) return "CRYPTO";
+  if (["GOLD", "SILVER"].includes(asset)) return "PRECIOUS_METALS";
+  if (["EURUSD", "GBPUSD", "USDJPY"].includes(asset)) return "FX_USD";
+  return asset;
+}
+
+function isFullStopLoss(trade: Trade): boolean {
+  if (trade.exitReason !== "STOP_LOSS" || Number(trade.pnl) >= 0) return false;
+  const maxLossUsd = Number(trade.maxLossUsd);
+  if (!Number.isFinite(maxLossUsd) || maxLossUsd <= 0) return true;
+  return Math.abs(Number(trade.pnl)) >= maxLossUsd * 0.75;
+}
+
+function countLeadingFullStopLosses(trades: Trade[]): number {
+  let count = 0;
+  for (const trade of trades) {
+    if (!isFullStopLoss(trade)) break;
+    count++;
+  }
+  return count;
+}
+
 function expectedShortfallUsd(closedTrades: Trade[], minimumSample = 20): number {
   const losses = closedTrades
     .map((trade) => Number(trade.pnl))
@@ -130,7 +157,10 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   const dayEntries = dayTrades.filter(isEntry);
   const dayClosed = dayTrades.filter(isClosed);
   const weekClosed = weekTrades.filter(isClosed);
-  const allClosed = input.trades.filter(isClosed).slice(0, 100);
+  const allClosed = input.trades
+    .filter(isClosed)
+    .sort((a, b) => tradeTimestamp(b) - tradeTimestamp(a))
+    .slice(0, 100);
   const entriesAsset1h = hourEntries.filter((trade) => trade.asset === input.asset).length;
   const entriesAsset24h = dayEntries.filter((trade) => trade.asset === input.asset).length;
   const entryNotional24h = dayEntries.reduce((sum, trade) => sum + tradeNotionalUsd(trade), 0);
@@ -154,6 +184,11 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   const correlatedSameDirectionCount = Object.values(input.portfolio.openPositions || {}).filter(
     (position) => exposureKey(position.asset, position.direction) === candidateExposureKey
   ).length;
+  const consecutiveFullStopLosses = countLeadingFullStopLosses(allClosed);
+  const candidateCluster = riskCluster(input.asset);
+  const correlatedFullStopLosses = countLeadingFullStopLosses(
+    allClosed.filter((trade) => riskCluster(trade.asset) === candidateCluster)
+  );
   const accountingReconciliation = Number(input.portfolio.grossProfit || 0) - Number(input.portfolio.grossLoss || 0);
   const accountingDriftUsd = Math.abs(Number(input.portfolio.totalPnl || 0) - accountingReconciliation);
   const currentDrawdownPercent = input.portfolio.peakValue > 0
@@ -172,6 +207,8 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
     maxPlannedRiskUsd: equity * 0.03,
     maxStressLossUsd: equity * 0.06,
     maxCorrelatedSameDirection: 2,
+    maxConsecutiveFullStopLosses: 4,
+    maxCorrelatedFullStopLosses: 3,
     hardDrawdownPercent: 10,
   };
 
@@ -192,6 +229,8 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
     expectedShortfallUsd: expectedShortfall,
     stressLossUsd,
     correlatedSameDirectionCount,
+    consecutiveFullStopLosses,
+    correlatedFullStopLosses,
     accountingDriftUsd,
   };
 
@@ -214,6 +253,8 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   if (dayClosed.length >= 3 && costToGrossEdgeRatio !== null && costToGrossEdgeRatio > limits.maxCostToGrossEdgeRatio) return reject("Execution costs consumed too much of the rolling daily gross edge.");
   if (netPnl24h <= -limits.maxDailyLossUsd) return reject("Rolling 24-hour loss circuit breaker is active.");
   if (netPnl7d <= -limits.maxWeeklyLossUsd) return reject("Rolling seven-day loss circuit breaker is active.");
+  if (consecutiveFullStopLosses >= limits.maxConsecutiveFullStopLosses) return reject("Portfolio full-stop loss streak requires a reset or reviewed probation cohort before another entry.");
+  if (correlatedFullStopLosses >= limits.maxCorrelatedFullStopLosses) return reject(`${candidateCluster} full-stop loss streak is quarantined pending a reset or reviewed probation cohort.`);
   if (plannedOpenRiskUsd + input.candidateMaxLossUsd > limits.maxPlannedRiskUsd) return reject("Aggregate planned stop risk would exceed 3% of equity.");
   if (stressLossUsd > limits.maxStressLossUsd) return reject("Historical expected-shortfall stress plus planned risk would exceed 6% of equity.");
   if (correlatedSameDirectionCount >= limits.maxCorrelatedSameDirection) return reject("Correlated same-direction exposure budget is full.");

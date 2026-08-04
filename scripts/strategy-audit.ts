@@ -25,7 +25,16 @@ import {
 import { evaluatePortfolioRiskBudget } from "../src/lib/trading/portfolioRiskBudget";
 import { computeExecutionEventHash, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
 import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
-import { marketPriceCacheKey, primaryMarketDataProvider, SUPPORTED_ASSETS } from "../src/lib/market";
+import {
+  CRYPTO_EXECUTION_PROVIDER,
+  CRYPTO_EXECUTION_SOURCE,
+  marketImbalanceKey,
+  marketLiveMetaKey,
+  marketLivePriceKey,
+  marketPriceCacheKey,
+  primaryMarketDataProvider,
+  SUPPORTED_ASSETS,
+} from "../src/lib/market";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -217,16 +226,16 @@ function auditAssetSpecs(): AuditResult[] {
   const instrumentIdentityOk = REQUIRED_ASSETS.every((asset) => {
     const config = SUPPORTED_ASSETS[asset];
     if (config.category === "crypto") {
-      return primaryMarketDataProvider(asset) === "KRAKEN" && config.krakenPair.length > 0;
+      return primaryMarketDataProvider(asset) === "BYBIT_LINEAR" && config.bybitLinearSymbol === `${asset}USDT`;
     }
-    return primaryMarketDataProvider(asset) === "YAHOO" && config.krakenPair.length === 0;
+    return primaryMarketDataProvider(asset) === "YAHOO" && config.yahooTicker.length > 0;
   });
   checks.push(result(
     instrumentIdentityOk ? "PASS" : "FAIL",
     "instrument-aligned market providers",
     instrumentIdentityOk
-      ? "Kraken is restricted to liquid crypto instruments; forex and commodity execution use their matching Yahoo symbols."
-      : "A non-crypto asset can still resolve through a mismatched or illiquid Kraken instrument."
+      ? "Crypto execution is bound to Bybit USDT perpetuals; forex and commodity execution use matching Yahoo symbols."
+      : "At least one asset can resolve through an instrument that does not match its execution model."
   ));
 
   const providerScopedCaches = REQUIRED_ASSETS.every((asset) => (
@@ -238,6 +247,20 @@ function auditAssetSpecs(): AuditResult[] {
     providerScopedCaches
       ? "Execution price caches encode the provider policy so mixed-source values cannot survive a release."
       : "At least one execution price cache does not encode its provider identity."
+  ));
+
+  const selectedSourceKeys = ["BTC", "ETH", "SOL"].every((asset) => (
+    marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:live:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
+    marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:liveMeta:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
+    marketImbalanceKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:imbalance:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
+    primaryMarketDataProvider(asset) === CRYPTO_EXECUTION_PROVIDER
+  ));
+  checks.push(result(
+    selectedSourceKeys ? "PASS" : "FAIL",
+    "source-scoped crypto execution keys",
+    selectedSourceKeys
+      ? "Bybit linear price, metadata, and imbalance keys are source-scoped for every crypto execution instrument."
+      : "A crypto execution key can collide with a comparison venue."
   ));
 
   return checks;
@@ -551,6 +574,14 @@ function auditPortfolioRiskBudgets(): AuditResult[] {
     usd: 9_600,
   });
   const correlation = evaluatePortfolioRiskBudget({ ...candidate, portfolio: correlatedPortfolio, asset: "SOL" });
+  const cryptoStopStreak = evaluatePortfolioRiskBudget({
+    ...candidate,
+    trades: [
+      minimalTrade({ asset: "BTC", action: "SELL", timestamp: "2026-07-19T11:30:00.000Z", exitTime: "2026-07-19T11:30:00.000Z", pnl: -20, maxLossUsd: 24, exitReason: "STOP_LOSS" }),
+      minimalTrade({ asset: "ETH", action: "SELL", timestamp: "2026-07-19T10:30:00.000Z", exitTime: "2026-07-19T10:30:00.000Z", pnl: -20, maxLossUsd: 24, exitReason: "STOP_LOSS" }),
+      minimalTrade({ asset: "SOL", action: "COVER", timestamp: "2026-07-19T09:30:00.000Z", exitTime: "2026-07-19T09:30:00.000Z", pnl: -20, maxLossUsd: 24, exitReason: "STOP_LOSS" }),
+    ],
+  });
 
   return [
     result(allowed.approved ? "PASS" : "FAIL", "portfolio budget normal admission", allowed.reason),
@@ -558,6 +589,11 @@ function auditPortfolioRiskBudgets(): AuditResult[] {
     result(!dailyLoss.approved && dailyLoss.reason.includes("24-hour") ? "PASS" : "FAIL", "daily loss circuit breaker", dailyLoss.reason),
     result(!drifted.approved && drifted.reason.includes("Accounting") ? "PASS" : "FAIL", "accounting drift quarantine", drifted.reason),
     result(!correlation.approved && correlation.reason.includes("Correlated") ? "PASS" : "FAIL", "correlated exposure budget", correlation.reason),
+    result(
+      !cryptoStopStreak.approved && cryptoStopStreak.reason.includes("CRYPTO full-stop") && cryptoStopStreak.diagnostics.correlatedFullStopLosses === 3 ? "PASS" : "FAIL",
+      "correlated full-stop loss quarantine",
+      cryptoStopStreak.reason
+    ),
   ];
 }
 
@@ -647,8 +683,8 @@ function auditAdmissionSizing(): AuditResult[] {
   const checks: AuditResult[] = [];
   const portfolio = basePortfolio();
   const scenarios = [
-    { conviction: 58, expected: "watch", expectedMode: "PROBE", maxMargin: 300 },
-    { conviction: 65, expected: "probe", expectedMode: "PROBE", maxMargin: 500 },
+    { conviction: 58, expected: "watch", expectedMode: "PROBE", maxMargin: 350 },
+    { conviction: 65, expected: "probe", expectedMode: "PROBE", maxMargin: 350 },
     { conviction: 75, expected: "normal", expectedMode: "STANDARD", maxMargin: 700 },
     { conviction: 85, expected: "strong", expectedMode: "STRONG", maxMargin: 1_000 },
     { conviction: 92, expected: "maximum approved", expectedMode: "STRONG", maxMargin: 1_000 },
@@ -684,6 +720,37 @@ function auditAdmissionSizing(): AuditResult[] {
         : `${scenario.expected} scenario rejected: ${admission.reason}`
     ));
   }
+
+  const highConvictionProbe = TradeAdmissionController.evaluate({
+    portfolio,
+    asset: "BTC",
+    direction: "SHORT",
+    entryPrice: 60_000,
+    stopLoss: 61_000,
+    takeProfit: 58_000,
+    signalScore: 22,
+    reasoning: "Audit high-conviction controlled probe",
+    strategyType: "swing",
+    entryMode: "CONTROLLED_PROBE",
+    requestedMarginUsd: 500,
+    finalConviction: 95,
+    learningAdjustment: 0,
+    assetMode: "REALTIME_FAST",
+    dataQuality: 95,
+  });
+  checks.push(result(
+    highConvictionProbe.approved &&
+    highConvictionProbe.marginMode === "PROBE" &&
+    highConvictionProbe.leverage === 1 &&
+    highConvictionProbe.requiredMarginUsd <= 350.01 &&
+    highConvictionProbe.maxLossUsd <= highConvictionProbe.riskAmountUsd * 1.01
+      ? "PASS"
+      : "FAIL",
+    "controlled probe cannot become heavy margin",
+    highConvictionProbe.approved
+      ? `A 95-conviction probe remains ${highConvictionProbe.marginMode} at ${highConvictionProbe.leverage}x with $${highConvictionProbe.requiredMarginUsd.toFixed(2)} margin.`
+      : `Controlled probe was rejected unexpectedly: ${highConvictionProbe.reason}`
+  ));
 
   const normalLearning = TradeAdmissionController.evaluate({
     portfolio,
@@ -1156,6 +1223,8 @@ function auditProductionRegressions(): AuditResult[] {
   const opportunitySource = read("src", "lib", "trading", "opportunityJournal.ts");
   const tradeReviewSource = read("src", "lib", "trading", "tradeReviewJournal.ts");
   const feedSource = read("src", "lib", "data", "feedHealthSummary.ts");
+  const sourceAgreementSource = read("src", "lib", "data", "sourceAgreement.ts");
+  const admissionSource = read("src", "lib", "trading", "tradeAdmission.ts");
   const daemonSource = read("src", "daemon", "swingDaemon.ts");
   const websocketSource = read("src", "daemon", "websocketDataMesh.ts");
   const tradeSource = read("src", "app", "api", "trade", "route.ts");
@@ -1216,6 +1285,17 @@ function auditProductionRegressions(): AuditResult[] {
     marketSource.includes("options.allowStale") &&
     dashboardSource.includes("payload.asset !== activeAsset") &&
     dashboardSource.includes("setChartData(null)");
+  const selectedVenueRouting = marketSource.includes('CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR"') &&
+    marketSource.includes("fetchBybitLinearCandles") &&
+    marketSource.includes("getCurrentPriceSnapshot") &&
+    websocketSource.includes("marketLivePriceKey(source, symbol)") &&
+    websocketSource.includes("marketImbalanceKey(source, symbol)") &&
+    !websocketSource.includes("REDIS_KEY_PREFIX") &&
+    sourceAgreementSource.includes("Selected Bybit linear price is unavailable") &&
+    daemonSource.includes("marketDataVenue === CRYPTO_EXECUTION_PROVIDER") &&
+    daemonSource.includes("entryMode: effectiveEntryMode") &&
+    admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
+    admissionSource.includes('return "PROBE"');
 
   return [
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
@@ -1251,6 +1331,9 @@ function auditProductionRegressions(): AuditResult[] {
     result(resetClearsCurrentState ? "PASS" : "FAIL", "truthful current-strategy reset", resetClearsCurrentState
       ? "An admin reset clears portfolios, current learning, opportunities, reviews, cooldowns, exit snapshots, and pending scan requests while preserving older strategy history."
       : "The reset can leave active strategy-derived restrictions behind or omit its audit event."),
+    result(selectedVenueRouting ? "PASS" : "FAIL", "selected-venue execution provenance", selectedVenueRouting
+      ? "Crypto signals, fills, lifecycle prices, and persisted provenance are bound to Bybit linear while comparison feeds remain source-scoped."
+      : "Crypto execution can still mix venues or lose its selected-instrument provenance."),
   ];
 }
 

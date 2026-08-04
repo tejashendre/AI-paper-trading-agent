@@ -1,15 +1,24 @@
 import WebSocket from "ws";
 import { getRedis } from "../lib/redis";
 import { Logger } from "../lib/logger";
-import { SUPPORTED_ASSETS } from "../lib/market";
+import {
+    marketImbalanceKey,
+    marketLiveMetaKey,
+    marketLivePriceKey,
+    SUPPORTED_ASSETS,
+} from "../lib/market";
 
-const REDIS_KEY_PREFIX = "market:live:";
-const REDIS_META_PREFIX = "market:liveMeta:";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const STALE_THRESHOLD_MS = 30_000;
 const SOURCE_RETENTION_SECONDS = 90;
-const EXECUTION_PRICE_RETENTION_SECONDS = 75;
 const SOURCE_PERSIST_INTERVAL_MS = 1_000;
+
+interface LiveTickDetails {
+    imbalance?: number;
+    bid?: number;
+    ask?: number;
+    providerEventTime?: number | string;
+}
 
 export class WebsocketDataMesh {
     private krakenWs: WebSocket | null = null;
@@ -32,7 +41,7 @@ export class WebsocketDataMesh {
         return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].category === "crypto");
     }
 
-    private async writeLiveTick(symbol: string, price: number, source: string, imbalance?: number) {
+    private async writeLiveTick(symbol: string, price: number, source: string, details: LiveTickDetails = {}) {
         const persistenceKey = `${source}:${symbol}`;
         const now = Date.now();
         if (now - (this.lastPersistedAt.get(persistenceKey) || 0) < SOURCE_PERSIST_INTERVAL_MS) return;
@@ -40,26 +49,26 @@ export class WebsocketDataMesh {
 
         const redis = getRedis();
         const updatedAt = new Date().toISOString();
-        await redis.set(`${REDIS_KEY_PREFIX}${source}:${symbol}`, price.toString(), { ex: SOURCE_RETENTION_SECONDS });
-        await redis.set(`${REDIS_META_PREFIX}${source}:${symbol}`, {
+        const providerTimestamp = new Date(details.providerEventTime || updatedAt);
+        const providerEventTime = Number.isFinite(providerTimestamp.getTime())
+            ? providerTimestamp.toISOString()
+            : updatedAt;
+        await redis.set(marketLivePriceKey(source, symbol), price.toString(), { ex: SOURCE_RETENTION_SECONDS });
+        await redis.set(marketLiveMetaKey(source, symbol), {
             source,
             updatedAt,
+            providerEventTime,
             price,
-            imbalance: Number.isFinite(imbalance) ? imbalance : null,
+            bid: Number.isFinite(details.bid) ? details.bid : null,
+            ask: Number.isFinite(details.ask) ? details.ask : null,
+            imbalance: Number.isFinite(details.imbalance) ? details.imbalance : null,
         }, { ex: SOURCE_RETENTION_SECONDS });
-
-        // The shared execution key always receives the newest valid tick from
-        // either independent source. Source-specific keys remain separate for
-        // agreement and health checks.
-        await redis.set(`${REDIS_KEY_PREFIX}${symbol}`, price.toString(), { ex: EXECUTION_PRICE_RETENTION_SECONDS });
-        await redis.set(`${REDIS_META_PREFIX}${symbol}`, {
-            source,
-            updatedAt,
-            price,
-            imbalance: Number.isFinite(imbalance) ? imbalance : null,
-        }, { ex: EXECUTION_PRICE_RETENTION_SECONDS });
-        if (Number.isFinite(imbalance)) {
-            await redis.set(`market:imbalance:${symbol}`, String(imbalance), { ex: EXECUTION_PRICE_RETENTION_SECONDS });
+        if (Number.isFinite(details.imbalance)) {
+            await redis.set(
+                marketImbalanceKey(source, symbol),
+                String(details.imbalance),
+                { ex: SOURCE_RETENTION_SECONDS }
+            );
         }
     }
 
@@ -186,7 +195,12 @@ export class WebsocketDataMesh {
                     const imbalance = Number.isFinite(bidQty) && Number.isFinite(askQty) && bidQty + askQty > 0
                         ? (bidQty - askQty) / (bidQty + askQty)
                         : undefined;
-                    await this.writeLiveTick(symbol, price, "KRAKEN_SPOT_WS", imbalance);
+                    await this.writeLiveTick(symbol, price, "KRAKEN_SPOT_WS", {
+                        imbalance,
+                        bid: Number(ticker?.bid),
+                        ask: Number(ticker?.ask),
+                        providerEventTime: ticker?.timestamp || trade?.timestamp,
+                    });
                 } catch {
                     // Ignore malformed exchange frames; staleness detection
                     // reconnects the source if valid market data stops.
@@ -240,6 +254,16 @@ export class WebsocketDataMesh {
                     const isTrade = parsed.topic?.startsWith("publicTrade.");
                     if ((!isTicker && !isTrade) || !parsed.data) return;
 
+                    // Public trades prove the socket is alive, but only the
+                    // ticker carries the selected venue's bid/ask context.
+                    // Letting high-frequency trades share the persistence
+                    // throttle can starve ticker snapshots and erase spread
+                    // and imbalance provenance.
+                    if (isTrade) {
+                        this.bybitLastMarketDataAt = Date.now();
+                        return;
+                    }
+
                     const trades = isTrade && Array.isArray(parsed.data) ? parsed.data : [];
                     const trade = trades.length > 0 ? trades[trades.length - 1] : null;
                     const symbol = String(isTicker ? parsed.topic.split(".")[1] : trade?.s || "").replace("USDT", "");
@@ -252,7 +276,12 @@ export class WebsocketDataMesh {
                     const imbalance = Number.isFinite(bidQty) && Number.isFinite(askQty) && bidQty + askQty > 0
                         ? (bidQty - askQty) / (bidQty + askQty)
                         : undefined;
-                    await this.writeLiveTick(symbol, price, "BYBIT_LINEAR_WS", imbalance);
+                    await this.writeLiveTick(symbol, price, "BYBIT_LINEAR_WS", {
+                        imbalance,
+                        bid: Number(isTicker ? parsed.data.bid1Price : undefined),
+                        ask: Number(isTicker ? parsed.data.ask1Price : undefined),
+                        providerEventTime: Number(isTicker ? parsed.ts : trade?.T),
+                    });
                 } catch {
                     // Ignore malformed exchange frames; staleness detection
                     // reconnects the source if valid market data stops.
@@ -309,7 +338,9 @@ export class WebsocketDataMesh {
                     if (!Number.isFinite(price) || price <= 0) return;
 
                     this.binanceLastMarketDataAt = Date.now();
-                    await this.writeLiveTick(symbol, price, "BINANCE_SPOT_WS");
+                    await this.writeLiveTick(symbol, price, "BINANCE_SPOT_WS", {
+                        providerEventTime: Number(parsed.T || parsed.E),
+                    });
                 } catch {
                     // Ignore malformed exchange frames; staleness detection
                     // reconnects the source if valid market data stops.

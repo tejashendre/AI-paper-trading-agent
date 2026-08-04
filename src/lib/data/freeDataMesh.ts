@@ -5,7 +5,7 @@
 // ================================================================
 
 import type { Timeframe, FreeMarketFrame, DataSource } from '@/lib/types';
-import { MarketService, SUPPORTED_ASSETS } from '@/lib/market';
+import { MarketService, primaryMarketDataProvider, SUPPORTED_ASSETS } from '@/lib/market';
 import { getRedis } from '@/lib/redis';
 import { scoreFeedHealth } from './feedHealth';
 import { checkSourceAgreement } from './sourceAgreement';
@@ -50,13 +50,7 @@ export async function buildMarketFrame(
   try {
     candles = await MarketService.getCandles(timeframe, limit, assetKey);
 
-    // Determine source heuristically:
-    // If the asset has a Kraken pair, Kraken was likely primary
-    if (config.krakenPair) {
-      primarySource = 'KRAKEN';
-    } else {
-      primarySource = 'YAHOO';
-    }
+    primarySource = primaryMarketDataProvider(assetKey);
 
     // Reset failure streak on success
     await redis.set(failKey, 0, { ex: 3600 });
@@ -98,10 +92,10 @@ export async function buildMarketFrame(
       warnings.push(...agreement.warnings);
     }
 
-    // If primary source was actually a fallback, mark it
-    if (agreement.sourcesChecked.length > 0 && !agreement.sourcesChecked.includes('KRAKEN') && config.krakenPair) {
+    // Comparison venues can reduce confidence, but cannot silently replace the
+    // selected execution instrument.
+    if (config.category === 'crypto' && !agreement.sourcesChecked.includes('BYBIT_LINEAR')) {
       fallbackUsed = true;
-      primarySource = 'YAHOO';
     }
   } catch {
     // Source agreement is supplementary; don't fail the frame

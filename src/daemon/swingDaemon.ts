@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
-import { SUPPORTED_ASSETS } from "../lib/market";
+import { CRYPTO_EXECUTION_PROVIDER, SUPPORTED_ASSETS } from "../lib/market";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
@@ -612,6 +612,32 @@ async function runEntryScan() {
           continue;
         }
 
+        const cryptoAsset = SUPPORTED_ASSETS[asset]?.category === "crypto";
+        const marketDataAgeMs = Date.now() - new Date(swingSignal.marketDataTimestamp).getTime();
+        const marketIdentityValid = cryptoAsset
+          ? swingSignal.marketDataVenue === CRYPTO_EXECUTION_PROVIDER &&
+            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].bybitLinearSymbol &&
+            Number.isFinite(marketDataAgeMs) && marketDataAgeMs >= 0 && marketDataAgeMs <= 10_000
+          : swingSignal.marketDataVenue === "YAHOO" &&
+            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].yahooTicker;
+        if (!marketIdentityValid) {
+          const reason = `Selected execution instrument provenance is invalid or stale (${swingSignal.marketDataProvider}/${swingSignal.marketDataInstrument}).`;
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason,
+            simpleStatus: "Market venue verification blocked this trade",
+            simpleReason: reason,
+            nextStep: "The bot will retry after the selected instrument feed is current and internally consistent.",
+            decisionState: "BLOCKED_DATA",
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            timestamp,
+          });
+          await Logger.warn(`[SWING BLOCK] ${asset} market provenance rejected: ${reason}`);
+          continue;
+        }
+
         const isShort = swingSignal.action === "SWING_SHORT";
         const portfolioGuard = PortfolioGuards.evaluateNewSwing({
           portfolio,
@@ -684,7 +710,7 @@ async function runEntryScan() {
         const requestedMarginUsd = recoveryProbe
           ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
           : swingSignal.entryMode === "CONTROLLED_PROBE"
-            ? Math.max(150, Math.min(1_000, portfolio.usd * 0.10))
+            ? Math.max(100, Math.min(500, portfolio.usd * 0.05))
             : undefined;
         const effectiveEntryMode = recoveryProbe ? "CONTROLLED_PROBE" : swingSignal.entryMode;
         const effectivePaperSize = recoveryProbe ? "Probe" : swingSignal.paperSize;
@@ -705,6 +731,7 @@ async function runEntryScan() {
           setupTags: swingSignal.setupTags,
           assetMode: swingSignal.assetMode,
           dataQuality: swingSignal.dataQuality,
+          entryMode: effectiveEntryMode,
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd,
@@ -894,6 +921,13 @@ async function runEntryScan() {
               assetMode: swingSignal.assetMode,
               liquidityState: swingSignal.liquidityState,
               marketRegime: swingSignal.marketRegime,
+              provider: swingSignal.marketDataProvider,
+              source: swingSignal.marketDataSource,
+              venue: swingSignal.marketDataVenue,
+              instrument: swingSignal.marketDataInstrument,
+              timestamp: swingSignal.marketDataTimestamp,
+              bid: swingSignal.marketDataBid,
+              ask: swingSignal.marketDataAsk,
             },
             signal: swingSignal,
             admission,
@@ -962,6 +996,13 @@ async function runEntryScan() {
           marketRegime: swingSignal.marketRegime,
           executionCostModelVersion: executionPlan.modelVersion,
           executionVenueModel: executionPlan.entry.venueModel,
+          marketDataProvider: swingSignal.marketDataProvider,
+          marketDataSource: swingSignal.marketDataSource,
+          marketDataVenue: swingSignal.marketDataVenue,
+          marketDataInstrument: swingSignal.marketDataInstrument,
+          marketDataTimestamp: swingSignal.marketDataTimestamp,
+          marketDataBid: swingSignal.marketDataBid,
+          marketDataAsk: swingSignal.marketDataAsk,
           entryRequestedPrice: swingSignal.entryPrice,
           entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,
           entryPriceImpactCostUsd: executionPlan.entry.priceImpactCostUsd,
@@ -1019,6 +1060,13 @@ async function runEntryScan() {
           marketRegime: swingSignal.marketRegime,
           executionCostModelVersion: executionPlan.modelVersion,
           executionVenueModel: executionPlan.entry.venueModel,
+          marketDataProvider: swingSignal.marketDataProvider,
+          marketDataSource: swingSignal.marketDataSource,
+          marketDataVenue: swingSignal.marketDataVenue,
+          marketDataInstrument: swingSignal.marketDataInstrument,
+          marketDataTimestamp: swingSignal.marketDataTimestamp,
+          marketDataBid: swingSignal.marketDataBid,
+          marketDataAsk: swingSignal.marketDataAsk,
           entryFeeUsd: executionPlan.entry.feeUsd,
           executionCostUsd: executionPlan.entry.totalExecutionCostUsd,
           entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,

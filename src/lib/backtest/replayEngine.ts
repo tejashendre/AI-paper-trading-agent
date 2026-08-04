@@ -706,6 +706,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
           dataQuality: 100,
           reasoning: "Replay strategy admission",
           strategyType: "swing",
+          entryMode: "STANDARD",
         });
 
         if (admission.approved) {

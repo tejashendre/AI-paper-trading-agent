@@ -73,6 +73,16 @@ export async function checkSourceAgreement(assetKey: string): Promise<AgreementR
   // ── Crypto: compare Kraken vs CoinGecko ────────────────────
   const prices: SourcePrice[] = [];
 
+  // The selected perpetual is the anchor. Spot venues are comparisons only.
+  if (config.bybitLinearSymbol) {
+    try {
+      const price = await fetchBybitLinear(config.bybitLinearSymbol);
+      prices.push({ source: 'BYBIT_LINEAR', price, success: true });
+    } catch {
+      prices.push({ source: 'BYBIT_LINEAR', price: 0, success: false });
+    }
+  }
+
   // Kraken
   if (config.krakenPair) {
     try {
@@ -108,37 +118,53 @@ export async function checkSourceAgreement(assetKey: string): Promise<AgreementR
     };
   }
 
-  if (successes.length === 1) {
+  const primary = successes.find((source) => source.source === 'BYBIT_LINEAR');
+  if (!primary) {
     return {
-      score: 1.0,
-      primaryPrice: successes[0].price,
+      score: 0.5,
+      primaryPrice: 0,
+      secondaryPrice: successes[0]?.price ?? null,
+      priceDivergencePercent: 0,
+      sourcesChecked,
+      warnings: ['Selected Bybit linear price is unavailable; comparison venues cannot replace it'],
+    };
+  }
+
+  const comparisons = successes.filter((source) => source.source !== 'BYBIT_LINEAR');
+  if (comparisons.length === 0) {
+    return {
+      score: 0.9,
+      primaryPrice: primary.price,
       secondaryPrice: null,
       priceDivergencePercent: 0,
       sourcesChecked,
-      warnings: [`Only ${successes[0].source} returned a valid price`],
+      warnings: ['Selected Bybit linear price is healthy, but no independent comparison venue responded'],
     };
   }
 
   // Two sources available — compare
-  const p1 = successes[0].price;
-  const p2 = successes[1].price;
-  const mid = (p1 + p2) / 2;
-  const divergence = mid > 0 ? Math.abs(p1 - p2) / mid : 0;
+  const rankedComparisons = comparisons.map((comparison) => {
+    const mid = (primary.price + comparison.price) / 2;
+    const divergence = mid > 0 ? Math.abs(primary.price - comparison.price) / mid : 0;
+    return { comparison, divergence };
+  }).sort((a, b) => b.divergence - a.divergence);
+  const mostDivergent = rankedComparisons[0];
+  const divergence = mostDivergent.divergence;
   const divergencePercent = divergence * 100;
 
   // Score: linearly degrade from 1.0 to 0 as divergence goes from 0% to 2%
   const score = Math.max(0, Math.min(1, 1 - (divergence / 0.02)));
 
   if (divergencePercent > 1.0) {
-    warnings.push(`Significant price divergence: ${divergencePercent.toFixed(2)}% between ${successes[0].source} ($${p1.toFixed(2)}) and ${successes[1].source} ($${p2.toFixed(2)})`);
+    warnings.push(`Significant price divergence: ${divergencePercent.toFixed(2)}% between BYBIT_LINEAR ($${primary.price.toFixed(2)}) and ${mostDivergent.comparison.source} ($${mostDivergent.comparison.price.toFixed(2)})`);
   } else if (divergencePercent > 0.5) {
     warnings.push(`Moderate price divergence: ${divergencePercent.toFixed(2)}% between sources`);
   }
 
   return {
     score,
-    primaryPrice: p1,
-    secondaryPrice: p2,
+    primaryPrice: primary.price,
+    secondaryPrice: mostDivergent.comparison.price,
     priceDivergencePercent: divergencePercent,
     sourcesChecked,
     warnings,
@@ -146,6 +172,25 @@ export async function checkSourceAgreement(assetKey: string): Promise<AgreementR
 }
 
 // ── Direct source fetchers (bypass MarketService cache) ──────────
+
+async function fetchBybitLinear(symbol: string): Promise<number> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(
+      `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${encodeURIComponent(symbol)}`,
+      { signal: controller.signal }
+    );
+    if (!res.ok) throw new Error(`Bybit HTTP ${res.status}`);
+    const data = await res.json();
+    if (Number(data?.retCode) !== 0) throw new Error(data?.retMsg || 'Bybit API error');
+    const price = Number(data?.result?.list?.[0]?.lastPrice);
+    if (!Number.isFinite(price) || price <= 0) throw new Error('Bybit returned an invalid price');
+    return price;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 async function fetchKrakenSpot(pair: string): Promise<number> {
   const controller = new AbortController();
