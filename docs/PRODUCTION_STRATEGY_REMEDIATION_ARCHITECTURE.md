@@ -1,14 +1,15 @@
 # Production Trading Strategy Remediation Architecture
 
-**Status:** Implementation in progress; local release gates passed, deployment and approved reset pending
+**Status:** Phase 0, Phase 1, and urgent Phase 3 controls deployed; clean v4.2 paper probation active; Phase 2 and Phase 4 remain pending
 **Created:** 2026-08-01
 **Implementation started:** 2026-08-04
+**Production remediation deployed:** 2026-08-04
 **Capital mode:** PAPER_ONLY
 **Change authority:** No production, VPS, portfolio, strategy, reset, margin, or deployment change may be made from this document without an explicit approved implementation phase.
 
 ### Implementation checkpoint: 2026-08-04
 
-The operator explicitly approved implementation and a new paper-state reset. The following work is complete in the local release candidate:
+The operator explicitly approved implementation, public release, VPS deployment, and a new paper-state reset. The following work is complete in production:
 
 - Phase 0 production baseline captured at deployed commit `c0694e872de5ac41fe6a3b5b37b5b0ac9b68a678`.
 - Phase 1 crypto execution is bound to Bybit linear `BTCUSDT`, `ETHUSDT`, and `SOLUSDT` across candles, weekly bias, quotes, order-book imbalance, funding, open interest, entries, and lifecycle prices.
@@ -18,15 +19,24 @@ The operator explicitly approved implementation and a new paper-state reset. The
 - Negative learning can no longer enter through exception or controlled-probe paths.
 - Three correlated full-stop losses quarantine that risk cluster; four portfolio-wide full-stop losses quarantine all new entries.
 - Strategy and policy versions are advanced to `swing-v4.2.0-2026-08-04`, `strong-margin-v2-2026-08-04`, and `portfolio-budget-v2-2026-08-04`.
-- Local TypeScript validation passed and the deterministic strategy audit passed `94` checks with `0` warnings and `0` failures.
+- Runtime remediation commit `f9c41f53d8f675de1fb7b3b55664de88c942f114` is on `main`, GitHub Actions run `30881956801` completed successfully, and the VPS reported that exact commit after deployment.
+- The follow-up release repaired sparse Bybit ticker deltas so a partial ticker or trade update cannot erase the selected-venue last price, bid, or ask.
+- Local TypeScript, lint, build, ledger, source-manifest, and deterministic strategy gates passed. The fixture-only strategy audit passed with zero warnings and zero failures.
+- The approved clean reset completed at `2026-08-04T05:55:54Z`. Both AI and user paper portfolios restarted at `10,000 USD`, with zero positions, zero trades, zero PnL, and zero execution costs.
+- Autonomous scan `#7` completed after the reset at `2026-08-04T05:59:22Z`: all nine assets were evaluated, with `9 HOLD`, `0 BLOCKED`, `0 ENTRY`, `0 SKIPPED`, and `0 ERROR`.
+- BTC, ETH, and SOL selected-venue prices were observed fresh from `BYBIT_LINEAR_WS`; comparison feeds remained independent and could not become execution prices.
+- OIL and SILVER chart requests each returned `100` correctly labeled candles with HTTP `200`.
+- The live strategy audit passed `112` checks with `0` failures and retained one research warning because the newly reset cohort has no closed trades yet. That warning must not be suppressed or called profitability evidence.
 
-Still pending at this checkpoint:
+Still pending after this release:
 
 - Phase 2 triple-barrier research and conditional first-passage promotion evidence;
 - Phase 4 dashboard economics and complete per-asset market-state vocabulary;
-- clean build, ledger verification, Git publication, VPS deployment, approved reset, and post-reset scan/feed observation.
+- Phase 5 accumulation of a sufficiently large independent v4.2 paper cohort;
+- Phase 6 evidence-based non-crypto source policy beyond the current free Yahoo slow-swing treatment; and
+- any Phase 7 performance migration, which remains unauthorized until profiling demonstrates a material bottleneck.
 
-No profitability claim is authorized by this checkpoint. The reset will start a clean paper cohort; it will not manufacture statistical edge.
+No profitability claim is authorized by this checkpoint. The reset started a clean paper cohort; it did not restore old learning, manufacture activity, or manufacture statistical edge.
 
 ## 1. Purpose
 
@@ -842,6 +852,13 @@ Required before relaxing paper restrictions:
 
 Not authorized by this document. It would require a separate written decision after the engineering and research gates have remained valid across a sufficiently large, independent paper cohort.
 
+### 12.4 Current gate state: 2026-08-04
+
+- **Engineering gate:** passed for runtime remediation commit `f9c41f53d8f675de1fb7b3b55664de88c942f114`. The deployed revision, selected-venue feed, clean reset, autonomous scan, chart identity, ledger presence, and release checks were observed directly.
+- **Research gate:** not passed. Replay evidence is useful for engineering validation, but the v4.2 live cohort has no closed trades and no completed triple-barrier conditional first-passage report.
+- **Capital gate:** not authorized. The system remains `PAPER_ONLY`.
+- **Operational interpretation:** a `HOLD` result with a documented blocker is healthy selectivity, not proof of dormancy. A repeated rejected setup becomes actionable only after its counterfactual outcome matures and demonstrates positive after-cost expectancy.
+
 ## 13. Operator Runbooks
 
 ### 13.1 Daily paper operations
@@ -916,17 +933,18 @@ The system is workable as a paper trading research platform when:
 
 The system is not workable for real capital merely because it has completed these engineering tasks. Profitability remains a separate empirical claim requiring clean, sufficient, independent evidence.
 
-## 16. Work-in-Progress Handoff
+## 16. Remaining Work Handoff
 
-The next approved implementation should start with Phase 0 and Phase 1 only. Do not combine venue migration, target redesign, learning changes, dashboard refactoring, margin changes, and a reset into one deployment. Each phase must have a dedicated diff, test evidence, deployment verification, and post-deployment observation window.
+Phase 0, Phase 1, and the urgent Phase 3 controls are complete. The next approved implementation must begin with Phase 2 first-passage research, without changing the frozen v4.2 admission thresholds, stop model, target model, margin policy, or reset state in the same release.
 
-The priority order is:
+The remaining priority order is:
 
-    1. venue and provenance integrity
-    2. first-passage research evidence
-    3. hard learning and portfolio controls
-    4. truthful dashboard and operations
-    5. frozen paper probation
-    6. measured performance engineering
+    1. collect immutable selected-venue counterfactual outcomes for every HOLD and entry candidate
+    2. implement triple-barrier TP-first, SL-first, neither, MFE, MAE, and time-to-event labels
+    3. run purged walk-forward conditional studies with after-cost uncertainty intervals
+    4. add Phase 4 dashboard views for path-specific blockers, data age, risk-at-stop, and cohort maturity
+    5. observe the frozen v4.2 paper probation cohort without repeated resets
+    6. revise a threshold only when independent counterfactual evidence identifies a specific false-negative or false-positive condition
+    7. profile latency before considering a narrow Rust or Python service
 
-This order addresses the cause of the current losses before adding complexity.
+The current live scan is reachable, not dead: deterministic replay produces qualifying entries and production exposes watch states and explicit blockers. No manual or synthetic trade should be inserted merely to prove activity. The next statistical question is whether the opportunities rejected by each gate later produce positive after-cost outcomes, not how to force a higher trade count.
