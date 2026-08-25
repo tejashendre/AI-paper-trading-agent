@@ -75,11 +75,15 @@ jobs:
             echo "Rebuilding and starting application containers..."
             export APP_COMMIT_SHA="$DEPLOY_COMMIT"
             export APP_DEPLOYED_AT="$DEPLOYED_AT"
-            docker compose build --pull quant-dashboard swing-daemon
+            docker compose build --pull quant-dashboard swing-daemon xsec-daemon
             docker compose up -d --remove-orphans
 
             echo "Cleaning unused Docker build cache older than seven days..."
             docker builder prune -f --filter "until=168h"
+
+            echo "Cross-sectional daemon status (reported, not gated):"
+            docker compose ps xsec-daemon || true
+            docker logs quant-xsec-daemon --tail=20 2>&1 || true
 
             echo "Verifying deployment health and scan advancement..."
             STATUS_URL=https://trader.tejashendre.com/api/user/status \

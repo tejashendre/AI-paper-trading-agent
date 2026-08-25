@@ -1,18 +1,41 @@
-node_modules
-npm-debug.log
-.next
-data
-out
-build
-dist
-.git
+# ---- never ship secrets ----
 .env
 .env.local
 .env*.local
 ssh-key-*.key*
 *.key
 *.pem
+vps_env.txt
+
+# ---- build output and caches (rebuilt inside the image) ----
+node_modules
+.next
+out
+build
+dist
+*.tsbuildinfo
+npm-debug.log
+.replay-cache
+
+# ---- runtime state, mounted as a volume rather than baked in ----
+data
+
+# ---- history and tooling that no runtime code reads ----
+.git
+.github
+.claude
+.codex
+.agents
+.playwright-cli
+.vscode
+.idea
+
+# ---- documentation: large, and never read by the running bot ----
+docs
+*.md
+!README.md
+
+# ---- archives and scratch ----
 *.tar.gz
 *.zip
-*.tsbuildinfo
 .DS_Store

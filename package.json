@@ -15,7 +15,11 @@
         "replay:strategy": "tsx scripts/replay-strategy.ts",
         "research:audit": "tsx scripts/research-audit.ts",
         "ledger:verify": "tsx scripts/verify-execution-ledger.ts",
-        "source:manifest": "node scripts/source-manifest.mjs"
+        "source:manifest": "node scripts/source-manifest.mjs",
+        "replay:xsec": "tsx scripts/replay-xsec.ts",
+        "daemon:xsec": "tsx src/daemon/crossSectionalDaemon.ts",
+        "redis:housekeeping": "tsx scripts/redis-housekeeping.ts",
+        "reset:arena": "tsx scripts/reset-arena.ts"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.106.2",

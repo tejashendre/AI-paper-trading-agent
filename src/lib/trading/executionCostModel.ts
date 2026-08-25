@@ -102,6 +102,35 @@ export function getExecutionCostProfile(asset: string): ExecutionCostProfile {
   return profile;
 }
 
+/**
+ * Cost profile for an arbitrary Bybit linear perpetual, derived from its
+ * observed turnover. The cross-sectional book trades roughly fifty symbols
+ * that cannot each have a hand-written profile, but a blanket assumption
+ * would either flatter thin names or punish liquid ones. Spread, slippage and
+ * stop-gap all scale with the inverse square root of turnover, which is the
+ * usual empirical shape, anchored on the hand-calibrated BTC and SOL entries.
+ */
+export function deriveExecutionCostProfile(asset: string, turnover24hUsd: number): ExecutionCostProfile {
+  const known = PROFILES[asset];
+  if (known) return known;
+
+  const reference = 1_000_000_000; // BTC-scale daily turnover
+  const liquidity = Math.max(1e6, Number(turnover24hUsd) || 1e6);
+  // 1 at BTC-scale, ~7 at the $20M screen floor.
+  const scale = Math.min(12, Math.sqrt(reference / liquidity));
+
+  return {
+    asset,
+    venueModel: "BYBIT_LINEAR_DERIVED",
+    halfSpreadBps: Math.min(15, 0.8 * scale),
+    baseSlippageBps: Math.min(15, 0.8 * scale),
+    sizeImpactBps: Math.min(8, 0.4 * scale),
+    referenceNotionalUsd: Math.max(2_000, liquidity / 1_000),
+    stopGapBps: Math.min(40, 2.0 * scale),
+    carryBpsPerDay: 3.0,
+  };
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -123,6 +152,10 @@ export function estimatePaperFill(input: {
   requestedPrice: number;
   amount: number;
   context: PaperExecutionContext;
+  /** Overrides the catalogued profile, for symbols priced by turnover. */
+  profile?: ExecutionCostProfile;
+  /** Overrides the catalogued fee rate, e.g. maker instead of taker. */
+  feeRate?: number;
 }): PaperFillEstimate {
   if (!Number.isFinite(input.requestedPrice) || input.requestedPrice <= 0) {
     throw new Error(`Invalid requested execution price for ${input.asset}`);
@@ -131,8 +164,14 @@ export function estimatePaperFill(input: {
     throw new Error(`Invalid execution amount for ${input.asset}`);
   }
 
-  const profile = getExecutionCostProfile(input.asset);
-  const requestedNotionalUsd = estimateNotionalUsd(input.asset, input.amount, input.requestedPrice);
+  const profile = input.profile ?? getExecutionCostProfile(input.asset);
+  // A supplied profile means the symbol is outside the hand-written catalogue,
+  // so contract lookups would throw. Linear USDT perps are all USD-quoted with
+  // a unit contract, which is exactly `amount * price`.
+  const isDerived = input.profile !== undefined;
+  const requestedNotionalUsd = isDerived
+    ? input.amount * input.requestedPrice
+    : estimateNotionalUsd(input.asset, input.amount, input.requestedPrice);
   const conditionMultiplier = marketConditionMultiplier(input.context);
   const sizeRatio = Math.max(0, requestedNotionalUsd / Math.max(profile.referenceNotionalUsd, 1));
   const sizeImpactBps = profile.sizeImpactBps * Math.sqrt(sizeRatio);
@@ -144,8 +183,12 @@ export function estimatePaperFill(input: {
   const totalAdverseBps = spreadBps + slippageBps + gapBps;
   const adverseDirection = input.action === "BUY" || input.action === "COVER" ? 1 : -1;
   const fillPrice = input.requestedPrice * (1 + adverseDirection * totalAdverseBps / 10_000);
-  const notionalUsd = estimateNotionalUsd(input.asset, input.amount, fillPrice);
-  const feeUsd = estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
+  const notionalUsd = isDerived
+    ? input.amount * fillPrice
+    : estimateNotionalUsd(input.asset, input.amount, fillPrice);
+  const feeUsd = input.feeRate !== undefined
+    ? notionalUsd * input.feeRate
+    : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
   const spreadCostUsd = requestedNotionalUsd * spreadBps / 10_000;
   const slippageCostUsd = requestedNotionalUsd * slippageBps / 10_000;
   const gapCostUsd = requestedNotionalUsd * gapBps / 10_000;

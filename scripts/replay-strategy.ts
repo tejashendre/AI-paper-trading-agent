@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { runReplay } from "@/lib/backtest/replayEngine";
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
@@ -6,6 +8,7 @@ interface CliOptions {
   assets: string[];
   timeframe: Timeframe;
   limit: number;
+  maxHold: number;
   json: boolean;
 }
 
@@ -20,12 +23,14 @@ function parseArgs(): CliOptions {
 
   const assetsRaw = readValue("--assets", Object.keys(SUPPORTED_ASSETS).join(","));
   const timeframeRaw = readValue("--timeframe", "15m") as Timeframe;
-  const limitRaw = readValue("--limit", "720");
+  const limitRaw = readValue("--limit", "5000");
+  const maxHoldRaw = readValue("--max-hold", "192");
 
   return {
     assets: assetsRaw.split(",").map((asset) => asset.trim().toUpperCase()).filter(Boolean),
     timeframe: timeframeRaw,
-    limit: Math.max(200, Math.min(1500, Number.parseInt(limitRaw, 10) || 720)),
+    limit: Math.max(200, Math.min(30_000, Number.parseInt(limitRaw, 10) || 5_000)),
+    maxHold: Math.max(8, Math.min(2000, Number.parseInt(maxHoldRaw, 10) || 192)),
     json: args.includes("--json"),
   };
 }
@@ -105,6 +110,99 @@ async function fetchYahooCandles(asset: string, timeframe: Timeframe, limit: num
   return candles.slice(-limit);
 }
 
+// Candle history is cached on disk so repeated research runs do not re-download
+// hundreds of pages. Delete the directory to force a refresh.
+const CACHE_DIR = path.join(process.cwd(), ".replay-cache");
+
+function cacheKey(asset: string, timeframe: Timeframe, limit: number) {
+  return path.join(CACHE_DIR, `${asset}_${timeframe}_${limit}.json`);
+}
+
+function readCache(asset: string, timeframe: Timeframe, limit: number): Candle[] | null {
+  try {
+    const file = cacheKey(asset, timeframe, limit);
+    if (!fs.existsSync(file)) return null;
+    const ageHours = (Date.now() - fs.statSync(file).mtimeMs) / 3_600_000;
+    if (ageHours > 12) return null;
+    return JSON.parse(fs.readFileSync(file, "utf-8")) as Candle[];
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(asset: string, timeframe: Timeframe, limit: number, candles: Candle[]) {
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(cacheKey(asset, timeframe, limit), JSON.stringify(candles));
+  } catch {
+    // A cache miss is never fatal.
+  }
+}
+
+const BYBIT_INTERVAL: Partial<Record<Timeframe, string>> = {
+  "1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240",
+};
+
+/**
+ * Crypto is replayed against Bybit, the venue the daemon actually executes on,
+ * and paginated so the sample can span months. Yahoo only serves a few days of
+ * intraday history, which is far too short to judge a strategy that now holds
+ * positions for roughly a day.
+ */
+async function fetchBybitCandles(asset: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
+  const cached = readCache(asset, timeframe, limit);
+  if (cached && cached.length > 0) {
+    console.log(`[REPLAY] Reusing cached ${cached.length} ${timeframe} candles for ${asset}.`);
+    return cached;
+  }
+
+  const symbol = SUPPORTED_ASSETS[asset]?.bybitLinearSymbol;
+  const interval = BYBIT_INTERVAL[timeframe];
+  if (!symbol || !interval) throw new Error(`No Bybit mapping for ${asset} ${timeframe}.`);
+
+  const byTime = new Map<number, Candle>();
+  let end = Date.now();
+
+  while (byTime.size < limit) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let rows: string[][] = [];
+    try {
+      const response = await fetch(
+        `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=1000&end=${end}`,
+        { signal: controller.signal, headers: { "User-Agent": "quant-replay/1.0" } }
+      );
+      if (!response.ok) throw new Error(`Bybit HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.retCode !== 0) throw new Error(`Bybit ${payload.retMsg}`);
+      rows = payload.result?.list || [];
+    } finally {
+      clearTimeout(timer);
+    }
+    if (rows.length === 0) break;
+
+    let oldestMs = end;
+    for (const row of rows) {
+      const openTimeMs = Number(row[0]);
+      byTime.set(Math.floor(openTimeMs / 1000), {
+        time: Math.floor(openTimeMs / 1000),
+        open: Number(row[1]),
+        high: Number(row[2]),
+        low: Number(row[3]),
+        close: Number(row[4]),
+        volume: Number(row[5]),
+      });
+      oldestMs = Math.min(oldestMs, openTimeMs);
+    }
+    if (oldestMs >= end) break;
+    end = oldestMs - 1;
+  }
+
+  const candles = Array.from(byTime.values()).sort((a, b) => a.time - b.time).slice(-limit);
+  writeCache(asset, timeframe, limit, candles);
+  return candles;
+}
+
 async function loadCandles(assets: string[], timeframe: Timeframe, limit: number): Promise<Record<string, Candle[]>> {
   const candlesByAsset: Record<string, Candle[]> = {};
 
@@ -114,9 +212,13 @@ async function loadCandles(assets: string[], timeframe: Timeframe, limit: number
       continue;
     }
 
+    const isCrypto = SUPPORTED_ASSETS[asset].category === "crypto";
     try {
-      candlesByAsset[asset] = await fetchYahooCandles(asset, timeframe, limit);
-      console.log(`[REPLAY] Loaded ${candlesByAsset[asset].length} ${timeframe} candles for ${asset}.`);
+      candlesByAsset[asset] = isCrypto
+        ? await fetchBybitCandles(asset, timeframe, limit)
+        : await fetchYahooCandles(asset, timeframe, limit);
+      const venue = isCrypto ? "Bybit" : "Yahoo";
+      console.log(`[REPLAY] Loaded ${candlesByAsset[asset].length} ${timeframe} candles for ${asset} from ${venue}.`);
     } catch (error: any) {
       console.warn(`[REPLAY] Failed to load ${asset}: ${error?.message || error}`);
       candlesByAsset[asset] = [];
@@ -141,6 +243,9 @@ function printHumanReport(report: ReturnType<typeof runReplay>) {
   console.log(`False positive rate: ${formatPercent(report.falsePositiveRate)}`);
   console.log(`Missed opportunity rate: ${formatPercent(report.missedOpportunityRate)}`);
   console.log(`Stale windows skipped: ${report.staleWindowsSkipped}`);
+  if (report.triggerCoverageSkipped > 0) {
+    console.log(`Bars skipped for missing 1m trigger history: ${report.triggerCoverageSkipped}`);
+  }
   console.log(`Best asset: ${report.bestAsset ? `${report.bestAsset.asset} ${formatCurrency(report.bestAsset.pnlUsd)}` : "None"}`);
   console.log(`Worst asset: ${report.worstAsset ? `${report.worstAsset.asset} ${formatCurrency(report.worstAsset.pnlUsd)}` : "None"}`);
 
@@ -166,10 +271,36 @@ function printHumanReport(report: ReturnType<typeof runReplay>) {
   console.log(report.acceptance.passed ? "RESULT: PASS" : "RESULT: FAIL");
 }
 
+/**
+ * The short-term trigger is scored on 1m/5m data. Without it the trigger score
+ * is computed from the base timeframe and the replay silently grades a
+ * different entry gate than the daemon uses.
+ */
+async function loadFastCandles(assets: string[], baseLimit: number) {
+  const fast: Record<string, { m1?: Candle[]; m5?: Candle[] }> = {};
+  for (const asset of assets) {
+    if (SUPPORTED_ASSETS[asset]?.category !== "crypto") continue;
+    try {
+      const [m1, m5] = await Promise.all([
+        fetchBybitCandles(asset, "1m", Math.min(220_000, baseLimit * 15)),
+        fetchBybitCandles(asset, "5m", Math.min(80_000, baseLimit * 3)),
+      ]);
+      fast[asset] = { m1, m5 };
+      console.log(`[REPLAY] Loaded ${m1.length} 1m and ${m5.length} 5m trigger candles for ${asset}.`);
+    } catch (error: any) {
+      console.warn(`[REPLAY] Trigger candles unavailable for ${asset}: ${error?.message || error}`);
+    }
+  }
+  return fast;
+}
+
 async function main() {
   const options = parseArgs();
   const candlesByAsset = await loadCandles(options.assets, options.timeframe, options.limit);
-  const report = runReplay({ assets: candlesByAsset });
+  const fastCandles = options.timeframe === "15m"
+    ? await loadFastCandles(options.assets, options.limit)
+    : {};
+  const report = runReplay({ assets: candlesByAsset, fastCandles, maxHoldCandles: options.maxHold });
 
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));

@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 import { PortfolioManager } from "@/lib/portfolio";
-import { Logger } from "@/lib/logger";
 import { verifyAuth } from "@/lib/auth";
-import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
-import { LocalLearningMemory } from "@/lib/trading/localLearning";
-import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
-import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
-import { getRedis } from "@/lib/redis";
-import { SUPPORTED_ASSETS } from "@/lib/market";
+import { DEFAULT_RESET_CAPITAL, resetArena } from "@/lib/admin/resetArena";
 
 export const dynamic = "force-dynamic";
 
@@ -33,50 +27,24 @@ export async function POST(request: Request) {
         if (!userRelease) {
             return NextResponse.json({ success: false, error: "User portfolio is busy; retry after the active update completes." }, { status: 409 });
         }
-        let capital = 10000;
+
+        let capital = DEFAULT_RESET_CAPITAL;
         try {
             const body = await request.json();
-            if (body && typeof body.capital === "number" && Number.isFinite(body.capital) && body.capital >= 100 && body.capital <= 1_000_000) {
-                capital = body.capital;
-            }
+            if (body && typeof body.capital === "number") capital = body.capital;
         } catch {
-            // Ignore parse errors, use default 10000
+            // Ignore parse errors and reset with the default capital.
         }
 
-        await Promise.all([
-            PortfolioManager.resetPortfolio("user", capital),
-            PortfolioManager.resetPortfolio("ai", capital)
-        ]);
-        await Promise.all([
-            LocalLearningMemory.clearCurrentStrategyState(),
-            OpportunityJournal.clearCurrentStrategyState(),
-            TradeReviewJournal.clearCurrentStrategyState(),
-        ]);
-        const redis = getRedis();
-        const transientKeys = [
-            ...Object.keys(SUPPORTED_ASSETS).map((asset) => `swing:cooldown:${asset}`),
-            "swing:lastExitSweep:ai",
-            "swing:lastExitSweep:user",
-            "swing:scan:request",
-        ];
-        await Promise.all(transientKeys.map((key) => redis.del(key)));
-        await ExecutionLedger.recordBestEffort({
-            type: "SYSTEM_RESET",
-            source: "ADMIN_DASHBOARD",
-            payload: {
-                capital,
-                portfolios: ["user", "ai"],
-                clearedStrategyVersion: TRADING_STRATEGY_VERSION,
-                clearedTransientKeys: transientKeys,
-                preservedVersionedHistory: true,
-            },
-        });
-        await Logger.info(`[${auth.source}] Admin reset both Human and AI portfolios with starting capital $${capital.toLocaleString()} USD.`);
+        const result = await resetArena({ capital, source: "ADMIN_DASHBOARD" });
+
         return NextResponse.json({
             success: true,
-            message: `Competition reset! Both Human and AI portfolios set to $${capital.toLocaleString()} USD.`,
+            message: `Arena reset. Human, AI swing and cross-sectional book all set to $${result.capital.toLocaleString()} USD.`,
             strategyState: {
-                clearedVersion: TRADING_STRATEGY_VERSION,
+                clearedVersion: result.swingStrategyVersion,
+                clearedBookVersion: result.bookStrategyVersion,
+                clearedKeys: result.clearedKeys.length,
                 priorVersionHistoryPreserved: true,
             },
         });
