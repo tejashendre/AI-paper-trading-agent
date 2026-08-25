@@ -17,6 +17,11 @@ import {
 } from "@/lib/trading/executionCostModel";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
+import {
+  decideSwingExit,
+  isOppositeEdgeConfirmed,
+  isThesisWeakening,
+} from "@/lib/execution/exitPolicy";
 
 export interface SwingExitSweepResult {
   source: string;
@@ -260,189 +265,30 @@ function updateProfitWatermark(asset: string, pos: OpenPosition, currentPrice: n
   return { netPnl, peakPnl: previousPeak, updated: false };
 }
 
-function profitGivebackLimit(peakPnl: number): number {
-  if (peakPnl >= 150) return Math.max(8, peakPnl * 0.06);
-  if (peakPnl >= 80) return 5;
-  if (peakPnl >= 40) return 4;
-  if (peakPnl >= 20) return 3;
-  return Infinity;
-}
-
-function shouldCloseOnProfitGiveback(asset: string, pos: OpenPosition, currentPrice: number) {
-  const watermark = updateProfitWatermark(asset, pos, currentPrice);
-  const givebackLimit = profitGivebackLimit(watermark.peakPnl);
-  const giveback = watermark.peakPnl - watermark.netPnl;
-  const triggered = (
-    Number.isFinite(givebackLimit) &&
-    watermark.peakPnl >= 20 &&
-    watermark.netPnl > 0 &&
-    giveback >= givebackLimit
-  );
-
-  return {
-    ...watermark,
-    giveback,
-    givebackLimit,
-    triggered,
-  };
-}
-
-function shouldCloseOnPlannedRiskBreach(asset: string, pos: OpenPosition, currentPrice: number) {
-  const plannedMaxLoss = Number(pos.maxLossUsd || 0);
-  if (!Number.isFinite(plannedMaxLoss) || plannedMaxLoss <= 0) {
-    return { triggered: false, netPnl: unrealizedNetPnl(asset, pos, currentPrice), plannedMaxLoss };
-  }
-
-  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
-  const breachLimit = Math.max(5, plannedMaxLoss * 1.25);
-  return {
-    triggered: netPnl <= -breachLimit,
-    netPnl,
-    plannedMaxLoss,
-    breachLimit,
-  };
-}
-
-function shouldCloseWeakThesisProfitDecay(asset: string, pos: OpenPosition, currentPrice: number) {
-  if (pos.thesisStatus !== "WEAKENING") {
-    return { triggered: false, netPnl: unrealizedNetPnl(asset, pos, currentPrice), peakPnl: Number(pos.maxUnrealizedPnlUsd || 0), giveback: 0, givebackLimit: Infinity };
-  }
-
-  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
-  const peakPnl = Number(pos.maxUnrealizedPnlUsd || 0);
-  const giveback = peakPnl - netPnl;
-  const givebackLimit = Math.max(2, peakPnl * 0.25);
-  const triggered = (
-    peakPnl >= 8 &&
-    netPnl > 0 &&
-    (
-      giveback >= givebackLimit ||
-      (peakPnl >= 12 && netPnl <= peakPnl * 0.55)
-    )
-  );
-
-  return {
-    triggered,
-    netPnl,
-    peakPnl,
-    giveback,
-    givebackLimit,
-  };
-}
-
-function shouldCloseWeakThesisLossCompression(asset: string, pos: OpenPosition, currentPrice: number) {
-  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
-  const plannedMaxLoss = Number(pos.maxLossUsd || 0);
-  const thesisWeak = (
-    pos.thesisStatus === "WEAKENING" ||
-    pos.thesisStatus === "INVALID" ||
-    pos.thesisStatus === "OPPOSITE_EDGE_CONFIRMED"
-  );
-
-  if (!thesisWeak || !Number.isFinite(plannedMaxLoss) || plannedMaxLoss <= 0) {
-    return { triggered: false, netPnl, plannedMaxLoss, lossLimit: Infinity };
-  }
-
-  const weakDataPenalty = Number(pos.dataQuality || 100) < 70 ? 0.45 : 0.55;
-  const lossLimit = Math.max(8, plannedMaxLoss * weakDataPenalty);
-
-  return {
-    triggered: netPnl < 0 && Math.abs(netPnl) >= lossLimit,
-    netPnl,
-    plannedMaxLoss,
-    lossLimit,
-  };
-}
-
-function isOppositeSignalStrong(pos: OpenPosition, signal: SwingSignal) {
-  const oppositeLong = pos.direction === "SHORT" && signal.action === "SWING_BUY";
-  const oppositeShort = pos.direction === "LONG" && signal.action === "SWING_SHORT";
-  if (!oppositeLong && !oppositeShort) return false;
-
-  const convictionGap = signal.finalConviction - Number(pos.finalConviction || 0);
-  const isFastCrypto = isCryptoFastAsset(pos.asset);
-  const requiredConviction = isFastCrypto
-    ? Math.max(72, Number(pos.finalConviction || 0) + 6)
-    : Math.max(82, Number(pos.finalConviction || 0) + 10);
-
-  return (
-    signal.dataQuality >= (isFastCrypto ? 80 : 74) &&
-    signal.triggerScore >= (isFastCrypto ? 16 : 12) &&
-    signal.finalConviction >= requiredConviction &&
-    convictionGap >= (isFastCrypto ? 6 : 10) &&
-    signal.htfScore >= (isFastCrypto ? 8 : 10) &&
-    signal.slippagePercent <= (isFastCrypto ? 0.25 : 0.35)
-  );
-}
-
-function isOppositeSignalPresent(pos: OpenPosition, signal: SwingSignal) {
-  return (
-    (pos.direction === "SHORT" && signal.action === "SWING_BUY") ||
-    (pos.direction === "LONG" && signal.action === "SWING_SHORT")
-  );
-}
-
-function tightenStopForWeakThesis(pos: OpenPosition, currentPrice: number): boolean {
-  const bufferPercent = isCryptoFastAsset(pos.asset) ? 0.0035 : 0.0045;
-
-  if (pos.direction === "LONG") {
-    const tightenedStop = currentPrice * (1 - bufferPercent);
-    if (tightenedStop > pos.stopLoss && tightenedStop < currentPrice) {
-      pos.stopLoss = tightenedStop;
-      pos.isTrailing = true;
-      return true;
-    }
-    return false;
-  }
-
-  const tightenedStop = currentPrice * (1 + bufferPercent);
-  if (tightenedStop < pos.stopLoss && tightenedStop > currentPrice) {
-    pos.stopLoss = tightenedStop;
-    pos.isTrailing = true;
-    return true;
-  }
-
-  return false;
-}
-
 async function reviewLiveThesis(asset: string, pos: OpenPosition, currentPrice: number) {
   const signal = await SwingEngine.analyze(asset);
-  const netPnl = unrealizedNetPnl(asset, pos, currentPrice);
-  const learning = await LocalLearningMemory.getAdjustment(asset, pos.setupTags || []).catch(() => ({
-    adjustment: 0,
-    watchOnly: false,
-    rules: [],
-  }));
+  pos.lastThesisCheckTime = new Date().toISOString();
 
-  const checkedAt = new Date().toISOString();
-  pos.lastThesisCheckTime = checkedAt;
-
-  if (isOppositeSignalStrong(pos, signal)) {
+  if (isOppositeEdgeConfirmed(pos, signal)) {
     pos.thesisStatus = "OPPOSITE_EDGE_CONFIRMED";
     pos.thesisReason = `Opposite ${signal.directionBias.toLowerCase()} setup is stronger than the open ${pos.direction.toLowerCase()} trade: conviction ${signal.finalConviction}, trigger ${signal.triggerScore}, data ${signal.dataQuality}.`;
     pos.scaleInBlockedReason = "Opposite edge confirmed; scale-in disabled.";
-    return { signal, shouldClose: true, tightened: false, updated: true, netPnl };
+    return { signal, oppositeEdgeConfirmed: true };
   }
 
-  const oppositeSignalPresent = isOppositeSignalPresent(pos, signal);
-  const oppositeConviction = oppositeSignalPresent && signal.finalConviction >= Math.max(62, Number(pos.finalConviction || 0) - 4);
-  const learningWarning = learning.watchOnly || learning.adjustment <= -10;
-  const shouldTighten = (oppositeConviction || learningWarning) && netPnl <= 20;
-
-  if (oppositeConviction || learningWarning) {
+  if (isThesisWeakening(pos, signal)) {
+    // Recorded for the dashboard only. Weak opposing evidence no longer
+    // tightens the stop: doing so closed trades inside ordinary noise.
     pos.thesisStatus = "WEAKENING";
-    pos.thesisReason = oppositeConviction
-      ? `Live market evidence is pushing against the open ${pos.direction.toLowerCase()} trade, but the opposite edge is not strong enough to force a close yet.`
-      : `Local learning has reduced trust in this asset/setup, so the bot is protecting the trade more tightly.`;
+    pos.thesisReason = "Live evidence is leaning against this trade, but not strongly enough to close it. The original protective stop still governs the risk.";
     pos.scaleInBlockedReason = "Live thesis is weakening; scale-in disabled until the trade proves itself again.";
-    const tightened = shouldTighten ? tightenStopForWeakThesis(pos, currentPrice) : false;
-    return { signal, shouldClose: false, tightened, updated: true, netPnl };
+    return { signal, oppositeEdgeConfirmed: false };
   }
 
   pos.thesisStatus = "VALID";
   pos.thesisReason = "Live thesis still matches the open trade closely enough to keep managing it normally.";
   pos.scaleInBlockedReason = undefined;
-  return { signal, shouldClose: false, tightened: false, updated: true, netPnl };
+  return { signal, oppositeEdgeConfirmed: false };
 }
 
 async function closePosition(
@@ -889,31 +735,17 @@ export async function sweepSwingExits(
         continue;
       }
 
-      const profitGuard = shouldCloseOnProfitGiveback(asset, pos, currentLivePrice);
-      if (profitGuard.updated) {
+      // One watermark update, one hard stop/take-profit check, then a single
+      // exit decision. Previously six guards raced each other here, each with
+      // its own dollar thresholds, and the tightest one always won.
+      const watermark = updateProfitWatermark(asset, pos, currentLivePrice);
+      if (watermark.updated) {
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-      }
-      if (portfolioType === "ai" && profitGuard.triggered) {
-        await Logger.info(
-          `[${source}] ${asset} profit giveback guard closing. Peak open PnL $${profitGuard.peakPnl.toFixed(2)}, current $${profitGuard.netPnl.toFixed(2)}, giveback $${profitGuard.giveback.toFixed(2)}.`
-        );
-        await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "TAKE_PROFIT", result, false);
-        continue;
       }
 
       const sltp = RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice);
-
       if (sltp.triggered && sltp.reason) {
         await closePosition(portfolio, portfolioType, source, asset, pos, sltp.exitPrice, sltp.reason, result);
-        continue;
-      }
-
-      const riskBreach = shouldCloseOnPlannedRiskBreach(asset, pos, currentLivePrice);
-      if (portfolioType === "ai" && riskBreach.triggered) {
-        await Logger.warn(
-          `[${source}] ${asset} planned risk breach closing. Net PnL $${riskBreach.netPnl.toFixed(2)} exceeded planned max loss $${riskBreach.plannedMaxLoss.toFixed(2)}.`
-        );
-        await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "STOP_LOSS", result);
         continue;
       }
 
@@ -924,61 +756,41 @@ export async function sweepSwingExits(
         );
       }
 
+      let oppositeEdgeConfirmed = false;
       if (checkSignalReversal) {
         const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice);
-        if (thesisReview.shouldClose) {
-          await Logger.info(
-            `[${source}] ${asset} signal reversal detected. Current ${pos.direction} thesis invalidated by ${thesisReview.signal.directionBias} setup at ${thesisReview.signal.finalConviction} conviction.`
-          );
-          await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_REVERSAL", result, false);
-        } else {
-          const weakLossGuard = shouldCloseWeakThesisLossCompression(asset, pos, currentLivePrice);
-          if (portfolioType === "ai" && weakLossGuard.triggered) {
-            await Logger.warn(
-              `[${source}] ${asset} weak-thesis loss compression closing. Net PnL $${weakLossGuard.netPnl.toFixed(2)} reached $${weakLossGuard.lossLimit.toFixed(2)} soft-loss limit before full planned loss $${weakLossGuard.plannedMaxLoss.toFixed(2)}.`
-            );
-            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "SIGNAL_INVALIDATION", result);
-            continue;
-          }
-
-          const weakProfitGuard = shouldCloseWeakThesisProfitDecay(asset, pos, currentLivePrice);
-          if (portfolioType === "ai" && weakProfitGuard.triggered) {
-            await Logger.info(
-              `[${source}] ${asset} weak-thesis profit guard closing. Peak $${weakProfitGuard.peakPnl.toFixed(2)}, current $${weakProfitGuard.netPnl.toFixed(2)}, giveback $${weakProfitGuard.giveback.toFixed(2)}.`
-            );
-            await closePosition(portfolio, portfolioType, source, asset, pos, currentLivePrice, "TAKE_PROFIT", result, false);
-          } else if (thesisReview.tightened) {
-            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-            await Logger.warn(
-              `[${source}] ${asset} thesis weakening. Tightened protective stop to $${pos.stopLoss.toFixed(4)} instead of waiting for full stop loss.`
-            );
-            result.trailed++;
-          } else if (sltp.trailed) {
-            if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
-            if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
-            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-            if (sltp.newStopLoss || sltp.newTakeProfit) {
-              await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
-              result.trailed++;
-            }
-            await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
-          } else if (thesisReview.updated) {
-            await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-            await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
-          }
-        }
-      } else if (sltp.trailed) {
-        if (sltp.newStopLoss) pos.stopLoss = sltp.newStopLoss;
-        if (sltp.newTakeProfit) pos.takeProfit = sltp.newTakeProfit;
+        oppositeEdgeConfirmed = thesisReview.oppositeEdgeConfirmed;
         await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-        if (sltp.newStopLoss || sltp.newTakeProfit) {
-          await Logger.info(`[${source}] Trailed ${asset} levels. SL: $${pos.stopLoss.toFixed(4)}`);
-          result.trailed++;
-        }
-        await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
-      } else {
-        await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
       }
+
+      const action = decideSwingExit({
+        position: pos,
+        currentPrice: currentLivePrice,
+        netPnlUsd: watermark.netPnl,
+        peakNetPnlUsd: watermark.peakPnl,
+        oppositeEdgeConfirmed,
+      });
+
+      if (action.kind === "CLOSE") {
+        // A reversal or giveback close is a decision, not a risk event, so it
+        // does not put the asset into a post-loss cooldown.
+        const setCooldown = action.reason === "SIGNAL_INVALIDATION";
+        await Logger.info(`[${source}] ${asset} closing via ${action.reason}. ${action.explanation}`);
+        await closePosition(
+          portfolio, portfolioType, source, asset, pos, currentLivePrice, action.reason, result, setCooldown
+        );
+        continue;
+      }
+
+      if (action.kind === "MOVE_STOP") {
+        pos.stopLoss = action.newStopLoss;
+        if (action.trailing) pos.isTrailing = true;
+        await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+        await Logger.info(`[${source}] ${asset} stop moved to $${pos.stopLoss.toFixed(4)}. ${action.explanation}`);
+        result.trailed++;
+      }
+
+      await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
     } catch (error) {
       result.errors++;
       await Logger.error(`[${source}] Sweep error on ${asset}: ${error instanceof Error ? error.message : String(error)}`);

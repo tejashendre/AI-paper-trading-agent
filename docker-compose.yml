@@ -79,5 +79,35 @@ services:
       retries: 5
       start_period: 120s
 
+  xsec-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
+        APP_DEPLOYED_AT: ${APP_DEPLOYED_AT:-unknown}
+    container_name: quant-xsec-daemon
+    command: npm run daemon:xsec
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - APP_COMMIT_SHA=${APP_COMMIT_SHA:-unknown}
+      - APP_DEPLOYED_AT=${APP_DEPLOYED_AT:-unknown}
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);r.get('xsec:equity').then(v=>{r.disconnect();process.exit(v?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
 volumes:
   redis_data:

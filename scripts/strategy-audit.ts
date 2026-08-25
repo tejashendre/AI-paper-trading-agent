@@ -3,6 +3,7 @@ import { runReplay } from "../src/lib/backtest/replayEngine";
 import { PAPER_MARGIN_POLICY_VERSION, TradeAdmissionController } from "../src/lib/trading/tradeAdmission";
 import { Candle, IndicatorSnapshot, Portfolio, StatisticalMetrics, Trade } from "../src/lib/types";
 import { RiskManager } from "../src/lib/riskManager";
+import { decideSwingExit, EXIT_POLICY } from "../src/lib/execution/exitPolicy";
 import { classifyTradeReview } from "../src/lib/trading/tradeReviewJournal";
 import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
 import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/trading/localLearning";
@@ -1060,7 +1061,10 @@ function auditExitSafety(): AuditResult[] {
       : "Short position did not close after price crossed above stop."
   ));
 
-  const feeProtectedWinner = RiskManager.checkStopLossOrTakeProfit({
+  // Stop placement for swings is owned by exitPolicy, so the profit-protection
+  // guarantee is audited there. Entry 100, initial stop 95: risk is 5, so at
+  // 106 the trade has run 1.2R and must lock a stop above entry.
+  const winnerPosition = {
     asset: "BTC",
     entryPrice: 100,
     amount: 10,
@@ -1068,29 +1072,59 @@ function auditExitSafety(): AuditResult[] {
     usdInvested: 1_000,
     stopLoss: 95,
     initialStopLoss: 95,
-    takeProfit: 110,
+    takeProfit: 130,
     entryTime: new Date().toISOString(),
     signalScore: 20,
-    reasoning: "Audit fee-aware profit protection",
-    direction: "LONG",
-    strategyType: "swing",
+    reasoning: "Audit swing profit protection",
+    direction: "LONG" as const,
+    strategyType: "swing" as const,
     maxLossUsd: 50,
-  }, 106);
+    highestPriceReached: 106,
+  };
+  const lockAction = decideSwingExit({
+    position: winnerPosition,
+    currentPrice: 106,
+    netPnlUsd: 55,
+    peakNetPnlUsd: 55,
+    oppositeEdgeConfirmed: false,
+  });
+  const lockedStop = lockAction.kind === "MOVE_STOP" ? lockAction.newStopLoss : 0;
+  // The stop must protect a profit, and must still sit below the live price so
+  // it does not close the trade it was meant to protect.
+  const profitLockSound = lockAction.kind === "MOVE_STOP" && lockedStop > 100 && lockedStop < 106;
   checks.push(result(
-    !feeProtectedWinner.triggered && Number(feeProtectedWinner.newStopLoss || 0) > 100.2 ? "PASS" : "FAIL",
-    "fee-aware swing profit lock",
-    Number(feeProtectedWinner.newStopLoss || 0) > 100.2
-      ? `A profitable swing now protects a net-positive stop at ${feeProtectedWinner.newStopLoss?.toFixed(4)} instead of a nominal fee-blind breakeven.`
-      : "A profitable swing did not receive a fee-aware protective stop."
+    profitLockSound ? "PASS" : "FAIL",
+    "swing profit lock at R threshold",
+    profitLockSound
+      ? `A swing that has run ${EXIT_POLICY.lockActivationR}R locks a protective stop at ${lockedStop.toFixed(4)}, above entry and below live price.`
+      : "A profitable swing did not receive a protective stop above entry from the exit policy."
+  ));
+
+  // The same policy must not touch the stop before the trade has earned it —
+  // an early lock is how a winner gets stopped out inside normal noise.
+  const earlyAction = decideSwingExit({
+    position: { ...winnerPosition, highestPriceReached: 101 },
+    currentPrice: 101,
+    netPnlUsd: 8,
+    peakNetPnlUsd: 8,
+    oppositeEdgeConfirmed: false,
+  });
+  checks.push(result(
+    earlyAction.kind === "HOLD" ? "PASS" : "FAIL",
+    "no premature swing stop tightening",
+    earlyAction.kind === "HOLD"
+      ? `A swing only 0.2R ahead is left alone rather than having its stop pulled up to the noise band.`
+      : "The exit policy tightens a barely-profitable swing, which is how winners get clipped."
   ));
 
   const lifecyclePath = path.join(process.cwd(), "src", "lib", "execution", "swingLifecycle.ts");
   const lifecycleSource = fs.readFileSync(lifecyclePath, "utf8");
+  const riskManagerSource = fs.readFileSync(path.join(process.cwd(), "src", "lib", "riskManager.ts"), "utf8");
   const stopCheckIndex = lifecycleSource.indexOf("RiskManager.checkStopLossOrTakeProfit(pos, currentLivePrice)");
   const repairIndex = lifecycleSource.indexOf("repairInvalidProtectiveStop(pos, currentLivePrice)");
-  const weakLossGuardIndex = lifecycleSource.indexOf("shouldCloseWeakThesisLossCompression(asset, pos, currentLivePrice)");
   const thesisReviewIndex = lifecycleSource.indexOf("const thesisReview = await reviewLiveThesis(asset, pos, currentLivePrice)");
-  const signalInvalidationIndex = lifecycleSource.indexOf('"SIGNAL_INVALIDATION", result');
+  const exitDecisionIndex = lifecycleSource.indexOf("decideSwingExit({");
+  const exitPolicySource = fs.readFileSync(path.join(process.cwd(), "src", "lib", "execution", "exitPolicy.ts"), "utf8");
 
   checks.push(result(
     stopCheckIndex >= 0 && repairIndex >= 0 && stopCheckIndex < repairIndex ? "PASS" : "FAIL",
@@ -1100,20 +1134,41 @@ function auditExitSafety(): AuditResult[] {
       : "Swing lifecycle may repair a crossed stop before closing it."
   ));
 
+  // Weak opposing evidence must NOT move the stop or force a close. The old
+  // lifecycle tightened to 0.35% of price and closed on a fixed dollar loss
+  // whenever any opposing signal appeared, which stopped trades out inside
+  // ordinary crypto noise: average winner 0.80R against average loser 0.89R.
+  // Only a confirmed opposite edge may close a position early.
+  const weakThesisIsAdvisoryOnly =
+    thesisReviewIndex >= 0 &&
+    exitDecisionIndex > thesisReviewIndex &&
+    !lifecycleSource.includes("tightenStopForWeakThesis") &&
+    !lifecycleSource.includes("shouldCloseWeakThesisLossCompression") &&
+    !lifecycleSource.includes("shouldCloseWeakThesisProfitDecay") &&
+    exitPolicySource.includes("isThesisWeakening") &&
+    exitPolicySource.includes("oppositeEdgeConfirmed");
   checks.push(result(
-    weakLossGuardIndex > thesisReviewIndex && thesisReviewIndex >= 0 ? "PASS" : "FAIL",
-    "weak-thesis loss compression",
-    weakLossGuardIndex > thesisReviewIndex
-      ? "Swing lifecycle can close a losing AI trade early after live thesis weakens."
-      : "Weak-thesis loss compression is missing or runs before live thesis review."
+    weakThesisIsAdvisoryOnly ? "PASS" : "FAIL",
+    "weak thesis is advisory, not an exit",
+    weakThesisIsAdvisoryOnly
+      ? "Weakening evidence is recorded for the dashboard but only a confirmed opposite edge closes a trade; no dollar-threshold guard can clip a winner."
+      : "A weak-thesis guard can tighten the stop or close a trade on opposing evidence alone."
   ));
 
+  // A single owner for exit decisions. Two independent trailing implementations
+  // used to run against the same position each sweep, and the tighter one
+  // always won.
+  const singleExitOwner =
+    exitDecisionIndex >= 0 &&
+    exitPolicySource.includes('reason: "SIGNAL_INVALIDATION"') &&
+    exitPolicySource.includes("backstopLossR") &&
+    !riskManagerSource.includes("usefulProfitLockPrice");
   checks.push(result(
-    signalInvalidationIndex > weakLossGuardIndex ? "PASS" : "FAIL",
-    "loss compression exit reason",
-    signalInvalidationIndex > weakLossGuardIndex
-      ? "Weak-thesis loss compression records SIGNAL_INVALIDATION instead of disguising the exit as a hard stop."
-      : "Weak-thesis loss compression does not record an explicit signal invalidation exit reason."
+    singleExitOwner ? "PASS" : "FAIL",
+    "single exit-decision owner",
+    singleExitOwner
+      ? "exitPolicy.decideSwingExit owns stop placement and records SIGNAL_INVALIDATION on its loss backstop; RiskManager no longer places competing swing stops."
+      : "Swing stop placement is duplicated across modules or the loss backstop lacks an explicit exit reason."
   ));
 
   return checks;
@@ -1268,15 +1323,25 @@ function auditProductionRegressions(): AuditResult[] {
     portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
     portfolioSource.includes("if (Array.isArray(backup) && backup.length > 0)") &&
     portfolioSource.includes("rawTrades.length > 0");
-  const resetClearsCurrentState = resetSource.includes("LocalLearningMemory.clearCurrentStrategyState()") &&
-    resetSource.includes("OpportunityJournal.clearCurrentStrategyState()") &&
-    resetSource.includes("TradeReviewJournal.clearCurrentStrategyState()") &&
-    resetSource.includes("swing:cooldown:") &&
-    resetSource.includes('"swing:lastExitSweep:ai"') &&
-    resetSource.includes('"swing:lastExitSweep:user"') &&
-    resetSource.includes('"swing:scan:request"') &&
-    resetSource.includes("clearedTransientKeys: transientKeys") &&
-    resetSource.includes('type: "SYSTEM_RESET"') &&
+  // The reset itself now lives in lib/admin/resetArena.ts so the admin route and
+  // the deploy CLI cannot drift apart. Audit the shared implementation, and
+  // additionally require that the cross-sectional book is cleared with
+  // everything else — a reset that zeroes the swing portfolios but leaves a
+  // live book running would make the two strategies incomparable.
+  const resetArenaSource = read("src", "lib", "admin", "resetArena.ts");
+  const resetClearsCurrentState = resetArenaSource.includes("LocalLearningMemory.clearCurrentStrategyState()") &&
+    resetArenaSource.includes("OpportunityJournal.clearCurrentStrategyState()") &&
+    resetArenaSource.includes("TradeReviewJournal.clearCurrentStrategyState()") &&
+    resetArenaSource.includes("swing:cooldown:") &&
+    resetArenaSource.includes('"swing:lastExitSweep:ai"') &&
+    resetArenaSource.includes('"swing:lastExitSweep:user"') &&
+    resetArenaSource.includes('"swing:scan:request"') &&
+    resetArenaSource.includes('"swing:lifetimeStats:ai"') &&
+    resetArenaSource.includes("BOOK_PORTFOLIO_KEY") &&
+    resetArenaSource.includes("BOOK_TRADES_KEY") &&
+    resetArenaSource.includes("clearedTransientKeys: clearedKeys") &&
+    resetArenaSource.includes('type: "SYSTEM_RESET"') &&
+    resetSource.includes("resetArena(") &&
     learningSource.includes("static async clearCurrentStrategyState()") &&
     opportunitySource.includes("static async clearCurrentStrategyState()") &&
     tradeReviewSource.includes("static async clearCurrentStrategyState()");

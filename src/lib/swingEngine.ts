@@ -1,8 +1,8 @@
 import { Candle, IndicatorSnapshot, StatisticalMetrics } from "@/lib/types";
-import { MarketService } from "./market";
+import { MarketPriceSnapshot, MarketService } from "./market";
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
-import { LocalLearningMemory } from "./trading/localLearning";
+import { calculateLearningAdjustment, LocalLearningMemory, LocalLearningRule } from "./trading/localLearning";
 import { buildPaperExecutionPlan, EXECUTION_COST_MODEL_VERSION } from "./trading/executionCostModel";
 
 export type SwingDecisionState =
@@ -181,7 +181,15 @@ function getAssetMode(assetKey: string): SwingSignal["assetMode"] {
   return assetKey === "BTC" || assetKey === "ETH" || assetKey === "SOL" ? "REALTIME_FAST" : "SLOW_SWING";
 }
 
-function entryThresholds(assetMode: SwingSignal["assetMode"]) {
+/**
+ * Protective-stop width, in multiples of the 1h ATR, and the take-profit
+ * distance as a multiple of that stop. Shared with the replay engine so
+ * research and live trading cannot silently diverge.
+ */
+export const SWING_STOP_ATR_MULTIPLE = 2.5;
+export const SWING_TARGET_R_MULTIPLE = 2.5;
+
+export function entryThresholds(assetMode: SwingSignal["assetMode"]) {
   return {
     htf: assetMode === "REALTIME_FAST" ? 14 : 12,
     trigger: assetMode === "REALTIME_FAST" ? 14 : 8,
@@ -341,7 +349,7 @@ export function scoreContinuousHtfEvidence(input: {
   return { buyScore, shortScore, details };
 }
 
-function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[]) {
+export function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[]) {
   let score = assetMode === "REALTIME_FAST" ? 92 : 72;
   const latest15m = candles15m[candles15m.length - 1]?.time ? candles15m[candles15m.length - 1].time * 1000 : 0;
   const ageMinutes = latest15m ? (Date.now() - latest15m) / 60_000 : 999;
@@ -357,7 +365,7 @@ function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function scoreExecutionTrigger(
+export function scoreExecutionTrigger(
   direction: "LONG" | "SHORT" | "NEUTRAL",
   assetMode: SwingSignal["assetMode"],
   livePrice: number,
@@ -505,13 +513,20 @@ function percentile(values: number[], p: number): number {
   return clean[index];
 }
 
-function evaluateTargetReachability(input: {
+export function evaluateTargetReachability(input: {
   direction: "LONG" | "SHORT" | "NEUTRAL";
   entryPrice: number;
   stopLoss: number;
   rawTakeProfit: number;
   candles1h: Candle[];
   assetMode: SwingSignal["assetMode"];
+  /**
+   * How many 1h bars ahead a target is allowed to take. This must track the
+   * strategy's actual holding period: measuring an 8-hour excursion window
+   * while trades are held for a day compresses every target down to an
+   * intraday move, which then fails the after-fee reward/risk gate.
+   */
+  lookaheadBars?: number;
 }) {
   const rawDistance = Math.abs(input.rawTakeProfit - input.entryPrice);
   const stopDistance = Math.abs(input.entryPrice - input.stopLoss);
@@ -540,7 +555,7 @@ function evaluateTargetReachability(input: {
     return fallback;
   }
 
-  const lookaheadBars = input.assetMode === "REALTIME_FAST" ? 8 : 12;
+  const lookaheadBars = input.lookaheadBars ?? (input.assetMode === "REALTIME_FAST" ? 24 : 36);
   const sample = input.candles1h.slice(-120);
   const excursions: number[] = [];
 
@@ -586,7 +601,7 @@ function evaluateTargetReachability(input: {
   };
 }
 
-function scoreMarketStructureLiquidity(
+export function scoreMarketStructureLiquidity(
   direction: "LONG" | "SHORT" | "NEUTRAL",
   livePrice: number,
   candles15m: Candle[],
@@ -758,403 +773,344 @@ export function buildEntryGateDiagnostics(input: {
   };
 }
 
-export class SwingEngine {
-  /**
-   * Analyzes an asset for higher-timeframe swing opportunities (15m, 1h, 4h).
-   * Swings focus on robust structural moves, immune to 1m noise.
-   */
-  static async analyze(assetKey: string = "BTC"): Promise<SwingSignal> {
-    try {
-      const assetMode = getAssetMode(assetKey);
-      // 1. Fetch multi-timeframe candles (Higher Timeframes)
-      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceSnapshot, orderbookResult, deepSensors] = await Promise.all([
-        MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
-        MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
-        MarketService.getCandles("15m", 100, assetKey),
-        MarketService.getCandles("1h", 100, assetKey),
-        MarketService.getCandles("4h", 100, assetKey),
-        MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
-        MarketService.getCurrentPriceSnapshot(assetKey),
-        assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
-        assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null)
-      ]);
+export interface SwingSignalInput {
+  assetKey: string;
+  assetMode: SwingSignal["assetMode"];
+  candles1mResult: Candle[];
+  candles5mResult: Candle[];
+  candles15m: Candle[];
+  candles1h: Candle[];
+  candles4h: Candle[];
+  candles1w: Candle[];
+  livePriceSnapshot: MarketPriceSnapshot;
+  orderbookResult: Awaited<ReturnType<typeof MarketService.getOrderbookImbalance>> | null;
+  deepSensors: Awaited<ReturnType<typeof MarketService.getDeepSensors>> | null;
+  learningRules: LocalLearningRule[];
+}
 
-      if (candles15m.length === 0 || candles1h.length === 0 || candles4h.length === 0) {
-        return emptySignal(assetKey, "Insufficient historical data");
+/**
+ * The entire swing decision, as a pure function of already-fetched market data.
+ *
+ * SwingEngine.analyze does the I/O and delegates here; the replay engine calls
+ * the same function against historical candles. Before this split the replay
+ * carried its own EMA-based signal, so `npm run replay:strategy` was reporting
+ * the performance of a strategy that was never deployed — and every tuning
+ * decision made against it was aimed at the wrong target.
+ */
+export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
+  const {
+    assetKey, assetMode, candles1mResult, candles5mResult,
+    candles15m, candles1h, candles4h, candles1w,
+    livePriceSnapshot, orderbookResult, deepSensors,
+  } = input;
+
+    const ind15m = computeAllIndicators(candles15m);
+    const ind1h = computeAllIndicators(candles1h);
+    const ind4h = computeAllIndicators(candles4h);
+
+    const snap15m = getLatestSnapshot(candles15m, ind15m);
+    const snap1h = getLatestSnapshot(candles1h, ind1h);
+    const snap4h = getLatestSnapshot(candles4h, ind4h);
+
+    computeStatistics(candles15m, snap15m, ind15m.atr);
+    const stats1h = computeStatistics(candles1h, snap1h, ind1h.atr);
+    const stats4h = computeStatistics(candles4h, snap4h, ind4h.atr);
+    
+    const signalPrice = snap15m.price;
+    const livePrice = Number(livePriceSnapshot.price);
+    if (!Number.isFinite(livePrice) || livePrice <= 0) {
+      return emptySignal(assetKey, "Selected market venue returned an invalid execution price");
+    }
+    const dataQuality = scoreDataQuality(assetMode, livePrice, signalPrice, candles15m, candles1h, candles4h);
+
+    // 2. Regime Filter Setup (Based on 1H structural data)
+    const isMeanReverting = stats1h.hurstExponent < 0.55;
+    const isVolatilitySqueeze = stats1h.volatilityPercentile < 30;
+
+    // 3. Quantitative Confluence Signal Calculations
+    let buyScore = 0;
+    let shortScore = 0;
+    const details: string[] = [];
+
+    const continuousHtf = scoreContinuousHtfEvidence({
+      livePrice,
+      snap1h,
+      snap4h,
+      stats1h,
+      stats4h,
+    });
+    buyScore += continuousHtf.buyScore;
+    shortScore += continuousHtf.shortScore;
+    details.push(...continuousHtf.details);
+
+    // A. HTF Z-Score Reversion (1H)
+    const zScore1h = stats1h.priceZScore;
+    if (isMeanReverting) {
+      if (zScore1h < -2.5) {
+        buyScore += 10;
+        details.push(`1H Z-Score Oversold (${zScore1h.toFixed(2)}) + Mean Reversion`);
+      } else if (zScore1h > 2.5) {
+        shortScore += 10;
+        details.push(`1H Z-Score Overbought (${zScore1h.toFixed(2)}) + Mean Reversion`);
       }
+    }
 
-      // Compute indicators
-      const ind15m = computeAllIndicators(candles15m);
-      const ind1h = computeAllIndicators(candles1h);
-      const ind4h = computeAllIndicators(candles4h);
+    // B. Structural Momentum Breakout (4H)
+    if (stats4h.hurstExponent > 0.60) {
+      if (stats4h.regressionSlope > 0 && stats1h.priceZScore < 1.0) {
+        buyScore += 8;
+        details.push(`4H Structural Uptrend (Hurst: ${stats4h.hurstExponent.toFixed(2)})`);
+      } else if (stats4h.regressionSlope < 0 && stats1h.priceZScore > -1.0) {
+        shortScore += 8;
+        details.push(`4H Structural Downtrend (Hurst: ${stats4h.hurstExponent.toFixed(2)})`);
+      }
+    }
 
-      const snap15m = getLatestSnapshot(candles15m, ind15m);
-      const snap1h = getLatestSnapshot(candles1h, ind1h);
-      const snap4h = getLatestSnapshot(candles4h, ind4h);
+    // C. HTF Volatility Squeeze Breakout
+    if (stats4h.volatilityPercentile < 20 && stats1h.volatilityPercentile > 40) {
+      if (stats1h.regressionSlope > 0) {
+        buyScore += 6;
+        details.push("HTF Volatility Squeeze Breakout (Bullish)");
+      } else {
+        shortScore += 6;
+        details.push("HTF Volatility Squeeze Breakout (Bearish)");
+      }
+    }
 
-      computeStatistics(candles15m, snap15m, ind15m.atr);
-      const stats1h = computeStatistics(candles1h, snap1h, ind1h.atr);
-      const stats4h = computeStatistics(candles4h, snap4h, ind4h.atr);
+    // D. Institutional VWAP Deviations (15m execution trigger)
+    const vwapDeviation = (livePrice - snap15m.vwap) / snap15m.vwap;
+    if (isMeanReverting) {
+      if (vwapDeviation < -0.015) { // 1.5% below VWAP is extreme for 15m
+        buyScore += 5;
+        details.push("Extreme HTF VWAP Deviation (Oversold)");
+      } else if (vwapDeviation > 0.015) {
+        shortScore += 5;
+        details.push("Extreme HTF VWAP Deviation (Overbought)");
+      }
+    }
+
+    // 4. Determine Action
+    let action: 'SWING_BUY' | 'SWING_SHORT' | 'HOLD' = 'HOLD';
+    let finalScore = 0;
+    const bestDirection: "LONG" | "SHORT" | "NEUTRAL" = buyScore > shortScore ? "LONG" : shortScore > buyScore ? "SHORT" : "NEUTRAL";
+    const htfScore = Math.max(buyScore, shortScore);
+    const trigger = scoreExecutionTrigger(bestDirection, assetMode, livePrice, candles1mResult, candles5mResult, snap15m.vwap);
+    const liquidity = scoreMarketStructureLiquidity(bestDirection, livePrice, candles15m, candles1h);
+    const microstructure = scoreCryptoMicrostructure(bestDirection, assetMode, orderbookResult, deepSensors);
+    const setupTags = [...details, ...trigger.tags, ...liquidity.tags, ...microstructure.tags];
+    const learning = calculateLearningAdjustment(input.learningRules, assetKey, setupTags);
+    const triggerScore = trigger.score;
+    const thresholds = entryThresholds(assetMode);
+
+    // Weekly bias adjustment
+    let weeklyBiasAdjustment = 0;
+    if (candles1w.length >= 8) {
+      // True 8-period EMA calculation
+      const weeklyCloses = candles1w.slice(-8).map((c) => c.close);
+      const k = 2 / (8 + 1);
+      let weeklyEma8 = weeklyCloses[0];
+      for (let i = 1; i < weeklyCloses.length; i++) {
+        weeklyEma8 = (weeklyCloses[i] - weeklyEma8) * k + weeklyEma8;
+      }
       
-      const signalPrice = snap15m.price;
-      const livePrice = Number(livePriceSnapshot.price);
-      if (!Number.isFinite(livePrice) || livePrice <= 0) {
-        return emptySignal(assetKey, "Selected market venue returned an invalid execution price");
+      const weeklyTrend = livePrice > weeklyEma8 ? "BULLISH" : "BEARISH";
+
+      if (bestDirection === "LONG" && weeklyTrend === "BULLISH") {
+        weeklyBiasAdjustment = 5;
+      } else if (bestDirection === "SHORT" && weeklyTrend === "BEARISH") {
+        weeklyBiasAdjustment = 5;
+      } else if (bestDirection !== "NEUTRAL") {
+        weeklyBiasAdjustment = -8;
       }
-      const dataQuality = scoreDataQuality(assetMode, livePrice, signalPrice, candles15m, candles1h, candles4h);
+    }
 
-      // 2. Regime Filter Setup (Based on 1H structural data)
-      const isMeanReverting = stats1h.hurstExponent < 0.55;
-      const isVolatilitySqueeze = stats1h.volatilityPercentile < 30;
+    const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
+    const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.15 : 0.08;
+    const slippageOk = slippagePercent <= allowedSlippage;
 
-      // 3. Quantitative Confluence Signal Calculations
-      let buyScore = 0;
-      let shortScore = 0;
-      const details: string[] = [];
+    // Stops, target reachability, and fee-aware economics must be known
+    // before conviction can authorize an entry.
+    const htfAtr = snap1h.atr;
+    const currentPrice = livePrice;
+    const minAtrPercent = assetMode === "REALTIME_FAST" ? 0.002 : 0.001;
+    const minAtr = currentPrice * minAtrPercent;
+    const safeAtr = Number.isFinite(htfAtr) && htfAtr >= minAtr ? htfAtr : minAtr;
+    const expectedMovePercent = currentPrice > 0 ? (safeAtr / currentPrice) * 100 : 0;
+    // Stop width is set from how far these signals actually travel against
+    // themselves before working, not from a round number. Measured over 8
+    // months of Bybit 15m data on BTC/ETH/SOL, a 1.5x ATR stop sits *inside*
+    // the signal's own working range: it stopped out 15% of the trades that
+    // later reached +2 ATR at the 8h horizon, and 29% at 16h. At 2.5x ATR
+    // those become 5% and 13%. Because sizing is risk-based, a wider stop
+    // buys those trades back at the same dollar risk per trade.
+    const stopDistance = safeAtr * SWING_STOP_ATR_MULTIPLE;
+    const takeProfitDistance = stopDistance * SWING_TARGET_R_MULTIPLE;
+    const plannedStopLoss = bestDirection === "LONG"
+      ? currentPrice - stopDistance
+      : bestDirection === "SHORT"
+        ? currentPrice + stopDistance
+        : 0;
+    const plannedTakeProfit = bestDirection === "LONG"
+      ? currentPrice + takeProfitDistance
+      : bestDirection === "SHORT"
+        ? currentPrice - takeProfitDistance
+        : 0;
+    const targetReachability = evaluateTargetReachability({
+      direction: bestDirection,
+      entryPrice: currentPrice,
+      stopLoss: plannedStopLoss,
+      rawTakeProfit: plannedTakeProfit,
+      candles1h,
+      assetMode,
+    });
+    const adjustedTakeProfit = targetReachability.adjustedTakeProfit;
+    if (targetReachability.compressed) {
+      setupTags.push("TP_COMPRESSED_TO_RECENT_RANGE");
+    } else if (targetReachability.score >= 75 && bestDirection !== "NEUTRAL") {
+      setupTags.push("REACHABLE_TARGET");
+    }
 
-      const continuousHtf = scoreContinuousHtfEvidence({
-        livePrice,
-        snap1h,
-        snap4h,
-        stats1h,
-        stats4h,
-      });
-      buyScore += continuousHtf.buyScore;
-      shortScore += continuousHtf.shortScore;
-      details.push(...continuousHtf.details);
-
-      // A. HTF Z-Score Reversion (1H)
-      const zScore1h = stats1h.priceZScore;
-      if (isMeanReverting) {
-        if (zScore1h < -2.5) {
-          buyScore += 10;
-          details.push(`1H Z-Score Oversold (${zScore1h.toFixed(2)}) + Mean Reversion`);
-        } else if (zScore1h > 2.5) {
-          shortScore += 10;
-          details.push(`1H Z-Score Overbought (${zScore1h.toFixed(2)}) + Mean Reversion`);
+    const netRewardRisk = bestDirection === "NEUTRAL"
+      ? {
+          grossRewardUsdPerUnit: 0,
+          grossLossUsdPerUnit: 0,
+          estimatedRoundTripFeeUsdPerUnit: 0,
+          estimatedRoundTripExecutionCostUsdPerUnit: 0,
+          netRewardUsdPerUnit: 0,
+          netLossUsdPerUnit: 0,
+          ratio: 0,
+          minimumRequired: 1.35,
+          passed: false,
+          reason: "No directional setup exists for reward/risk evaluation.",
+          executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
         }
-      }
-
-      // B. Structural Momentum Breakout (4H)
-      if (stats4h.hurstExponent > 0.60) {
-        if (stats4h.regressionSlope > 0 && stats1h.priceZScore < 1.0) {
-          buyScore += 8;
-          details.push(`4H Structural Uptrend (Hurst: ${stats4h.hurstExponent.toFixed(2)})`);
-        } else if (stats4h.regressionSlope < 0 && stats1h.priceZScore > -1.0) {
-          shortScore += 8;
-          details.push(`4H Structural Downtrend (Hurst: ${stats4h.hurstExponent.toFixed(2)})`);
-        }
-      }
-
-      // C. HTF Volatility Squeeze Breakout
-      if (stats4h.volatilityPercentile < 20 && stats1h.volatilityPercentile > 40) {
-        if (stats1h.regressionSlope > 0) {
-          buyScore += 6;
-          details.push("HTF Volatility Squeeze Breakout (Bullish)");
-        } else {
-          shortScore += 6;
-          details.push("HTF Volatility Squeeze Breakout (Bearish)");
-        }
-      }
-
-      // D. Institutional VWAP Deviations (15m execution trigger)
-      const vwapDeviation = (livePrice - snap15m.vwap) / snap15m.vwap;
-      if (isMeanReverting) {
-        if (vwapDeviation < -0.015) { // 1.5% below VWAP is extreme for 15m
-          buyScore += 5;
-          details.push("Extreme HTF VWAP Deviation (Oversold)");
-        } else if (vwapDeviation > 0.015) {
-          shortScore += 5;
-          details.push("Extreme HTF VWAP Deviation (Overbought)");
-        }
-      }
-
-      // 4. Determine Action
-      let action: 'SWING_BUY' | 'SWING_SHORT' | 'HOLD' = 'HOLD';
-      let finalScore = 0;
-      const bestDirection: "LONG" | "SHORT" | "NEUTRAL" = buyScore > shortScore ? "LONG" : shortScore > buyScore ? "SHORT" : "NEUTRAL";
-      const htfScore = Math.max(buyScore, shortScore);
-      const trigger = scoreExecutionTrigger(bestDirection, assetMode, livePrice, candles1mResult, candles5mResult, snap15m.vwap);
-      const liquidity = scoreMarketStructureLiquidity(bestDirection, livePrice, candles15m, candles1h);
-      const microstructure = scoreCryptoMicrostructure(bestDirection, assetMode, orderbookResult, deepSensors);
-      const setupTags = [...details, ...trigger.tags, ...liquidity.tags, ...microstructure.tags];
-      const learning = await LocalLearningMemory.getAdjustment(assetKey, setupTags);
-      const triggerScore = trigger.score;
-      const thresholds = entryThresholds(assetMode);
-
-      // Weekly bias adjustment
-      let weeklyBiasAdjustment = 0;
-      if (candles1w.length >= 8) {
-        // True 8-period EMA calculation
-        const weeklyCloses = candles1w.slice(-8).map((c) => c.close);
-        const k = 2 / (8 + 1);
-        let weeklyEma8 = weeklyCloses[0];
-        for (let i = 1; i < weeklyCloses.length; i++) {
-          weeklyEma8 = (weeklyCloses[i] - weeklyEma8) * k + weeklyEma8;
-        }
-        
-        const weeklyTrend = livePrice > weeklyEma8 ? "BULLISH" : "BEARISH";
-
-        if (bestDirection === "LONG" && weeklyTrend === "BULLISH") {
-          weeklyBiasAdjustment = 5;
-        } else if (bestDirection === "SHORT" && weeklyTrend === "BEARISH") {
-          weeklyBiasAdjustment = 5;
-        } else if (bestDirection !== "NEUTRAL") {
-          weeklyBiasAdjustment = -8;
-        }
-      }
-
-      const slippagePercent = signalPrice > 0 ? Math.abs(livePrice - signalPrice) / signalPrice * 100 : 0;
-      const allowedSlippage = assetMode === "REALTIME_FAST" ? 0.15 : 0.08;
-      const slippageOk = slippagePercent <= allowedSlippage;
-
-      // Stops, target reachability, and fee-aware economics must be known
-      // before conviction can authorize an entry.
-      const htfAtr = snap1h.atr;
-      const currentPrice = livePrice;
-      const minAtrPercent = assetMode === "REALTIME_FAST" ? 0.002 : 0.001;
-      const minAtr = currentPrice * minAtrPercent;
-      const safeAtr = Number.isFinite(htfAtr) && htfAtr >= minAtr ? htfAtr : minAtr;
-      const expectedMovePercent = currentPrice > 0 ? (safeAtr / currentPrice) * 100 : 0;
-      const stopDistance = safeAtr * 1.5;
-      const takeProfitDistance = safeAtr * 3.0;
-      const plannedStopLoss = bestDirection === "LONG"
-        ? currentPrice - stopDistance
-        : bestDirection === "SHORT"
-          ? currentPrice + stopDistance
-          : 0;
-      const plannedTakeProfit = bestDirection === "LONG"
-        ? currentPrice + takeProfitDistance
-        : bestDirection === "SHORT"
-          ? currentPrice - takeProfitDistance
-          : 0;
-      const targetReachability = evaluateTargetReachability({
-        direction: bestDirection,
-        entryPrice: currentPrice,
-        stopLoss: plannedStopLoss,
-        rawTakeProfit: plannedTakeProfit,
-        candles1h,
-        assetMode,
-      });
-      const adjustedTakeProfit = targetReachability.adjustedTakeProfit;
-      if (targetReachability.compressed) {
-        setupTags.push("TP_COMPRESSED_TO_RECENT_RANGE");
-      } else if (targetReachability.score >= 75 && bestDirection !== "NEUTRAL") {
-        setupTags.push("REACHABLE_TARGET");
-      }
-
-      const netRewardRisk = bestDirection === "NEUTRAL"
-        ? {
-            grossRewardUsdPerUnit: 0,
-            grossLossUsdPerUnit: 0,
-            estimatedRoundTripFeeUsdPerUnit: 0,
-            estimatedRoundTripExecutionCostUsdPerUnit: 0,
-            netRewardUsdPerUnit: 0,
-            netLossUsdPerUnit: 0,
-            ratio: 0,
-            minimumRequired: 1.35,
-            passed: false,
-            reason: "No directional setup exists for reward/risk evaluation.",
-            executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
-          }
-        : evaluateNetRewardRisk({
-            asset: assetKey,
-            direction: bestDirection,
-            entryPrice: currentPrice,
-            stopLoss: plannedStopLoss,
-            takeProfit: adjustedTakeProfit,
-            minimumRequired: 1.35,
-            assetMode,
-            dataQuality,
-            liquidityState: liquidity.state,
-            orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
-          });
-      const finalConviction = calculateCalibratedConviction({
-        htfScore,
-        htfThreshold: thresholds.htf,
-        triggerScore,
-        triggerThreshold: thresholds.trigger,
-        liquidityScore: liquidity.score,
-        microstructureScore: microstructure.score,
-        dataQuality,
-        netRewardRiskRatio: netRewardRisk.ratio,
-        weeklyBiasAdjustment,
-        learningAdjustment: learning.adjustment,
-      });
-      const requiredConviction = liquidity.score < 4 ? 65 : 60;
-      const probeEconomicsPassed = netRewardRisk.ratio >= 1.5;
-      const probeLearningPassed = learning.adjustment >= 0;
-      const nearNormalHtf = htfScore >= Math.max(8, thresholds.htf - 2);
-      const normalEntry =
-        !learning.watchOnly &&
-        liquidity.aligned &&
-        microstructure.aligned &&
-        htfScore >= thresholds.htf &&
-        triggerScore >= thresholds.trigger &&
-        finalConviction >= requiredConviction &&
-        dataQuality >= 60 &&
-        slippageOk &&
-        netRewardRisk.passed;
-      const exceptionEntry =
-        !learning.watchOnly &&
-        learning.adjustment >= 0 &&
-        liquidity.aligned &&
-        liquidity.score >= 6 &&
-        microstructure.aligned &&
-        htfScore >= Math.max(8, thresholds.htf - 3) &&
-        htfScore < thresholds.htf &&
-        triggerScore >= thresholds.exceptionTrigger &&
-        dataQuality >= thresholds.exceptionData &&
-        finalConviction >= thresholds.exceptionConviction &&
-        slippageOk &&
-        netRewardRisk.passed;
-      const controlledProbeEntry =
-        !normalEntry &&
-        !exceptionEntry &&
-        !learning.watchOnly &&
-        probeLearningPassed &&
-        bestDirection !== "NEUTRAL" &&
-        nearNormalHtf &&
-        triggerScore >= thresholds.probeTrigger &&
-        finalConviction >= thresholds.probeConviction &&
-        dataQuality >= thresholds.probeData &&
-        slippageOk &&
-        probeEconomicsPassed &&
-        liquidity.state === "NEUTRAL" &&
-        liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
-        microstructure.aligned &&
-        microstructure.score >= -5;
-      const momentumImpulseProbeEntry =
-        !normalEntry &&
-        !exceptionEntry &&
-        !controlledProbeEntry &&
-        !learning.watchOnly &&
-        probeLearningPassed &&
-        bestDirection !== "NEUTRAL" &&
-        nearNormalHtf &&
-        triggerScore >= thresholds.impulseTrigger &&
-        finalConviction >= thresholds.impulseConviction &&
-        dataQuality >= thresholds.impulseData &&
-        slippageOk &&
-        probeEconomicsPassed &&
-        liquidity.score >= 4 &&
-        microstructure.aligned &&
-        microstructure.score >= (assetMode === "REALTIME_FAST" ? 0 : -2);
-      const approvedProbeEntry = controlledProbeEntry || momentumImpulseProbeEntry;
-      const entryGate = buildEntryGateDiagnostics({
-        assetMode,
-        htfScore,
-        triggerScore,
-        finalConviction,
-        dataQuality,
-        slippageOk,
-        rewardRiskPassed: approvedProbeEntry ? probeEconomicsPassed : netRewardRisk.passed,
-        structureAligned: liquidity.aligned,
-        microstructureAligned: microstructure.aligned,
-        learningWatchOnly: learning.watchOnly,
-        normalEntry,
-        exceptionEntry,
-        controlledProbeEntry: approvedProbeEntry,
-      });
-
-      // Require strong HTF alignment (score >= 14)
-      if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
-        action = 'SWING_BUY';
-        finalScore = htfScore;
-      } else if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "SHORT") {
-        action = 'SWING_SHORT';
-        finalScore = htfScore;
-      }
-
-      let decisionState: SwingDecisionState = "NO_BIAS";
-      if (dataQuality < 50) decisionState = "BLOCKED_DATA";
-      else if (approvedProbeEntry) decisionState = "PROBE_ENTRY";
-      else if (exceptionEntry) decisionState = "HIGH_ACCURACY_EXCEPTION";
-      else if (normalEntry) decisionState = "ENTRY_READY";
-      else if (bestDirection === "LONG" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_LONG";
-      else if (bestDirection === "SHORT" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_SHORT";
-
-      if (action === 'HOLD') {
-        return {
+      : evaluateNetRewardRisk({
           asset: assetKey,
-          action: "HOLD",
-          entryPrice: livePrice,
+          direction: bestDirection,
+          entryPrice: currentPrice,
           stopLoss: plannedStopLoss,
           takeProfit: adjustedTakeProfit,
-          reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
-          score: htfScore,
-          expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
-          htfScore,
-          triggerScore,
-          marketStructureScore: liquidity.score,
-          microstructureScore: microstructure.score,
-          microstructureSummary: microstructure.reason,
-          fundingRate: deepSensors?.fundingRate,
-          openInterest: deepSensors?.openInterest,
-          orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
-          liquidityState: liquidity.state,
-          dataQuality,
-          finalConviction,
-          decisionState,
-          simpleStatus: simpleStateText(decisionState, bestDirection),
-          simpleReason: decisionState === "BLOCKED_DATA"
-            ? "The bot does not trust the current market data enough to trade."
-            : learning.watchOnly
-              ? "Later closed-trade evidence has quarantined this asset or setup until it demonstrates positive out-of-sample expectancy."
-            : !netRewardRisk.passed
-              ? "The reachable target does not provide enough net reward for the stop risk and estimated round-trip fees."
-            : !liquidity.aligned
-              ? "The bot sees a possible liquidity trap or a move against the main market structure."
-            : !microstructure.aligned
-              ? "The bot sees live order-book or funding pressure fighting the setup."
-            : htfScore < 8
-              ? "The market is not showing a strong enough direction yet."
-              : "The setup is being watched, but live entry confirmation is not strong enough yet.",
-          nextStep: bestDirection === "LONG"
-            ? "The bot will enter only if short-term price action confirms strength."
-            : bestDirection === "SHORT"
-              ? "The bot will enter only if short-term price action confirms weakness."
-              : "The bot will keep scanning for a clearer setup.",
-          paperSize: paperSizeFromConviction(finalConviction),
-          riskMode: learning.watchOnly ? "Watch Only" : dataQuality < 70 ? "Protected" : "Normal",
-          entryMode: "STANDARD",
+          minimumRequired: 1.35,
           assetMode,
-          setupTags,
-          directionBias: bestDirection,
-          learningAdjustment: learning.adjustment,
-          learningRules: learning.rules.map((rule) => rule.message),
-          livePrice,
-          marketDataProvider: livePriceSnapshot.provider,
-          marketDataSource: livePriceSnapshot.source,
-          marketDataVenue: livePriceSnapshot.venue,
-          marketDataInstrument: livePriceSnapshot.instrument,
-          marketDataTimestamp: livePriceSnapshot.updatedAt,
-          marketDataBid: livePriceSnapshot.bid,
-          marketDataAsk: livePriceSnapshot.ask,
-          signalPrice,
-          slippagePercent,
-          oldScoreOverride: false,
-          marketRegime: stats4h.regime,
-          entryGate,
-          targetReachability,
-          netRewardRisk,
-        };
-      }
+          dataQuality,
+          liquidityState: liquidity.state,
+          orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
+        });
+    const finalConviction = calculateCalibratedConviction({
+      htfScore,
+      htfThreshold: thresholds.htf,
+      triggerScore,
+      triggerThreshold: thresholds.trigger,
+      liquidityScore: liquidity.score,
+      microstructureScore: microstructure.score,
+      dataQuality,
+      netRewardRiskRatio: netRewardRisk.ratio,
+      weeklyBiasAdjustment,
+      learningAdjustment: learning.adjustment,
+    });
+    const requiredConviction = liquidity.score < 4 ? 65 : 60;
+    const probeEconomicsPassed = netRewardRisk.ratio >= 1.5;
+    const probeLearningPassed = learning.adjustment >= 0;
+    const nearNormalHtf = htfScore >= Math.max(8, thresholds.htf - 2);
+    const normalEntry =
+      !learning.watchOnly &&
+      liquidity.aligned &&
+      microstructure.aligned &&
+      htfScore >= thresholds.htf &&
+      triggerScore >= thresholds.trigger &&
+      finalConviction >= requiredConviction &&
+      dataQuality >= 60 &&
+      slippageOk &&
+      netRewardRisk.passed;
+    const exceptionEntry =
+      !learning.watchOnly &&
+      learning.adjustment >= 0 &&
+      liquidity.aligned &&
+      liquidity.score >= 6 &&
+      microstructure.aligned &&
+      htfScore >= Math.max(8, thresholds.htf - 3) &&
+      htfScore < thresholds.htf &&
+      triggerScore >= thresholds.exceptionTrigger &&
+      dataQuality >= thresholds.exceptionData &&
+      finalConviction >= thresholds.exceptionConviction &&
+      slippageOk &&
+      netRewardRisk.passed;
+    const controlledProbeEntry =
+      !normalEntry &&
+      !exceptionEntry &&
+      !learning.watchOnly &&
+      probeLearningPassed &&
+      bestDirection !== "NEUTRAL" &&
+      nearNormalHtf &&
+      triggerScore >= thresholds.probeTrigger &&
+      finalConviction >= thresholds.probeConviction &&
+      dataQuality >= thresholds.probeData &&
+      slippageOk &&
+      probeEconomicsPassed &&
+      liquidity.state === "NEUTRAL" &&
+      liquidity.score >= (assetMode === "REALTIME_FAST" ? 4 : 0) &&
+      microstructure.aligned &&
+      microstructure.score >= -5;
+    const momentumImpulseProbeEntry =
+      !normalEntry &&
+      !exceptionEntry &&
+      !controlledProbeEntry &&
+      !learning.watchOnly &&
+      probeLearningPassed &&
+      bestDirection !== "NEUTRAL" &&
+      nearNormalHtf &&
+      triggerScore >= thresholds.impulseTrigger &&
+      finalConviction >= thresholds.impulseConviction &&
+      dataQuality >= thresholds.impulseData &&
+      slippageOk &&
+      probeEconomicsPassed &&
+      liquidity.score >= 4 &&
+      microstructure.aligned &&
+      microstructure.score >= (assetMode === "REALTIME_FAST" ? 0 : -2);
+    const approvedProbeEntry = controlledProbeEntry || momentumImpulseProbeEntry;
+    const entryGate = buildEntryGateDiagnostics({
+      assetMode,
+      htfScore,
+      triggerScore,
+      finalConviction,
+      dataQuality,
+      slippageOk,
+      rewardRiskPassed: approvedProbeEntry ? probeEconomicsPassed : netRewardRisk.passed,
+      structureAligned: liquidity.aligned,
+      microstructureAligned: microstructure.aligned,
+      learningWatchOnly: learning.watchOnly,
+      normalEntry,
+      exceptionEntry,
+      controlledProbeEntry: approvedProbeEntry,
+    });
 
-      // 5. Dynamic Wide HTF Stops
-      // In swing trading, ATR is larger, and we use a 1.5x / 3.0x multiplier.
-      const stopLoss = plannedStopLoss;
-      const takeProfit = adjustedTakeProfit;
+    // Require strong HTF alignment (score >= 14)
+    if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
+      action = 'SWING_BUY';
+      finalScore = htfScore;
+    } else if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "SHORT") {
+      action = 'SWING_SHORT';
+      finalScore = htfScore;
+    }
 
+    let decisionState: SwingDecisionState = "NO_BIAS";
+    if (dataQuality < 50) decisionState = "BLOCKED_DATA";
+    else if (approvedProbeEntry) decisionState = "PROBE_ENTRY";
+    else if (exceptionEntry) decisionState = "HIGH_ACCURACY_EXCEPTION";
+    else if (normalEntry) decisionState = "ENTRY_READY";
+    else if (bestDirection === "LONG" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_LONG";
+    else if (bestDirection === "SHORT" && htfScore >= 8) decisionState = triggerScore >= 10 ? "TRIGGER_PENDING" : "WATCH_SHORT";
+
+    if (action === 'HOLD') {
       return {
         asset: assetKey,
-        action,
-        entryPrice: currentPrice,
-        stopLoss,
-        takeProfit,
-          reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
-        score: finalScore,
-        expectedMove: expectedMovePercent,
+        action: "HOLD",
+        entryPrice: livePrice,
+        stopLoss: plannedStopLoss,
+        takeProfit: adjustedTakeProfit,
+        reasoning: `${simpleStateText(decisionState, bestDirection)}. HTF score ${htfScore}, trigger score ${triggerScore}, liquidity score ${liquidity.score}, flow score ${microstructure.score}, data quality ${dataQuality}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason}${learning.adjustment ? ` Learning adjustment ${learning.adjustment}.` : ""}`,
+        score: htfScore,
+        expectedMove: bestDirection === "NEUTRAL" ? 0 : expectedMovePercent,
         htfScore,
         triggerScore,
         marketStructureScore: liquidity.score,
@@ -1168,17 +1124,27 @@ export class SwingEngine {
         finalConviction,
         decisionState,
         simpleStatus: simpleStateText(decisionState, bestDirection),
-        simpleReason: controlledProbeEntry
-          ? "The setup is not perfect, but the bot has enough live proof to test it with a smaller paper position."
-          : momentumImpulseProbeEntry
-          ? "The full structure model is not perfect yet, but live momentum and volume are strong enough for a controlled paper probe."
-          : exceptionEntry
-          ? "The old long-term score is below the normal threshold, but live market behavior is strongly confirming the setup."
-          : "Long-term direction and live entry confirmation agree.",
-        nextStep: "The bot can enter with predefined stop loss, take profit, and paper position size.",
-        paperSize: approvedProbeEntry ? "Probe" : paperSizeFromConviction(finalConviction),
-        riskMode: dataQuality < 70 ? "Protected" : "Normal",
-        entryMode: approvedProbeEntry ? "CONTROLLED_PROBE" : "STANDARD",
+        simpleReason: decisionState === "BLOCKED_DATA"
+          ? "The bot does not trust the current market data enough to trade."
+          : learning.watchOnly
+            ? "Later closed-trade evidence has quarantined this asset or setup until it demonstrates positive out-of-sample expectancy."
+          : !netRewardRisk.passed
+            ? "The reachable target does not provide enough net reward for the stop risk and estimated round-trip fees."
+          : !liquidity.aligned
+            ? "The bot sees a possible liquidity trap or a move against the main market structure."
+          : !microstructure.aligned
+            ? "The bot sees live order-book or funding pressure fighting the setup."
+          : htfScore < 8
+            ? "The market is not showing a strong enough direction yet."
+            : "The setup is being watched, but live entry confirmation is not strong enough yet.",
+        nextStep: bestDirection === "LONG"
+          ? "The bot will enter only if short-term price action confirms strength."
+          : bestDirection === "SHORT"
+            ? "The bot will enter only if short-term price action confirms weakness."
+            : "The bot will keep scanning for a clearer setup.",
+        paperSize: paperSizeFromConviction(finalConviction),
+        riskMode: learning.watchOnly ? "Watch Only" : dataQuality < 70 ? "Protected" : "Normal",
+        entryMode: "STANDARD",
         assetMode,
         setupTags,
         directionBias: bestDirection,
@@ -1194,12 +1160,106 @@ export class SwingEngine {
         marketDataAsk: livePriceSnapshot.ask,
         signalPrice,
         slippagePercent,
-        oldScoreOverride: exceptionEntry,
+        oldScoreOverride: false,
         marketRegime: stats4h.regime,
         entryGate,
         targetReachability,
         netRewardRisk,
       };
+    }
+
+    // 5. Dynamic Wide HTF Stops
+    // In swing trading, ATR is larger, and we use a 1.5x / 3.0x multiplier.
+    const stopLoss = plannedStopLoss;
+    const takeProfit = adjustedTakeProfit;
+
+    return {
+      asset: assetKey,
+      action,
+      entryPrice: currentPrice,
+      stopLoss,
+      takeProfit,
+        reasoning: `HTF Confluence ${finalScore}. Signals: ${details.join(" | ")}. ${trigger.reason} ${liquidity.reason} ${microstructure.reason} ${targetReachability.reason} ${netRewardRisk.reason} Expected spread ${expectedMovePercent.toFixed(2)}%${learning.adjustment ? `. Learning adjustment ${learning.adjustment}` : ""}`,
+      score: finalScore,
+      expectedMove: expectedMovePercent,
+      htfScore,
+      triggerScore,
+      marketStructureScore: liquidity.score,
+      microstructureScore: microstructure.score,
+      microstructureSummary: microstructure.reason,
+      fundingRate: deepSensors?.fundingRate,
+      openInterest: deepSensors?.openInterest,
+      orderbookImbalanceRatio: orderbookResult?.imbalanceRatio,
+      liquidityState: liquidity.state,
+      dataQuality,
+      finalConviction,
+      decisionState,
+      simpleStatus: simpleStateText(decisionState, bestDirection),
+      simpleReason: controlledProbeEntry
+        ? "The setup is not perfect, but the bot has enough live proof to test it with a smaller paper position."
+        : momentumImpulseProbeEntry
+        ? "The full structure model is not perfect yet, but live momentum and volume are strong enough for a controlled paper probe."
+        : exceptionEntry
+        ? "The old long-term score is below the normal threshold, but live market behavior is strongly confirming the setup."
+        : "Long-term direction and live entry confirmation agree.",
+      nextStep: "The bot can enter with predefined stop loss, take profit, and paper position size.",
+      paperSize: approvedProbeEntry ? "Probe" : paperSizeFromConviction(finalConviction),
+      riskMode: dataQuality < 70 ? "Protected" : "Normal",
+      entryMode: approvedProbeEntry ? "CONTROLLED_PROBE" : "STANDARD",
+      assetMode,
+      setupTags,
+      directionBias: bestDirection,
+      learningAdjustment: learning.adjustment,
+      learningRules: learning.rules.map((rule) => rule.message),
+      livePrice,
+      marketDataProvider: livePriceSnapshot.provider,
+      marketDataSource: livePriceSnapshot.source,
+      marketDataVenue: livePriceSnapshot.venue,
+      marketDataInstrument: livePriceSnapshot.instrument,
+      marketDataTimestamp: livePriceSnapshot.updatedAt,
+      marketDataBid: livePriceSnapshot.bid,
+      marketDataAsk: livePriceSnapshot.ask,
+      signalPrice,
+      slippagePercent,
+      oldScoreOverride: exceptionEntry,
+      marketRegime: stats4h.regime,
+      entryGate,
+      targetReachability,
+      netRewardRisk,
+    };
+}
+
+export class SwingEngine {
+  /**
+   * Analyzes an asset for higher-timeframe swing opportunities (15m, 1h, 4h).
+   * Swings focus on robust structural moves, immune to 1m noise.
+   */
+  static async analyze(assetKey: string = "BTC"): Promise<SwingSignal> {
+    try {
+      const assetMode = getAssetMode(assetKey);
+      // 1. Fetch multi-timeframe candles (Higher Timeframes)
+      const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceSnapshot, orderbookResult, deepSensors, learningRules] = await Promise.all([
+        MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
+        MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
+        MarketService.getCandles("15m", 100, assetKey),
+        MarketService.getCandles("1h", 100, assetKey),
+        MarketService.getCandles("4h", 100, assetKey),
+        MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
+        MarketService.getCurrentPriceSnapshot(assetKey),
+        assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
+        assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null),
+        LocalLearningMemory.getRules().catch(() => [] as LocalLearningRule[]),
+      ]);
+
+      if (candles15m.length === 0 || candles1h.length === 0 || candles4h.length === 0) {
+        return emptySignal(assetKey, "Insufficient historical data");
+      }
+
+      return evaluateSwingSignal({
+        assetKey, assetMode, candles1mResult, candles5mResult,
+        candles15m, candles1h, candles4h, candles1w,
+        livePriceSnapshot, orderbookResult, deepSensors, learningRules,
+      });
     } catch (err) {
       return emptySignal(assetKey, `Swing scan failed: ${err instanceof Error ? err.message : String(err)}`);
     }

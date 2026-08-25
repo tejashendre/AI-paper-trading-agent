@@ -173,7 +173,7 @@ The canonical production host runs the checked-out project with Docker Compose. 
 
 ```bash
 git pull --ff-only origin main
-docker compose up -d --build quant-dashboard swing-daemon
+docker compose up -d --build quant-dashboard swing-daemon xsec-daemon
 docker compose ps
 ```
 
@@ -184,13 +184,38 @@ Typical service names:
 | Service | Container | Purpose |
 |---|---|---|
 | Dashboard | `quant-dashboard` | Web UI and API |
-| Swing daemon | `quant-swing-daemon` | Autonomous scan and exit process |
+| Swing daemon | `quant-swing-daemon` | Per-asset scan and exit process |
+| Cross-sectional daemon | `quant-xsec-daemon` | Ranked long/short perp book, rebalanced every 12h |
 | Redis | `quant-redis` | Runtime state and ledger persistence |
+
+### Starting a strategy from a clean slate
+
+Resetting is a deliberate step, never automatic on deploy. It zeroes both paper
+portfolios and the cross-sectional book to the same capital on the same date so
+the comparison between strategies means something, and it clears the learning
+rules and journals derived from the previous strategy's trades.
+
+```bash
+docker compose exec quant-dashboard npm run reset:arena              # dry run: lists what would be cleared
+docker compose exec quant-dashboard npm run reset:arena -- --confirm # apply
+```
+
+The execution ledger is preserved: a reset is recorded in it, not erased from it.
+
+### Housekeeping
+
+```bash
+./scripts/vps-maintenance.sh --apply                                  # containers, images, build cache
+docker compose exec quant-dashboard npm run redis:housekeeping        # stale Redis keys, dry run
+```
+
+Neither touches the `redis_data` volume, the `data/` directory, portfolios, or trade history.
 
 After deployment, inspect logs and run the repository verifier from the VPS:
 
 ```bash
 docker logs quant-swing-daemon --tail=100
+docker logs quant-xsec-daemon --tail=100
 docker logs quant-dashboard --tail=100
 STATUS_URL=https://trader.tejashendre.com/api/user/status \
 STATUS_AUTH_TOKEN=SPECTATOR \

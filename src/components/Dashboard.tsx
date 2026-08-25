@@ -1,5 +1,6 @@
 "use client";
 import { AuthGate, createAuthFetch } from "./AuthGate";
+import CrossSectionalBook from "@/components/CrossSectionalBook";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
@@ -1465,6 +1466,8 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 )}
 
+                {viewMode === "ai" && <CrossSectionalBook isDark={isDark} />}
+
                 {viewMode === "ai" && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className="flex items-start justify-between gap-3">
@@ -1474,11 +1477,11 @@ function DashboardContent({ secret }: { secret: string }) {
                           {data?.aiAssetBookDigest?.headline || "The bot is mapping each market into a simple book state."}
                         </p>
                         <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
-                          Layering is not live yet. This panel is a safety map for exposure, thesis health, and next action.
+                          Exposure, thesis health, and next action for each market the bot is tracking.
                         </p>
                       </div>
                       <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-cyan-900/40 text-cyan-300 bg-cyan-950/20" : "border-cyan-200 text-cyan-700 bg-cyan-50"}`}>
-                        READ ONLY
+                        MONITOR
                       </span>
                     </div>
 

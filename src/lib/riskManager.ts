@@ -1,74 +1,6 @@
 import { RiskParameters, Portfolio, OpenPosition, StatisticalMetrics } from "@/lib/types";
-import { calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
-import { estimateCarryCostUsd, estimatePaperFill } from "@/lib/trading/executionCostModel";
 
 export class RiskManager {
-  private static netPnlAtPrice(position: OpenPosition, price: number): number {
-    const entryFee = position.entryFeePaid ?? estimateFeeUsd(position.asset, position.amount, position.entryPrice);
-    const exit = estimatePaperFill({
-      asset: position.asset,
-      action: position.direction === "SHORT" ? "COVER" : "SELL",
-      requestedPrice: price,
-      amount: position.amount,
-      context: {
-        reason: "MARK",
-        assetMode: ["BTC", "ETH", "SOL"].includes(position.asset) ? "REALTIME_FAST" : "SLOW_SWING",
-        dataQuality: position.dataQuality,
-        isPeakLiquidity: false,
-        liquidityState: position.liquidityState,
-        orderbookImbalanceRatio: position.orderbookImbalanceRatio,
-      },
-    });
-    const carryCost = estimateCarryCostUsd({
-      asset: position.asset,
-      notionalUsd: position.notionalUsd ?? estimateNotionalUsd(position.asset, position.amount, position.entryPrice),
-      openedAt: position.entryTime,
-      fundingRate: position.fundingRate,
-    });
-    return calculatePnlUsd(position.asset, position.entryPrice, exit.fillPrice, position.amount, position.direction) - entryFee - exit.feeUsd - carryCost;
-  }
-
-  /**
-   * Finds the first executable stop level that retains a useful net profit
-   * after both fee legs. A nominal "breakeven" price is not enough for paper
-   * execution because a small adverse tick can still close below fees.
-   */
-  private static usefulProfitLockPrice(position: OpenPosition, currentPrice: number): number | null {
-    if (!Number.isFinite(position.entryPrice) || position.entryPrice <= 0 || position.amount <= 0) return null;
-
-    const minimumNetProfitUsd = Math.max(2, position.usdInvested * 0.002);
-    if (RiskManager.netPnlAtPrice(position, currentPrice) < minimumNetProfitUsd) return null;
-
-    const isShort = position.direction === "SHORT";
-    let near = position.entryPrice;
-    let far = isShort ? position.entryPrice * 0.9 : position.entryPrice * 1.1;
-
-    // Expand the search only when an unusual contract or fee profile needs it.
-    for (let attempt = 0; attempt < 4 && RiskManager.netPnlAtPrice(position, far) < minimumNetProfitUsd; attempt++) {
-      far = isShort ? far * 0.9 : far * 1.1;
-    }
-    if (RiskManager.netPnlAtPrice(position, far) < minimumNetProfitUsd) return null;
-
-    for (let iteration = 0; iteration < 36; iteration++) {
-      const middle = (near + far) / 2;
-      const netPnl = RiskManager.netPnlAtPrice(position, middle);
-      const hasEnoughProfit = netPnl >= minimumNetProfitUsd;
-
-      if (isShort) {
-        if (hasEnoughProfit) far = middle;
-        else near = middle;
-      } else if (hasEnoughProfit) {
-        far = middle;
-      } else {
-        near = middle;
-      }
-    }
-
-    const lockPrice = far;
-    const stillProtective = isShort ? lockPrice > currentPrice : lockPrice < currentPrice;
-    return stillProtective ? lockPrice : null;
-  }
-
   static calculatePosition(
     capital: number,
     riskPercent: number,
@@ -81,8 +13,9 @@ export class RiskManager {
   ): RiskParameters {
     const isForex = assetKey.includes("USD") && assetKey !== "GOLD" && assetKey !== "OIL";
     
-    // Stop distance based on volatility (ATR). Squeezed tightly for Forex to match typical pips.
-    let atrMultiplier = isForex ? 1.2 : 1.5;
+    // Kept in step with SwingEngine.analyze so the /api/signals preview shows
+    // the same levels the daemon would actually trade.
+    let atrMultiplier = isForex ? 2.0 : 2.5;
     
     if (stats) {
       if (stats.hurstExponent > 0.55) {
@@ -96,7 +29,7 @@ export class RiskManager {
 
     const stopDistance = atr * atrMultiplier;
     const stopLoss = direction === 'SHORT' ? entryPrice + stopDistance : entryPrice - stopDistance;
-    const takeProfit = direction === 'SHORT' ? entryPrice - (stopDistance * 2.0) : entryPrice + (stopDistance * 2.0);
+    const takeProfit = direction === 'SHORT' ? entryPrice - (stopDistance * 2.5) : entryPrice + (stopDistance * 2.5);
     
     const riskAmount = capital * (riskPercent / 100);
 
@@ -182,7 +115,7 @@ export class RiskManager {
       positionSizeUsd: actualPositionUsd,
       stopLoss,
       takeProfit,
-      riskRewardRatio: 2.0,
+      riskRewardRatio: 2.5,
       riskAmount,
       riskPercent,
       kellyFraction,
@@ -324,9 +257,6 @@ export class RiskManager {
     const stopBasis = Number.isFinite(initialStopLoss) && initialStopLoss > 0
       ? initialStopLoss
       : position.stopLoss;
-    const originalRiskPercent = Math.abs(position.entryPrice - stopBasis) / position.entryPrice;
-    const activationThreshold = originalRiskPercent * 2.0; // Let swing winners breathe before hard trailing
-    const trailDistancePercent = originalRiskPercent * 1.15; // Wider trail helps capture larger directional runs
     const isShort = position.direction === 'SHORT';
 
     // Track watermarks (Peak profitable price)
@@ -343,14 +273,6 @@ export class RiskManager {
       }
     }
 
-    const watermarkProfitPercent = isShort
-      ? (position.entryPrice - (position.lowestPriceReached || currentPrice)) / position.entryPrice
-      : ((position.highestPriceReached || currentPrice) - position.entryPrice) / position.entryPrice;
-
-    const currentProfitPercent = isShort
-      ? (position.entryPrice - currentPrice) / position.entryPrice
-      : (currentPrice - position.entryPrice) / position.entryPrice;
-
     // 1. Hard Stop Loss & Take Profit Trigger checks.
     // If price has already moved beyond the stop between checks, fill at the
     // current observed price instead of the stale stop level. This avoids
@@ -363,60 +285,15 @@ export class RiskManager {
       if (currentPrice >= position.takeProfit && !position.isTrailing) return { triggered: true, reason: "TAKE_PROFIT", exitPrice: position.takeProfit };
     }
 
-    // 2. Swing profit protection: only move a stop once it can retain a useful
-    // net gain after fees. This prevents a visually green trade from closing
-    // as a small loss or a few cents of noise.
-    let newStopLoss = position.stopLoss;
-    const usefulProfitLock = RiskManager.usefulProfitLockPrice(position, currentPrice);
-    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.0 && usefulProfitLock !== null) {
-      const protectedStop = usefulProfitLock;
-      const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
-      const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
-      if (isBetterStop && isProtectiveStop) {
-        newStopLoss = protectedStop;
-      }
-    }
-
-    if (originalRiskPercent > 0 && currentProfitPercent >= originalRiskPercent * 1.6) {
-      const profitLockPercent = originalRiskPercent * 0.45;
-      const theoreticalStop = isShort
-        ? position.entryPrice * (1 - profitLockPercent)
-        : position.entryPrice * (1 + profitLockPercent);
-      const protectedStop = usefulProfitLock === null
-        ? theoreticalStop
-        : isShort
-          ? Math.min(theoreticalStop, usefulProfitLock)
-          : Math.max(theoreticalStop, usefulProfitLock);
-      const isBetterStop = isShort ? protectedStop < newStopLoss : protectedStop > newStopLoss;
-      const isProtectiveStop = isShort ? protectedStop > currentPrice : protectedStop < currentPrice;
-      if (isBetterStop && isProtectiveStop) {
-        newStopLoss = protectedStop;
-      }
-    }
-
-    // 3. Dynamic Trailing Stop calculation
-    if (watermarkProfitPercent > activationThreshold) {
-      position.isTrailing = true; // Once activated, we ignore the static Take Profit and let it run
-      if (isShort) {
-        const trailingStopLevel = (position.lowestPriceReached || currentPrice) * (1 + trailDistancePercent);
-        if (trailingStopLevel < position.stopLoss && trailingStopLevel > currentPrice) {
-          newStopLoss = trailingStopLevel;
-        }
-      } else {
-        const trailingStopLevel = (position.highestPriceReached || currentPrice) * (1 - trailDistancePercent);
-        if (trailingStopLevel > position.stopLoss && trailingStopLevel < currentPrice) {
-          newStopLoss = trailingStopLevel;
-        }
-      }
-    }
-
-    if (newStopLoss !== position.stopLoss) {
-      return { triggered: false, reason: null, exitPrice: currentPrice, trailed: true, newStopLoss };
-    } else if (trailed) {
-      // Return trailed true just to save the updated highestPriceReached
-      return { triggered: false, reason: null, exitPrice: currentPrice, trailed: true };
-    }
-
-    return { triggered: false, reason: null, exitPrice: currentPrice };
+    // 2. Stop PLACEMENT for swings is owned by exitPolicy.decideSwingExit, not
+    // here. This function now only tracks watermarks and reports hard stop /
+    // take-profit hits. Two independent trailing implementations used to run
+    // against the same position each sweep: this one moved the stop to a
+    // fee-covering "useful profit lock" as early as 1R, while the lifecycle
+    // layer tightened it again on any opposing signal. Between them a winner
+    // was routinely stopped out inside normal noise before its target.
+    // `trailed` here only means the watermark advanced and the position needs
+    // persisting; it never carries a new stop for swings.
+    return { triggered: false, reason: null, exitPrice: currentPrice, trailed };
   }
 }

@@ -9,6 +9,9 @@ import { TRADING_STRATEGY_VERSION } from "./executionLedger";
 
 const RULES_KEY = `learning:${TRADING_STRATEGY_VERSION}:localRules`;
 
+/** Minimum closed observations before local learning may form a rule. */
+export const MINIMUM_RULE_SAMPLE = 15;
+
 export interface LocalLearningRule {
   id: string;
   scope: "asset" | "setup" | "global";
@@ -35,7 +38,12 @@ function classifyRule(
   key: string,
   stats: { total: number; favorable: number; avgMove: number; avgNetPnlUsd?: number; avgNetReturnPercent?: number; avgMfe?: number; avgMae?: number; takeProfitHits?: number; stopLossHits?: number }
 ): LocalLearningRule | null {
-  if (stats.total < 4) return null;
+  // A rule needs enough closed observations to mean something. At n=4 a fair
+  // coin produces "1 win or fewer" about 31% of the time, so the old n>=4 gate
+  // quarantined roughly one in three assets on noise alone — and because the
+  // resulting REDUCE shrank position size below the minimum useful margin, a
+  // run of bad luck could stop the bot trading that asset indefinitely.
+  if (stats.total < MINIMUM_RULE_SAMPLE) return null;
   const favorableRate = stats.favorable / stats.total;
   const takeProfitRate = (stats.takeProfitHits || 0) / stats.total;
   const stopLossRate = (stats.stopLossHits || 0) / stats.total;
@@ -83,7 +91,7 @@ function ruleFromPerformanceBucket(
   scope: LocalLearningRule["scope"],
   bucket: SetupPerformanceBucket
 ): LocalLearningRule | null {
-  if (bucket.tradeCount < 3 && bucket.opportunityCount < 6) return null;
+  if (bucket.tradeCount < 12 && bucket.opportunityCount < MINIMUM_RULE_SAMPLE) return null;
   if (bucket.confidenceAdjustment === 0) return null;
 
   const action: LocalLearningRule["action"] = bucket.quarantined
@@ -143,7 +151,7 @@ function ruleFromPerformanceBucket(
 
 function ruleFromTradeReviewSignal(signal: TradeReviewAssetSignal): LocalLearningRule | null {
   if (signal.action === "NEUTRAL" || signal.confidenceAdjustment === 0) return null;
-  if (signal.reviews < 3) return null;
+  if (signal.reviews < 10) return null;
 
   return {
     id: `review:asset:${signal.asset}`,

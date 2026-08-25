@@ -154,9 +154,12 @@ function finalize(bucket: MutableBucket): SetupPerformanceBucket {
       ? null
       : 0;
 
+  // Sample sizes here gate real position-size reductions, so they have to be
+  // large enough that ordinary variance does not trip them. Three trades with
+  // a negative average is a coin flip, not evidence.
   let confidenceAdjustment = 0;
-  if (bucket.tradeCount >= 3 && (winRate <= 0.35 || avgPnl < 0)) confidenceAdjustment -= 8;
-  if (bucket.opportunityCount >= 6 && (opportunityFavorableRate <= 0.35 || avgOpportunityNetPnlUsd < 0)) confidenceAdjustment -= 4;
+  if (bucket.tradeCount >= 12 && (winRate <= 0.35 || avgPnl < 0)) confidenceAdjustment -= 8;
+  if (bucket.opportunityCount >= 25 && (opportunityFavorableRate <= 0.35 || avgOpportunityNetPnlUsd < 0)) confidenceAdjustment -= 4;
 
   return {
     ...bucket,

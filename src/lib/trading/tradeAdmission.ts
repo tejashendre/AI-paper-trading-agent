@@ -53,6 +53,12 @@ const BASE_RISK_PERCENT = 0.01;
 // same portfolio cap. It leaves room for exits and prevents correlated trades
 // from turning a short bad regime into a portfolio-level event.
 const MAX_TOTAL_MARGIN_PERCENT = 0.40;
+// Floor for the combined evidence-quality multiplier. Weak evidence should
+// shrink a trade, not erase it: past this point the position is too small to
+// clear its own fees, and the trade is better rejected by the explicit
+// minimum-margin and fee-viability checks below — which say why — than
+// silently sized into nothing here.
+const MINIMUM_COMBINED_RISK_MULTIPLIER = 0.35;
 
 function activeMarginUsd(portfolio: Portfolio): number {
   const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
@@ -121,6 +127,21 @@ function marginPercentFromConviction(
 function feedRiskMultiplier(assetMode?: TradeAdmissionInput["assetMode"]): number {
   // Free cached feeds are valid for slower swings, not fast or heavy sizing.
   return assetMode === "SLOW_SWING" ? 0.65 : 1;
+}
+
+/**
+ * Combine correlated risk multipliers without compounding them. Reductions
+ * (values below 1) are represented by the single strongest one; a genuine
+ * boost above 1 is applied on top of that, capped so a boost can never do more
+ * than restore full size plus its own headroom.
+ */
+export function combineRiskMultipliers(multipliers: number[]): number {
+  const finite = multipliers.filter((value) => Number.isFinite(value) && value > 0);
+  if (finite.length === 0) return 1;
+
+  const strongestReduction = Math.min(1, ...finite);
+  const strongestBoost = Math.max(1, ...finite);
+  return Math.max(MINIMUM_COMBINED_RISK_MULTIPLIER, strongestReduction * strongestBoost);
 }
 
 function riskMultiplierFromConviction(finalConviction: number | undefined, marginMode: PaperMarginMode): number {
@@ -224,7 +245,19 @@ export class TradeAdmissionController {
     const setupProfile = setupRiskProfile(input);
     const marketDataMultiplier = feedRiskMultiplier(input.assetMode);
     const marginMode = paperMarginMode(input, setupProfile, marketDataMultiplier);
-    const combinedRiskMultiplier = learningMultiplier * setupProfile.multiplier * marketDataMultiplier;
+    // These three multipliers all answer the same question — "how much should
+    // weak evidence shrink this trade?" — from overlapping evidence, so
+    // multiplying them counts one observation up to three times. Stacked with
+    // the drawdown, conviction and probe multipliers, risk could compound down
+    // to roughly 0.009% of equity: every candidate then failed the minimum
+    // useful margin check and the bot went quiet without ever saying why.
+    // Take the strongest single reduction instead, the same way
+    // calculateLearningAdjustment already combines correlated rules.
+    const combinedRiskMultiplier = combineRiskMultipliers([
+      learningMultiplier,
+      setupProfile.multiplier,
+      marketDataMultiplier,
+    ]);
     const convictionMarginPercent = marginPercentFromConviction(spec.maxMarginPercent, input.finalConviction, marginMode);
     // A setup boost can recover some size inside its asset limit, but never
     // silently override the published per-asset maximum margin.
@@ -350,13 +383,13 @@ export class TradeAdmissionController {
       return emptyResult("Fee drag is too high compared with the planned max loss.");
     }
 
-    // Trailing stops and thesis-invalidation exits typically capture only a
-    // fraction of the full take-profit distance before closing. Sizing the
-    // fee guard off the full TP target let through trades whose *realistic*
-    // captured profit (what actually happens on a trailing-stop exit) was
-    // still smaller than the round-trip fee, netting near-zero or negative
-    // "wins". Use a conservative capture fraction instead of the full move.
-    const REALISTIC_CAPTURE_FRACTION = 0.5;
+    // Winners rarely capture the whole take-profit distance, so the fee guard
+    // is sized off a realistic fraction of it. This was 0.5, chosen when the
+    // exit stack was clipping winners at roughly 0.79R on a 2R target. With
+    // exit placement consolidated in exitPolicy the measured average winner is
+    // about 1.54R on the same 2R targets — a 0.77 capture — so 0.5 now rejects
+    // viable trades. 0.75 stays a touch below the measured value.
+    const REALISTIC_CAPTURE_FRACTION = 0.75;
     // Use contract-aware PnL math. For JPY-quoted assets, a raw price move
     // times amount is in JPY, not USD, and would overstate fee viability.
     const fullMoveProfitUsd = getUsdMovePerUnit(input.asset, input.entryPrice, input.takeProfit) * amount;

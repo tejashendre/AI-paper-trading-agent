@@ -19,7 +19,21 @@ export class LocalRedisProxy {
   constructor() {
     // Connect to the local docker redis container, or fallback to localhost if running outside Docker
     const defaultUrl = isDocker() ? "redis://redis:6379" : "redis://127.0.0.1:6379";
-    this.client = new Redis(process.env.REDIS_URL || defaultUrl);
+    // Fail commands fast instead of queueing them forever. ioredis defaults to
+    // an unbounded offline queue with infinite retries, so a Redis outage does
+    // not surface as an error the caller can handle — it surfaces as a daemon
+    // that silently stops doing anything, with every `await redis.get()`
+    // pending indefinitely. Callers here already treat a rejected read as a
+    // cache miss and fall through to the live source.
+    this.client = new Redis(process.env.REDIS_URL || defaultUrl, {
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+      connectTimeout: 5_000,
+      retryStrategy: (attempt) => Math.min(2_000, attempt * 200),
+    });
+    // Without a listener an emitted connection error is an unhandled event and
+    // takes the process down.
+    this.client.on("error", () => undefined);
   }
 
   async get<T>(key: string): Promise<T | null> {
@@ -78,6 +92,40 @@ export class LocalRedisProxy {
 
   async publish(channel: string, message: string): Promise<number> {
     return this.client.publish(channel, message);
+  }
+
+  /**
+   * Non-blocking key enumeration. Uses SCAN rather than KEYS: KEYS walks the
+   * whole keyspace in one blocking call, which stalls every other client on a
+   * single-threaded Redis — including the trading daemons.
+   */
+  async scanKeys(pattern: string, limit = 10_000): Promise<string[]> {
+    const found: string[] = [];
+    let cursor = "0";
+    do {
+      const [next, batch] = await this.client.scan(cursor, "MATCH", pattern, "COUNT", 500);
+      cursor = next;
+      for (const key of batch) {
+        found.push(key);
+        if (found.length >= limit) return found;
+      }
+    } while (cursor !== "0");
+    return found;
+  }
+
+  /** Remaining TTL in seconds: -1 means no expiry, -2 means the key is gone. */
+  async ttl(key: string): Promise<number> {
+    return this.client.ttl(key);
+  }
+
+  /** Approximate serialized size of a value, in bytes. */
+  async memoryUsage(key: string): Promise<number> {
+    try {
+      const bytes = await this.client.memory("USAGE", key);
+      return Number(bytes) || 0;
+    } catch {
+      return 0;
+    }
   }
 
   async quit(): Promise<void> {

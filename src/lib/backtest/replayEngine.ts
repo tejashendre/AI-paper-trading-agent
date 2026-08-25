@@ -1,15 +1,20 @@
 import { computeAllIndicators } from "@/lib/indicators";
-import { Candle, Portfolio } from "@/lib/types";
+import { Candle, OpenPosition, Portfolio } from "@/lib/types";
 import { SUPPORTED_ASSETS } from "@/lib/market";
+import { evaluateSwingSignal, SwingSignal } from "@/lib/swingEngine";
 import { calculatePnlUsd, getAssetSpec } from "@/lib/trading/assetSpecs";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 import { estimateCarryCostUsd, estimatePaperFill, fitPaperExecutionPlanToRiskBudget } from "@/lib/trading/executionCostModel";
+import { decideSwingExit, isOppositeEdgeConfirmed } from "@/lib/execution/exitPolicy";
+import { SWING_STOP_ATR_MULTIPLE, SWING_TARGET_R_MULTIPLE } from "@/lib/swingEngine";
 
 type ReplayDirection = "LONG" | "SHORT" | "NEUTRAL";
 type ReplayExitReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "TIME_STOP" | "END_REPLAY";
 
 export interface ReplayInput {
   assets: Record<string, Candle[]>;
+  /** Optional 1m/5m series so the short-term trigger is scored at real resolution. */
+  fastCandles?: Record<string, { m1?: Candle[]; m5?: Candle[] }>;
   initialCapital?: number;
   maxHoldCandles?: number;
   minCandles?: number;
@@ -104,6 +109,7 @@ export interface ReplayReport {
   watchedSetups: number;
   missedOpportunities: number;
   staleWindowsSkipped: number;
+  triggerCoverageSkipped: number;
   staleDataTrades: number;
   scoreDistribution: Record<string, number>;
   setupStats: ReplaySetupStats[];
@@ -113,19 +119,13 @@ export interface ReplayReport {
   acceptance: ReplayAcceptance;
 }
 
-interface ReplaySignal {
-  direction: ReplayDirection;
-  htfScore: number;
-  triggerScore: number;
-  marketStructureScore: number;
-  finalConviction: number;
-  setupTags: string[];
-  entryReady: boolean;
-  highAccuracyException: boolean;
-  watched: boolean;
-}
-
 interface ActiveReplayPosition {
+  maxLossUsd?: number;
+  initialStopLoss?: number;
+  isTrailing?: boolean;
+  peakNetPnlUsd?: number;
+  highestPriceReached?: number;
+  lowestPriceReached?: number;
   asset: string;
   direction: Exclude<ReplayDirection, "NEUTRAL">;
   entryIndex: number;
@@ -149,7 +149,11 @@ interface ActiveReplayPosition {
 
 const INITIAL_CAPITAL = 10_000;
 const MIN_CANDLES = 180;
-const MAX_HOLD_CANDLES = 32;
+// Backstop for positions the exit policy never resolves, not a strategy rule.
+// It must sit well beyond the strategy's natural holding period: at 32 bars
+// (8h) it was force-closing the median trade of a system that now holds about
+// a day, which made the replay grade a time-stopped strategy nobody runs.
+const MAX_HOLD_CANDLES = 192;
 const SCORE_BUCKETS = ["0-19", "20-39", "40-59", "60-79", "80-100"] as const;
 
 function emptyPortfolio(usd: number): Portfolio {
@@ -237,150 +241,143 @@ function slope(values: number[]): number {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
-function scoreReplayMarketStructure(direction: ReplayDirection, window: Candle[]) {
-  const tags: string[] = [];
-  if (direction === "NEUTRAL" || window.length < 32) return { score: 0, aligned: true, tags };
-
-  const last = window[window.length - 1];
-  const recent = window.slice(Math.max(0, window.length - 42), window.length - 2);
-  const recentHigh = Math.max(...recent.map((candle) => candle.high));
-  const recentLow = Math.min(...recent.map((candle) => candle.low));
-  const avgVolume = average(recent.map((candle) => candle.volume || 0));
-  const closeLocation = (last.close - last.low) / Math.max(last.high - last.low, Number.EPSILON);
-  const trendSlope = slope(window.slice(-24).map((candle) => candle.close));
-  const trendAligned = direction === "LONG" ? trendSlope >= 0 : trendSlope <= 0;
-  const volumeExpansion = avgVolume > 0 && (last.volume || 0) > avgVolume * 1.15;
-
-  let score = trendAligned ? 4 : -5;
-  tags.push(trendAligned ? "STRUCTURE_ALIGNED" : "STRUCTURE_AGAINST_TREND");
-  if (volumeExpansion) {
-    score += 3;
-    tags.push("VOLUME_CONFIRMED_STRUCTURE");
-  }
-
-  if (direction === "LONG") {
-    if (last.low < recentLow && last.close > recentLow && closeLocation >= 0.55) {
-      score += 8;
-      tags.push("SELL_SIDE_LIQUIDITY_RECLAIM");
-    } else if (last.close > recentHigh && volumeExpansion && closeLocation >= 0.6) {
-      score += 6;
-      tags.push("BUY_SIDE_BREAKOUT_CONTINUATION");
-    } else if (last.high > recentHigh && last.close < recentHigh && closeLocation <= 0.45) {
-      score -= 16;
-      tags.push("LIQUIDITY_TRAP_RISK");
-    }
-  } else if (last.high > recentHigh && last.close < recentHigh && closeLocation <= 0.45) {
-    score += 8;
-    tags.push("BUY_SIDE_LIQUIDITY_REJECTION");
-  } else if (last.close < recentLow && volumeExpansion && closeLocation <= 0.4) {
-    score += 6;
-    tags.push("SELL_SIDE_BREAKDOWN_CONTINUATION");
-  } else if (last.low < recentLow && last.close > recentLow && closeLocation >= 0.55) {
-    score -= 16;
-    tags.push("LIQUIDITY_TRAP_RISK");
-  }
-
-  const boundedScore = Math.max(-16, Math.min(18, Math.round(score)));
-  const hasPermittedEvent = tags.some((tag) =>
-    tag === "SELL_SIDE_LIQUIDITY_RECLAIM" ||
-    tag === "BUY_SIDE_BREAKOUT_CONTINUATION" ||
-    tag === "BUY_SIDE_LIQUIDITY_REJECTION" ||
-    tag === "SELL_SIDE_BREAKDOWN_CONTINUATION"
-  );
-  return { score: boundedScore, aligned: hasPermittedEvent && boundedScore >= 4 && !tags.includes("LIQUIDITY_TRAP_RISK") && !tags.includes("STRUCTURE_AGAINST_TREND"), tags };
+/** Net unrealized PnL for a replay position, on the same cost model as live. */
+function replayNetPnlUsd(position: ActiveReplayPosition, price: number, nowSeconds: number): number {
+  const exit = estimatePaperFill({
+    asset: position.asset,
+    action: position.direction === "SHORT" ? "COVER" : "SELL",
+    requestedPrice: price,
+    amount: position.amount,
+    context: {
+      reason: "MARK",
+      assetMode: SUPPORTED_ASSETS[position.asset]?.category === "crypto" ? "REALTIME_FAST" : "SLOW_SWING",
+      dataQuality: 100,
+      isPeakLiquidity: false,
+    },
+  });
+  const gross = calculatePnlUsd(position.asset, position.entryPrice, exit.fillPrice, position.amount, position.direction);
+  const carry = estimateCarryCostUsd({
+    asset: position.asset,
+    notionalUsd: position.notionalUsd,
+    openedAt: new Date(position.entryTime * 1000).toISOString(),
+    closedAt: new Date(Math.max(nowSeconds, position.entryTime + 60) * 1000).toISOString(),
+  });
+  return gross - position.entryFeeUsd - exit.feeUsd - carry;
 }
 
-function buildSignal(asset: string, candles: Candle[], index: number): ReplaySignal {
-  const window = candles.slice(0, index + 1);
-  const indicators = computeAllIndicators(window);
-  const last = window[window.length - 1];
-  const prev = window[window.length - 2];
-  const recent = window.slice(-24);
-  const closes = recent.map((candle) => candle.close);
-  const recentVolume = average(recent.slice(0, -1).map((candle) => candle.volume || 0));
-  const volumeBurst = recentVolume > 0 && last.volume > recentVolume * 1.2;
-  const trendSlope = slope(closes);
-
-  const ema21 = finite(indicators.ema21[index]);
-  const ema50 = finite(indicators.ema50[index]);
-  const ema200 = finite(indicators.ema200[index]);
-  const rsi = finite(indicators.rsi[index], 50);
-  const vwap = finite(indicators.vwap[index], last.close);
-  const atr = finite(indicators.atr[index], last.close * 0.01);
-
-  let longScore = 0;
-  let shortScore = 0;
-  const tags: string[] = [];
-
-  if (ema21 > ema50 && ema50 > ema200 && trendSlope > 0) {
-    longScore += 8;
-    tags.push("HTF_TREND_BREAKOUT");
-  }
-  if (ema21 < ema50 && ema50 < ema200 && trendSlope < 0) {
-    shortScore += 8;
-    tags.push("HTF_TREND_BREAKOUT");
-  }
-  if (last.close > vwap && rsi > 52 && rsi < 72) {
-    longScore += 6;
-    tags.push("VWAP_RECLAIM");
-  }
-  if (last.close < vwap && rsi < 48 && rsi > 28) {
-    shortScore += 6;
-    tags.push("VWAP_REJECTION");
-  }
-  if (volumeBurst) {
-    longScore += last.close >= last.open ? 3 : 0;
-    shortScore += last.close < last.open ? 3 : 0;
-    tags.push("VOLUME_BURST");
-  }
-  if (Math.abs(last.close - last.open) > atr * 0.35) {
-    tags.push("VOLATILITY_EXPANSION");
-  }
-
-  const direction: ReplayDirection = longScore > shortScore ? "LONG" : shortScore > longScore ? "SHORT" : "NEUTRAL";
-  const htfScore = Math.max(longScore, shortScore);
-
-  let triggerScore = direction === "NEUTRAL" ? 0 : 4;
-  if (direction === "LONG" && last.close > prev.high) triggerScore += 7;
-  if (direction === "SHORT" && last.close < prev.low) triggerScore += 7;
-  if (direction === "LONG" && last.close > last.open) triggerScore += 5;
-  if (direction === "SHORT" && last.close < last.open) triggerScore += 5;
-  if (direction === "LONG" && last.close >= vwap) triggerScore += 8;
-  if (direction === "SHORT" && last.close <= vwap) triggerScore += 8;
-  if (volumeBurst) triggerScore += 5;
-  triggerScore = Math.min(30, triggerScore);
-
-  const structure = scoreReplayMarketStructure(direction, window);
-  const dataQuality = 90;
-  const riskRewardScore = 10;
-  const finalConviction = Math.max(0, Math.min(100, Math.round(htfScore * 2.2 + triggerScore * 1.4 + structure.score + Math.round(dataQuality / 5) + riskRewardScore)));
-  const isCrypto = SUPPORTED_ASSETS[asset]?.category === "crypto";
-  const triggerThreshold = isCrypto ? 14 : 8;
-  const entryReady = structure.aligned && htfScore >= 14 && triggerScore >= triggerThreshold && finalConviction >= 60;
-  const highAccuracyException = structure.aligned && isCrypto && htfScore >= 8 && htfScore < 14 && triggerScore >= 24 && finalConviction >= 75;
-
+/** Shape a replay position as the OpenPosition the shared exit policy expects. */
+function replayPositionView(position: ActiveReplayPosition): OpenPosition {
   return {
-    direction,
-    htfScore,
-    triggerScore,
-    marketStructureScore: structure.score,
-    finalConviction,
-    setupTags: [...tags, ...structure.tags].length > 0 ? Array.from(new Set([...tags, ...structure.tags])) : ["UNTAGGED"],
-    entryReady,
-    highAccuracyException,
-    watched: direction !== "NEUTRAL" && htfScore >= 8,
+    asset: position.asset,
+    entryPrice: position.entryPrice,
+    amount: position.amount,
+    btcAmount: position.amount,
+    usdInvested: position.marginUsd,
+    stopLoss: position.stopLoss,
+    initialStopLoss: position.initialStopLoss ?? position.stopLoss,
+    takeProfit: position.takeProfit,
+    entryTime: new Date(position.entryTime * 1000).toISOString(),
+    signalScore: position.htfScore,
+    reasoning: "Replay validation position",
+    direction: position.direction,
+    maxLossUsd: position.maxLossUsd,
+    finalConviction: position.finalConviction,
+    highestPriceReached: position.highestPriceReached,
+    lowestPriceReached: position.lowestPriceReached,
+    isTrailing: position.isTrailing,
   };
 }
 
-function stopTake(asset: string, direction: Exclude<ReplayDirection, "NEUTRAL">, entryPrice: number, candles: Candle[], index: number) {
-  const indicators = computeAllIndicators(candles.slice(0, index + 1));
-  const atr = finite(indicators.atr[index], entryPrice * 0.01);
-  const stopDistance = Math.max(atr * 1.5, entryPrice * (SUPPORTED_ASSETS[asset]?.category === "crypto" ? 0.004 : 0.002));
-  const takeDistance = stopDistance * 2;
+/** Aggregate a base series into a higher timeframe, without look-ahead. */
+function aggregateSeries(candles: Candle[], factor: number): Candle[] {
+  const out: Candle[] = [];
+  for (let i = 0; i + factor <= candles.length; i += factor) {
+    const slice = candles.slice(i, i + factor);
+    out.push({
+      time: slice[0].time,
+      open: slice[0].open,
+      high: Math.max(...slice.map((candle) => candle.high)),
+      low: Math.min(...slice.map((candle) => candle.low)),
+      close: slice[slice.length - 1].close,
+      volume: slice.reduce((sum, candle) => sum + (candle.volume || 0), 0),
+    });
+  }
+  return out;
+}
+
+interface ReplaySeries {
+  base: Candle[];
+  h1: Candle[];
+  h4: Candle[];
+  w1: Candle[];
+  m5: Candle[];
+  m1: Candle[];
+}
+
+function buildReplaySeries(base: Candle[], fast?: { m1?: Candle[]; m5?: Candle[] }): ReplaySeries {
   return {
-    stopLoss: direction === "LONG" ? entryPrice - stopDistance : entryPrice + stopDistance,
-    takeProfit: direction === "LONG" ? entryPrice + takeDistance : entryPrice - takeDistance,
+    base,
+    h1: aggregateSeries(base, 4),
+    h4: aggregateSeries(base, 16),
+    w1: aggregateSeries(base, 672),
+    m5: fast?.m5?.length ? fast.m5 : base,
+    m1: fast?.m1?.length ? fast.m1 : (fast?.m5?.length ? fast.m5 : base),
   };
+}
+
+/**
+ * The last `tail` bars that are fully closed at or before `time`.
+ * Binary-searches the boundary and copies only the tail: slicing the whole
+ * prefix here would copy a 180k-element 1m series on every replayed bar.
+ */
+function closedTail(series: Candle[], time: number, barSeconds: number, tail: number): Candle[] {
+  let hi = series.length;
+  let lo = 0;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (series[mid].time + barSeconds <= time + 1) lo = mid + 1;
+    else hi = mid;
+  }
+  return series.slice(Math.max(0, lo - tail), lo);
+}
+
+/**
+ * The replay's signal IS the production signal. This used to be a separate
+ * EMA/VWAP scorer with its own thresholds, which meant the acceptance gate
+ * graded a strategy the daemon never ran.
+ */
+function buildSignal(asset: string, series: ReplaySeries, index: number): SwingSignal {
+  const window = series.base.slice(0, index + 1);
+  const last = window[window.length - 1];
+  const time = last.time + 900;
+  const livePrice = last.close;
+
+  return evaluateSwingSignal({
+    assetKey: asset,
+    assetMode: SUPPORTED_ASSETS[asset]?.category === "crypto" ? "REALTIME_FAST" : "SLOW_SWING",
+    candles1mResult: closedTail(series.m1, time, series.m1 === series.base ? 900 : 60, 80),
+    candles5mResult: closedTail(series.m5, time, series.m5 === series.base ? 900 : 300, 80),
+    candles15m: window.slice(-100),
+    candles1h: closedTail(series.h1, time, 3600, 100),
+    candles4h: closedTail(series.h4, time, 14400, 100),
+    candles1w: closedTail(series.w1, time, 604800, 20),
+    livePriceSnapshot: {
+      price: livePrice,
+      provider: "REPLAY",
+      source: "HTTP",
+      venue: "REPLAY",
+      instrument: asset,
+      updatedAt: new Date(time * 1000).toISOString(),
+    },
+    // Historical order-book and funding tapes are not retained, so live-flow
+    // evidence is neutral here — the same state production sees when those
+    // feeds are unavailable.
+    orderbookResult: null,
+    deepSensors: null,
+    // Replay is a clean-room test of the strategy itself, so it runs without
+    // accumulated learning adjustments.
+    learningRules: [],
+  });
 }
 
 function markOpenPosition(portfolio: Portfolio, position: ActiveReplayPosition) {
@@ -595,6 +592,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
   let watchedSetups = 0;
   let missedOpportunities = 0;
   let staleWindowsSkipped = 0;
+  let triggerCoverageSkipped = 0;
   let staleDataTrades = 0;
 
   const ensureSetup = (setup: string): ReplaySetupStats => {
@@ -615,6 +613,19 @@ export function runReplay(input: ReplayInput): ReplayReport {
     return created;
   };
 
+  // Assets are replayed on one merged chronological tape rather than one after
+  // another. Running them sequentially over a shared bankroll meant the third
+  // asset began with whatever equity the first two happened to leave, so
+  // portfolio-level rules — drawdown-scaled risk, total margin caps — were
+  // being applied to a history that never existed.
+  const prepared = new Map<string, {
+    candles: Candle[];
+    series: ReplaySeries;
+    intervalSeconds: number;
+    triggerCoverageFrom: number;
+    active: ActiveReplayPosition | null;
+  }>();
+
   for (const [asset, rawCandles] of Object.entries(input.assets)) {
     const candles = rawCandles
       .filter((candle) => Number.isFinite(candle.time) && Number.isFinite(candle.close) && candle.close > 0)
@@ -625,27 +636,88 @@ export function runReplay(input: ReplayInput): ReplayReport {
       continue;
     }
 
-    const intervalSeconds = medianIntervalSeconds(candles);
-    let active: ActiveReplayPosition | null = null;
+    const series = buildReplaySeries(candles, input.fastCandles?.[asset]);
+    // The short-term trigger needs 1m/5m history. Where that history does not
+    // reach, the trigger would score zero and every bar would look like a
+    // no-entry — a silently empty sample rather than a real result. Skip those
+    // bars explicitly and report the count.
+    prepared.set(asset, {
+      candles,
+      series,
+      intervalSeconds: medianIntervalSeconds(candles),
+      triggerCoverageFrom: series.m1 === candles ? -Infinity : (series.m1[0]?.time ?? Infinity) + 80 * 60,
+      active: null,
+    });
+  }
 
-    for (let i = 80; i < candles.length; i++) {
+  // Mirrors cooldownSecondsForExit in swingLifecycle: a losing stop parks the
+  // asset for two hours. Without it the replay re-enters immediately after
+  // every loss, which is neither what production does nor a fair test of it.
+  const cooldownUntil = new Map<string, number>();
+  const cooldownSecondsForReplayExit = (reason: ReplayExitReason, pnlUsd: number): number => {
+    if (pnlUsd >= 0) return 0;
+    if (reason === "SIGNAL_REVERSAL") return 0;
+    if (reason === "STOP_LOSS") return 2 * 60 * 60;
+    return 60 * 60;
+  };
+
+  const tape: { asset: string; index: number; time: number }[] = [];
+  for (const [asset, state] of prepared) {
+    for (let i = 80; i < state.candles.length; i++) {
+      tape.push({ asset, index: i, time: state.candles[i].time });
+    }
+  }
+  tape.sort((a, b) => a.time - b.time || a.asset.localeCompare(b.asset));
+
+  {
+    for (const step of tape) {
+      const asset = step.asset;
+      const state = prepared.get(asset)!;
+      const { candles, series, intervalSeconds, triggerCoverageFrom } = state;
+      let active = state.active;
+      const i = step.index;
       const candle = candles[i];
       const stale = isStaleWindow(candles, i, intervalSeconds);
       if (stale) {
         staleWindowsSkipped++;
+        state.active = active;
         continue;
       }
 
-      const signal = buildSignal(asset, candles, i);
+      if (candle.time < triggerCoverageFrom) {
+        triggerCoverageSkipped++;
+        state.active = active;
+        continue;
+      }
+
+      const signal = buildSignal(asset, series, i);
+      // The engine's own vocabulary, mapped once into replay terms.
+      const direction: ReplayDirection =
+        signal.action === "SWING_BUY" ? "LONG" : signal.action === "SWING_SHORT" ? "SHORT" : signal.directionBias;
+      const tradeDirection: ReplayDirection =
+        signal.action === "SWING_BUY" ? "LONG" : signal.action === "SWING_SHORT" ? "SHORT" : "NEUTRAL";
+      const entryReady: boolean = tradeDirection !== "NEUTRAL";
+      const watched = direction !== "NEUTRAL" && signal.htfScore >= 8;
       scoreDistribution[scoreBucket(signal.finalConviction)]++;
 
       if (active) {
         let exitPrice = 0;
         let exitReason: ReplayExitReason | null = null;
 
+        // Track the same watermarks the live position carries so the shared
+        // exit policy sees identical inputs here and in the daemon.
+        active.highestPriceReached = Math.max(active.highestPriceReached ?? active.entryPrice, candle.high);
+        active.lowestPriceReached = Math.min(active.lowestPriceReached ?? active.entryPrice, candle.low);
+        const netNow = replayNetPnlUsd(active, candle.close, candle.time);
+        active.peakNetPnlUsd = Math.max(active.peakNetPnlUsd ?? 0, netNow);
+
         const stopHit = active.direction === "LONG" ? candle.low <= active.stopLoss : candle.high >= active.stopLoss;
-        const takeHit = active.direction === "LONG" ? candle.high >= active.takeProfit : candle.low <= active.takeProfit;
-        const reversal = signal.direction !== "NEUTRAL" && signal.direction !== active.direction && signal.finalConviction >= 65;
+        const takeHit = !active.isTrailing &&
+          (active.direction === "LONG" ? candle.high >= active.takeProfit : candle.low <= active.takeProfit);
+        // The shipped reversal rule, not a looser replay-local one. A bare
+        // "opposite signal at 65 conviction" closes far more trades than the
+        // daemon ever would.
+        const reversal = isOppositeEdgeConfirmed(replayPositionView(active), signal);
         const timedOut = i - active.entryIndex >= maxHoldCandles;
 
         if (stopHit) {
@@ -662,6 +734,21 @@ export function runReplay(input: ReplayInput): ReplayReport {
         } else if (timedOut) {
           exitPrice = candle.close;
           exitReason = "TIME_STOP";
+        } else {
+          const action = decideSwingExit({
+            position: replayPositionView(active),
+            currentPrice: candle.close,
+            netPnlUsd: netNow,
+            peakNetPnlUsd: active.peakNetPnlUsd ?? 0,
+            oppositeEdgeConfirmed: false,
+          });
+          if (action.kind === "CLOSE") {
+            exitPrice = candle.close;
+            exitReason = action.reason === "TAKE_PROFIT" ? "TAKE_PROFIT" : "SIGNAL_REVERSAL";
+          } else if (action.kind === "MOVE_STOP") {
+            active.stopLoss = action.newStopLoss;
+            if (action.trailing) active.isTrailing = true;
+          }
         }
 
         if (exitReason) {
@@ -669,6 +756,8 @@ export function runReplay(input: ReplayInput): ReplayReport {
           trades.push(trade);
           updatePortfolioAfterTrade(portfolio, trade);
           clearOpenPosition(portfolio, asset);
+          const cooldown = cooldownSecondsForReplayExit(exitReason, trade.pnlUsd);
+          if (cooldown > 0) cooldownUntil.set(asset, candle.time + cooldown);
           for (const setup of active.setupTags) {
             const stat = ensureSetup(setup);
             stat.trades++;
@@ -680,22 +769,25 @@ export function runReplay(input: ReplayInput): ReplayReport {
         }
       }
 
-      if (signal.watched) {
+      if (watched) {
         watchedSetups++;
         for (const setup of signal.setupTags) ensureSetup(setup).watched++;
-        if (!signal.entryReady && !signal.highAccuracyException && futureFavorableMove(candles, i, signal.direction)) {
+        if (!entryReady && futureFavorableMove(candles, i, direction)) {
           missedOpportunities++;
           for (const setup of signal.setupTags) ensureSetup(setup).missed++;
         }
       }
 
-      if (!active && (signal.entryReady || signal.highAccuracyException) && signal.direction !== "NEUTRAL") {
+      if (!active && tradeDirection !== "NEUTRAL" && candle.time >= (cooldownUntil.get(asset) ?? 0)) {
+        const entryDirection: "LONG" | "SHORT" = tradeDirection;
         const requestedEntryPrice = candle.close;
-        const { stopLoss, takeProfit } = stopTake(asset, signal.direction, requestedEntryPrice, candles, i);
+        // Stop and target come from the engine that produced the signal.
+        const stopLoss = signal.stopLoss;
+        const takeProfit = signal.takeProfit;
         const admission = TradeAdmissionController.evaluate({
           portfolio,
           asset,
-          direction: signal.direction,
+          direction: entryDirection,
           entryPrice: requestedEntryPrice,
           stopLoss,
           takeProfit,
@@ -703,7 +795,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
           finalConviction: signal.finalConviction,
           setupTags: signal.setupTags,
           assetMode: ["BTC", "ETH", "SOL"].includes(asset) ? "REALTIME_FAST" : "SLOW_SWING",
-          dataQuality: 100,
+          dataQuality: signal.dataQuality,
           reasoning: "Replay strategy admission",
           strategyType: "swing",
           entryMode: "STANDARD",
@@ -712,7 +804,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
         if (admission.approved) {
           const fittedExecution = fitPaperExecutionPlanToRiskBudget({
             asset,
-            direction: signal.direction,
+            direction: entryDirection,
             entryPrice: requestedEntryPrice,
             stopLoss,
             takeProfit,
@@ -732,6 +824,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
             executionPlan.netLossUsd > admission.riskAmountUsd * 1.01 ||
             finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd
           ) {
+            state.active = active;
             continue;
           }
           portfolio.usd -= finalRequiredMarginUsd + executionPlan.entry.feeUsd;
@@ -739,7 +832,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
           portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + executionPlan.entry.totalExecutionCostUsd;
           active = {
             asset,
-            direction: signal.direction,
+            direction: entryDirection,
             entryIndex: i,
             entryTime: candle.time,
             entryPrice: executionPlan.entry.fillPrice,
@@ -749,7 +842,9 @@ export function runReplay(input: ReplayInput): ReplayReport {
             notionalUsd: executionPlan.entry.notionalUsd,
             leverage: admission.leverage,
             stopLoss,
+            initialStopLoss: stopLoss,
             takeProfit,
+            maxLossUsd: executionPlan.netLossUsd,
             entryFeeUsd: executionPlan.entry.feeUsd,
             entryExecutionCostUsd: executionPlan.entry.totalExecutionCostUsd,
             finalConviction: signal.finalConviction,
@@ -762,15 +857,19 @@ export function runReplay(input: ReplayInput): ReplayReport {
           if (stale) staleDataTrades++;
         }
       }
-    }
 
-    if (active) {
-      const finalCandle = candles[candles.length - 1];
-      const trade = closePosition(active, finalCandle, candles.length - 1, finalCandle.close, "END_REPLAY");
-      trades.push(trade);
-      updatePortfolioAfterTrade(portfolio, trade);
-      clearOpenPosition(portfolio, asset);
+      state.active = active;
     }
+  }
+
+  for (const [asset, state] of prepared) {
+    if (!state.active) continue;
+    const finalCandle = state.candles[state.candles.length - 1];
+    const trade = closePosition(state.active, finalCandle, state.candles.length - 1, finalCandle.close, "END_REPLAY");
+    trades.push(trade);
+    updatePortfolioAfterTrade(portfolio, trade);
+    clearOpenPosition(portfolio, asset);
+    state.active = null;
   }
 
   const grossProfit = trades.filter((trade) => trade.pnlUsd > 0).reduce((sum, trade) => sum + trade.pnlUsd, 0);
@@ -821,6 +920,7 @@ export function runReplay(input: ReplayInput): ReplayReport {
     watchedSetups,
     missedOpportunities,
     staleWindowsSkipped,
+    triggerCoverageSkipped,
     staleDataTrades,
     scoreDistribution,
     setupStats: setupStatsList,

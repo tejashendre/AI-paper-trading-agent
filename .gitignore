@@ -38,3 +38,4 @@ ssh-key-*.key*
 *.key
 *.tar.gz
 *.zip
+.replay-cache/
