@@ -19,16 +19,23 @@ export class LocalRedisProxy {
   constructor() {
     // Connect to the local docker redis container, or fallback to localhost if running outside Docker
     const defaultUrl = isDocker() ? "redis://redis:6379" : "redis://127.0.0.1:6379";
-    // Fail commands fast instead of queueing them forever. ioredis defaults to
-    // an unbounded offline queue with infinite retries, so a Redis outage does
-    // not surface as an error the caller can handle — it surfaces as a daemon
-    // that silently stops doing anything, with every `await redis.get()`
-    // pending indefinitely. Callers here already treat a rejected read as a
-    // cache miss and fall through to the live source.
+    // Bound how long a command may hang, without breaking normal startup.
+    //
+    // ioredis defaults to unlimited per-request retries, so a Redis outage does
+    // not surface as an error a caller can handle — it surfaces as a daemon
+    // that silently stops doing anything, every `await redis.get()` pending
+    // forever. `maxRetriesPerRequest` fixes that: once the limit is reached the
+    // queued commands are flushed with an error instead of waiting.
+    //
+    // The offline queue stays ENABLED. Disabling it also rejects commands
+    // issued during the normal connect handshake, which turned every container
+    // restart into a window of HTTP 500s from the status API and lost the
+    // daemons' own startup logs. Queue-then-bound is the correct combination:
+    // a brief reconnect is absorbed, a genuine outage still fails fast.
     this.client = new Redis(process.env.REDIS_URL || defaultUrl, {
-      maxRetriesPerRequest: 2,
-      enableOfflineQueue: false,
-      connectTimeout: 5_000,
+      maxRetriesPerRequest: 3,
+      enableOfflineQueue: true,
+      connectTimeout: 10_000,
       retryStrategy: (attempt) => Math.min(2_000, attempt * 200),
     });
     // Without a listener an emitted connection error is an unhandled event and
