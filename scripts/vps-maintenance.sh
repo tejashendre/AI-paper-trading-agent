@@ -95,7 +95,11 @@ else
   echo "Apply mode. Safe cleanup commands will run."
 fi
 echo "Project: $PROJECT_DIR"
-echo "Build-cache prune threshold: unused for at least $PRUNE_UNTIL"
+if [ "$PRUNE_UNTIL" = "all" ]; then
+  echo "Build-cache prune threshold: all unused cache"
+else
+  echo "Build-cache prune threshold: unused for at least $PRUNE_UNTIL"
+fi
 
 section "Disk Before"
 df -h .
@@ -118,14 +122,21 @@ fi
 section "Cleanup Plan"
 echo "Will prune stopped containers only."
 echo "Will prune unused images only."
-echo "Will prune unused Docker build cache older than $PRUNE_UNTIL."
+echo "Will prune unused Docker build cache: $PRUNE_UNTIL."
 echo "Will NOT run docker volume prune."
 echo "Will NOT delete Redis data."
 echo "Will NOT delete $PROJECT_DIR/data."
 
 run docker container prune -f
 run docker image prune -af
-run docker builder prune -af --filter "until=$PRUNE_UNTIL"
+# PRUNE_UNTIL=all drops every unused build layer. The next deploy then rebuilds
+# from scratch, which costs a few minutes once and is the only way to reclaim
+# cache created by today's own deploys — the usual case after a busy session.
+if [ "$PRUNE_UNTIL" = "all" ]; then
+  run docker builder prune -af
+else
+  run docker builder prune -af --filter "until=$PRUNE_UNTIL"
+fi
 
 if [ "$RESTART" -eq 1 ]; then
   section "Compose Restart"
