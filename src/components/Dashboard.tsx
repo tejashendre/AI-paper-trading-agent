@@ -1279,7 +1279,7 @@ function DashboardContent({ secret }: { secret: string }) {
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
-                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Net Liquidation Value (NLV)</div>
+                    <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Swing Engine NLV</div>
                     <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
                       ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </h3>
@@ -1340,7 +1340,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       -${(portfolio.totalFeesPaid || 0)?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </h3>
                     <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
-                      Peak Drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (Max limit: 15%)
+                      Peak Drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (halts new entries at 10%)
                     </p>
                   </div>
                 </div>
@@ -1979,7 +1979,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         <div className={`pointer-events-none absolute bottom-full left-0 mb-2 w-52 border text-[9px] p-2 rounded shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 leading-relaxed ${
                           isDark ? "bg-[#09090f] border-[#1c1c24] text-slate-400" : "bg-white border-[#e2e8f0] text-[#475569]"
                         }`}>
-                          A dynamic statistical score (0-100) aggregating trend, momentum, and volume. BUY &ge; 56 | SHORT &le; 44.
+                          Calibrated conviction (0-100) for the direction the engine currently favours. It is not a buy/sell threshold on its own: an entry also needs higher-timeframe evidence, a confirmed trigger, aligned structure and a reward/risk above 1.35 after costs. A high score with a HOLD means conviction is there but a gate is not.
                         </div>
                       </div>
                     </div>
@@ -2040,10 +2040,19 @@ function DashboardContent({ secret }: { secret: string }) {
                         </div>
                       </div>
                     </div>
-                    <span className="font-bold text-[9px] text-green-400 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block animate-ping"></span>
-                      ACTIVE
-                    </span>
+                    {(() => {
+                      // The guard only shrinks size once drawdown passes 3%.
+                      // Reporting ACTIVE at zero drawdown implied it was already
+                      // reducing risk, which was never true.
+                      const dd = Number(portfolio?.maxDrawdownPercent || 0);
+                      const reducing = dd > 3;
+                      return (
+                        <span className={`font-bold text-[9px] flex items-center gap-1 ${reducing ? "text-amber-400" : "text-green-400"}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full inline-block ${reducing ? "bg-amber-500 animate-ping" : "bg-green-500"}`}></span>
+                          {reducing ? `REDUCING (${dd.toFixed(1)}% DD)` : "ARMED"}
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   {/* Reasoning text */}
@@ -2065,7 +2074,8 @@ function DashboardContent({ secret }: { secret: string }) {
             
             {/* Balances module */}
             <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
-              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Portfolio Asset Balances</h2>
+              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Swing Engine Asset Balances</h2>
+              <p className={`text-[9px] font-mono ${textMuted}`}>The nine markets the swing engine trades. Cross-sectional book positions are listed in the Cross-Sectional Book panel.</p>
               <div className="text-xl font-bold font-mono text-green-400">
                 ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
@@ -2106,7 +2116,7 @@ function DashboardContent({ secret }: { secret: string }) {
               <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>
                 Performance Statistics
               </h2>
-              <p className={`text-[9px] font-mono ${textMuted}`}>Closed trade history only. Active trade P&L is shown in Active Positions.</p>
+              <p className={`text-[9px] font-mono ${textMuted}`}>Swing engine only, closed trades only. The cross-sectional book keeps its own equity and is reported in its own panel.</p>
               <div className="grid grid-cols-2 gap-3">
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
                   <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Win Rate</span>
@@ -2122,7 +2132,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   <span className="text-md font-bold font-mono text-orange-400 mt-1">
                     {(portfolio?.grossLoss || 0) > 0 
                       ? (portfolio.grossProfit / portfolio.grossLoss).toFixed(2) 
-                      : (portfolio?.grossProfit > 0 ? "∞" : "1.00")}
+                      : (portfolio?.grossProfit > 0 ? "∞" : "—")}
                   </span>
                   <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
                     G: ${(portfolio?.grossProfit || 0).toFixed(0)} / L: ${(portfolio?.grossLoss || 0).toFixed(0)}
@@ -2158,13 +2168,20 @@ function DashboardContent({ secret }: { secret: string }) {
               {/* Detailed Breakdown */}
               {data?.aiDetailedStats && viewMode === "ai" && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
+                  {/* No scalp daemon exists in the deployed stack, so a scalp
+                      ledger could only ever read zero. The second strategy that
+                      does run is the cross-sectional book. */}
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
-                    <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>Scalp Ledger</span>
-                    <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.scalp.trades > 0 ? ((data.aiDetailedStats.scalp.wins / data.aiDetailedStats.scalp.trades) * 100).toFixed(1) : 0}%</span>
-                    <span className={`text-[10px] font-mono ${data.aiDetailedStats.scalp.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      PnL: ${data.aiDetailedStats.scalp.pnl.toFixed(2)}
+                    <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>Cross-Sectional Book</span>
+                    <span className={`text-[10px] font-mono ${textPrimary}`}>
+                      {bookSummary ? `${bookSummary.openPositions} open` : "—"}
                     </span>
-                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Total: {data.aiDetailedStats.scalp.trades} Scalps</span>
+                    <span className={`text-[10px] font-mono ${(bookSummary?.totalReturnUsd ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      PnL: ${(bookSummary?.totalReturnUsd ?? 0).toFixed(2)}
+                    </span>
+                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
+                      {bookSummary ? `${bookSummary.longs}L / ${bookSummary.shorts}S, separate account` : "loading"}
+                    </span>
                   </div>
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
                     <span className={`text-[8px] font-mono uppercase font-bold text-emerald-400 mb-1`}>Swing Brain</span>
