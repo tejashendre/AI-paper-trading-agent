@@ -853,11 +853,19 @@ function DashboardContent({ secret }: { secret: string }) {
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
             {data?.userTotalValue !== undefined && data?.aiTotalValue !== undefined && (
-              <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
-                isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
-              }`}>
-                {data.userTotalValue > data.aiTotalValue ? "🏆 HUMAN IS LEADING" : data.aiTotalValue > data.userTotalValue ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
-              </div>
+              <>
+                <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
+                  isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
+                }`}>
+                  {data.userTotalValue > data.aiTotalValue ? "🏆 HUMAN IS LEADING" : data.aiTotalValue > data.userTotalValue ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
+                </div>
+                {/* The verdict compares the human against the swing account
+                    only. Without this line a reader seeing a live 24-position
+                    book would reasonably assume it was counted. */}
+                <div className={`text-[8px] font-mono mt-1 text-center ${textMuted}`}>
+                  human vs swing engine · the book is a separate account
+                </div>
+              </>
             )}
           </div>
           <button 
