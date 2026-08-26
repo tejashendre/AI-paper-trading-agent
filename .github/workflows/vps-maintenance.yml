@@ -53,9 +53,14 @@ jobs:
               # Taking simply the newest is wrong: a reset run snapshots before
               # its own reset, so a second reset moments later captures a state
               # that an earlier run had already wiped.
+              echo "--- snapshots available on the box ---"
+              ls -1dt data/reset-backups/*/ 2>/dev/null || echo "  (no reset-backups)"
+              ls -1dt data/deploy-backups/*/ 2>/dev/null | head -10 || echo "  (no deploy-backups)"
+              echo ""
               echo "--- scanning snapshots for a human portfolio with trades ---"
               for CAND in $(ls -1dt data/reset-backups/*/ data/deploy-backups/*/ 2>/dev/null); do
                 if [ ! -f "${CAND}redis-dump.rdb" ]; then continue; fi
+                rm -f "$WORK/dump.rdb"
                 cp "${CAND}redis-dump.rdb" "$WORK/dump.rdb"
                 chmod 644 "$WORK/dump.rdb"
                 docker rm -f snapshot-redis >/dev/null 2>&1 || true
@@ -79,6 +84,7 @@ jobs:
               else
                 echo ""
                 echo "Using snapshot: $SNAP"
+                rm -f "$WORK/dump.rdb"
                 cp "${SNAP}redis-dump.rdb" "$WORK/dump.rdb"
                 chmod 644 "$WORK/dump.rdb"
                 docker rm -f snapshot-redis >/dev/null 2>&1 || true
