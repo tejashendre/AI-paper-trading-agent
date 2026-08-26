@@ -1,0 +1,79 @@
+name: Reset Paper Trading Arena
+
+# Manual only. This wipes the paper trading history, so it must never be
+# reachable from a push. It runs on the VPS through the same SSH secrets the
+# deploy uses, which means no operator has to paste an admin token anywhere.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type RESET to confirm. Anything else aborts.'
+        required: true
+        default: ''
+      capital:
+        description: 'Starting capital for every portfolio, in USD.'
+        required: false
+        default: '10000'
+      dry_run:
+        description: 'Only list what would be cleared.'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        if: ${{ inputs.dry_run == false && inputs.confirm != 'RESET' }}
+        run: |
+          echo "Refusing to reset: confirm must be exactly RESET (received '${{ inputs.confirm }}')."
+          exit 1
+
+      - name: Reset arena on Oracle VPS
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            set -eu
+            cd /home/ubuntu/version-6
+
+            echo "== Pre-reset snapshot =="
+            # The deploy pipeline snapshots on every release; take one here too,
+            # because a reset destroys trading history that a release does not.
+            STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+            BACKUP_DIR="data/reset-backups/${STAMP}"
+            mkdir -p "$BACKUP_DIR"
+            git rev-parse HEAD > "$BACKUP_DIR/commit.txt"
+            if docker inspect quant-redis >/dev/null 2>&1; then
+              docker exec quant-redis redis-cli SAVE
+              docker cp quant-redis:/data/dump.rdb "$BACKUP_DIR/redis-dump.rdb"
+              echo "Redis snapshot saved to $BACKUP_DIR/redis-dump.rdb"
+            fi
+
+            echo "== Stopping daemons so the reset cannot race a live scan =="
+            # resetArena takes the portfolio write locks, but a daemon mid-scan
+            # would simply re-save its own in-memory state moments later.
+            docker compose stop swing-daemon xsec-daemon
+
+            echo "== Reset =="
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              docker compose exec -T quant-dashboard npm run reset:arena
+              echo "Dry run only. Nothing was changed."
+            else
+              docker compose exec -T quant-dashboard npm run reset:arena -- --confirm --capital ${{ inputs.capital }}
+            fi
+
+            echo "== Restarting daemons =="
+            docker compose start swing-daemon xsec-daemon
+            sleep 20
+            docker compose ps
+
+            echo "== Post-reset state =="
+            docker exec quant-redis redis-cli GET ai:portfolio | head -c 300 || true
+            echo ""
+            docker logs quant-xsec-daemon --tail=15 2>&1 || true
