@@ -844,18 +844,10 @@ function DashboardContent({ secret }: { secret: string }) {
               const pnl = Number(data?.userTotalValue || initial) - initial;
               return (
                 <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} <span className={`font-normal ${textMuted}`}>swing</span>
+                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
                 </p>
               );
             })()}
-            {bookSummary && (
-              <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
-                {bookSummary.totalReturnUsd >= 0 ? "+" : ""}${bookSummary.totalReturnUsd.toFixed(2)}{" "}
-                <span className={`font-normal ${textMuted}`}>
-                  book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
-                </span>
-              </p>
-            )}
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
@@ -886,10 +878,18 @@ function DashboardContent({ secret }: { secret: string }) {
               const pnl = Number(data?.aiTotalValue || initial) - initial;
               return (
                 <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} <span className={`font-normal ${textMuted}`}>swing</span>
                 </p>
               );
             })()}
+            {bookSummary && (
+              <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
+                {bookSummary.totalReturnUsd >= 0 ? "+" : ""}${bookSummary.totalReturnUsd.toFixed(2)}{" "}
+                <span className={`font-normal ${textMuted}`}>
+                  book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
+                </span>
+              </p>
+            )}
           </button>
         </div>
 
