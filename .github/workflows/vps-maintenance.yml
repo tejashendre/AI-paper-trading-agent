@@ -16,6 +16,10 @@ on:
         type: boolean
         required: false
         default: false
+      cache_age:
+        description: "Build-cache age to prune. '24h' keeps recent layers; 'all' reclaims everything unused."
+        required: false
+        default: '24h'
       dry_run:
         description: 'Report only. Nothing is pruned or restored.'
         type: boolean
@@ -134,6 +138,7 @@ jobs:
               echo ""
               echo "=================== DOCKER PRUNE ==================="
               # Never prunes volumes, so redis_data and ./data are untouched.
+              export PRUNE_UNTIL="${{ inputs.cache_age }}"
               if [ "$DRY" = "true" ]; then
                 sh scripts/vps-maintenance.sh --dry-run
               else
