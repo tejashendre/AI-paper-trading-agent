@@ -325,6 +325,14 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
   const [showActivityDetails, setShowActivityDetails] = useState(true);
+  // The cross-sectional book is a separate paper account with its own daemon.
+  // Without this the headline cards report only the swing engine, so a live
+  // book of 24 positions reads on screen as "no activity" — which is exactly
+  // how a working bot gets mistaken for a broken one.
+  const [bookSummary, setBookSummary] = useState<{
+    equityUsd: number; totalReturnUsd: number; totalReturnPercent: number;
+    openPositions: number; longs: number; shorts: number; netExposure: number;
+  } | null>(null);
   const [showAssetBookDetails, setShowAssetBookDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
@@ -337,6 +345,31 @@ function DashboardContent({ secret }: { secret: string }) {
   }, [secret]);
 
   // Load theme preference from localStorage on mount
+  useEffect(() => {
+    let cancelled = false;
+    const loadBook = async () => {
+      try {
+        const response = await fetch("/api/book", { cache: "no-store" });
+        const payload = await response.json();
+        if (cancelled || payload?.error) return;
+        setBookSummary({
+          equityUsd: payload.performance.equityUsd,
+          totalReturnUsd: payload.performance.totalReturnUsd,
+          totalReturnPercent: payload.performance.totalReturnPercent,
+          openPositions: payload.exposure.openPositions,
+          longs: payload.exposure.longs,
+          shorts: payload.exposure.shorts,
+          netExposure: payload.exposure.netExposure,
+        });
+      } catch {
+        // A missing book summary must never blank the rest of the dashboard.
+      }
+    };
+    loadBook();
+    const timer = setInterval(loadBook, 15_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
   useEffect(() => {
     const saved = localStorage.getItem("dashboard_theme");
     if (saved === "light" || saved === "dark") setTheme(saved);
@@ -811,10 +844,18 @@ function DashboardContent({ secret }: { secret: string }) {
               const pnl = Number(data?.userTotalValue || initial) - initial;
               return (
                 <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} <span className={`font-normal ${textMuted}`}>swing</span>
                 </p>
               );
             })()}
+            {bookSummary && (
+              <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
+                {bookSummary.totalReturnUsd >= 0 ? "+" : ""}${bookSummary.totalReturnUsd.toFixed(2)}{" "}
+                <span className={`font-normal ${textMuted}`}>
+                  book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
+                </span>
+              </p>
+            )}
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
@@ -2149,7 +2190,14 @@ function DashboardContent({ secret }: { secret: string }) {
                 ];
 
                 if (allPositions.length === 0) {
-                  return <p className={`text-xs ${textMuted} font-mono italic`}>No active positions open.</p>;
+                  return (
+                    <p className={`text-xs ${textMuted} font-mono italic`}>
+                      No active swing positions.
+                      {bookSummary && bookSummary.openPositions > 0
+                        ? ` The cross-sectional book is separately holding ${bookSummary.openPositions} positions — see the Cross-Sectional Book panel above.`
+                        : ""}
+                    </p>
+                  );
                 }
 
                 return (
