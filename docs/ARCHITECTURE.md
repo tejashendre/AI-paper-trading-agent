@@ -1,239 +1,251 @@
-# Autonomous Paper Trading Agent Architecture
+# Autonomous Paper Trading Agent — Architecture
 
-## Operating Contract
+**Last verified:** 2026-08-26 against the deployed stack at trader.tejashendre.com
 
-This repository runs a deterministic, explainable, paper-only swing trading
-system. It is not an HFT engine, a broker integration, or evidence of a
-profitable strategy.
+## Operating contract
 
-The production contract is:
+This repository runs a deterministic, explainable, **paper-only** trading
+system. It is not an HFT engine, not a broker integration, and not evidence of
+a profitable strategy.
 
-- Scan nine assets for swing entries approximately once per minute.
-- Monitor open positions approximately every five seconds.
-- Use deterministic signals and admission rules as the trading source of truth.
-- Simulate fills, spread, slippage, fees, carry, leverage, and P&L.
-- Fail closed when data, accounting, exposure, or strategy evidence is unsafe.
-- Keep optional LLM output outside the critical execution path.
-- Expose read-only production state to spectators and reserve mutations for
-  authenticated operators.
+- Two independent strategies run side by side, each with its own $10,000 paper
+  account, so they can be compared without either being able to corrupt the
+  other.
+- Every fill is simulated through one cost model: spread, size-dependent
+  slippage, stop-gap risk, maker/taker fees and funding carry.
+- Every risk limit fails closed. When data, accounting, exposure or strategy
+  evidence is unsafe, the system declines to trade rather than guessing.
+- No API keys. Every market data source used here is a free public endpoint.
 
-## Production Topology
+## The two strategies
+
+The system asks two different questions, and the difference is the whole point.
+
+```mermaid
+flowchart TB
+    subgraph SWING["Swing engine — asks: is THIS asset a buy?"]
+        direction TB
+        S1["9 markets<br/>BTC ETH SOL · EURUSD GBPUSD USDJPY · GOLD OIL SILVER"]
+        S2["Scan every 60s<br/>multi-timeframe evidence"]
+        S3["Entry gates:<br/>HTF score · trigger · structure · conviction · reward:risk"]
+        S4["Position with stop + target<br/>2.5x ATR stop, 2.5R target"]
+        S5["Exit watchdog every 5s"]
+        S1 --> S2 --> S3 --> S4 --> S5
+    end
+
+    subgraph XSEC["Cross-sectional book — asks: which of these 44 is STRONGEST?"]
+        direction TB
+        X1["~44 liquid Bybit perps<br/>screened point-in-time"]
+        X2["Rank all by 72h return"]
+        X3["Long top 12 · short bottom 12<br/>equal weight, dollar-neutral"]
+        X4["Rebalance every 12h<br/>with rank hysteresis"]
+        X1 --> X2 --> X3 --> X4
+    end
+
+    SWING -->|"own Redis namespace<br/>ai:*"| LEDGER["Execution ledger<br/>hash-chained, append-only"]
+    XSEC -->|"own Redis namespace<br/>xsec:*"| LEDGER
+```
+
+**Why two.** The swing engine alone cannot be profitable: its round-trip cost
+is 14–22 bps and its measured forward edge is 7–12 bps. It pays more to trade
+than the signal is worth. The cross-sectional book solves this by ranking
+assets against each other — but only works with breadth. Over BTC/ETH/SOL alone
+the same method is a *statistically significant loser* (t = −2.69); over ~44
+markets it returns +96% in a 12-month replay. See
+[CROSS_SECTIONAL_MOMENTUM_2026-08-25.md](./CROSS_SECTIONAL_MOMENTUM_2026-08-25.md).
+
+## Runtime topology
 
 ```mermaid
 flowchart LR
-    E["Kraken, Bybit, Binance, and free OHLC feeds"] --> D["swing-daemon"]
-    D --> R["Redis runtime state"]
-    D --> F["JSON backups and hash-chained execution ledger"]
-    R --> W["Next.js dashboard and API"]
-    F --> W
-    W --> N["Nginx and Cloudflare"]
-    N --> U["Spectator browser"]
-    G["GitHub Actions exact commit deployment"] --> V["Oracle VPS Docker Compose"]
-    V --> D
-    V --> W
-    V --> R
+    subgraph FREE["Free public market data — no API keys"]
+        BYBIT["Bybit v5<br/>klines · tickers · funding"]
+        WS["Bybit / Binance / Kraken<br/>websockets"]
+        YAHOO["Yahoo<br/>forex + commodities"]
+    end
+
+    subgraph ORACLE["Oracle Cloud VPS — Docker Compose"]
+        SWINGD["quant-swing-daemon<br/>60s scan · 5s exit watchdog"]
+        XSECD["quant-xsec-daemon<br/>12h rebalance · 60s mark"]
+        DASH["quant-dashboard<br/>Next.js UI + API"]
+        REDIS[("quant-redis<br/>volume: redis_data")]
+        FILES[("./data<br/>JSON backups<br/>execution ledger<br/>deploy + reset snapshots")]
+    end
+
+    BYBIT --> SWINGD
+    BYBIT --> XSECD
+    WS --> SWINGD
+    YAHOO --> SWINGD
+
+    SWINGD <--> REDIS
+    XSECD <--> REDIS
+    DASH <--> REDIS
+    SWINGD --> FILES
+    XSECD --> FILES
+
+    DASH --> NGINX["Nginx + Cloudflare"] --> USER["Spectator browser"]
 ```
 
-Docker Compose owns three required services:
+Request budget is deliberately tiny. One `tickers` call returns the price and
+turnover of every perpetual at once; momentum needs one `kline` call per symbol
+per rebalance. At a 12-hour cadence over ~50 symbols that is roughly a hundred
+requests a day, far inside free rate limits.
 
-| Service | Container | Responsibility |
-|---|---|---|
-| Dashboard | `quant-dashboard` | Next.js UI and authenticated API |
-| Trading daemon | `quant-swing-daemon` | Single writer for scans, entries, exits, and learning |
-| State | `quant-redis` | Runtime cache, locks, portfolios, logs, and current learning |
+## How a swing trade is decided
 
-The dashboard must never become a second execution writer. Manual scan requests
-are handed to the daemon so that all entries pass the same accounting, risk, and
-ledger path.
-
-## Runtime Loops
-
-### Entry Loop
+Every gate below can veto. The order matters: cheap checks run before expensive
+ones, and provenance is verified before any sizing happens.
 
 ```mermaid
-flowchart TD
-    A["Read fresh feeds and candles"] --> B["Validate identity, age, and coverage"]
-    B --> C["Build 15m, 1h, 4h, and weekly market state"]
-    C --> D["Score direction, trigger, structure, flow, and data quality"]
-    D --> E["Apply version-scoped learning"]
-    E --> F["Check after-cost reward and risk"]
-    F --> G["Select normal, exception, or controlled-probe path"]
-    G --> H["Trade admission and portfolio circuit breakers"]
-    H --> I["Modeled paper fill"]
-    I --> J["Atomic portfolio write and execution-ledger event"]
+flowchart TB
+    A["Scan tick — 60s"] --> B{"Position already<br/>open on this asset?"}
+    B -->|yes| SKIP["Skip — the exit watchdog owns it"]
+    B -->|no| C{"Cooling down<br/>after a loss?"}
+    C -->|yes| SKIP2["Skip for 2h"]
+    C -->|no| D{"Market session open<br/>and feed healthy?"}
+    D -->|no| SKIP3["Skip"]
+    D -->|yes| E["evaluateSwingSignal<br/>pure, replayable"]
+    E --> F{"Venue provenance valid<br/>and under 10s stale?"}
+    F -->|no| BLOCK1["BLOCKED — data"]
+    F -->|yes| G{"Portfolio guards:<br/>exposure, correlation,<br/>learning quarantine"}
+    G -->|no| BLOCK2["BLOCKED — risk"]
+    G -->|yes| H["TradeAdmissionController<br/>size from 1% risk budget"]
+    H --> I{"Fee viability:<br/>realistic capture ><br/>round-trip cost?"}
+    I -->|no| BLOCK3["BLOCKED — economics"]
+    I -->|yes| J["fitPaperExecutionPlanToRiskBudget<br/>model the actual fills"]
+    J --> K{"Net reward:risk >= 1.35<br/>after all costs?"}
+    K -->|no| BLOCK4["BLOCKED — edge too thin"]
+    K -->|yes| L{"Rolling budgets:<br/>turnover, daily loss,<br/>stress, correlation"}
+    L -->|no| BLOCK5["BLOCKED — circuit breaker"]
+    L -->|yes| M["ENTRY — record to<br/>hash-chained ledger"]
 ```
 
-The engine can return `HOLD` even with high conviction when a required path is
-incomplete. Diagnostics must name the first real blocker; the phrase
-`all entry gates passed` is valid only when a complete entry path is satisfied.
+## How an open swing position is managed
 
-### Exit Loop
+One function owns every exit decision. This is the part that was most broken:
+six guards used to race each other every sweep, each with absolute dollar
+thresholds, and the tightest one always won.
 
-The five-second watchdog evaluates hard stops and targets before any stop repair
-or trailing logic. It can also protect a fee-aware winner or close a position
-whose live thesis is invalidated. Every close is reconciled against cash,
-position state, modeled costs, and the execution ledger.
-
-## Market Data
-
-| Asset class | Assets | Price path | Candle path | Trading treatment |
-|---|---|---|---|---|
-| Crypto | BTC, ETH, SOL | Kraken, Bybit, and Binance public WebSockets | Exchange OHLC with fallback | `REALTIME_FAST`; two fresh independent prices required for fast admission |
-| Forex | EURUSD, GBPUSD, USDJPY | Free periodic provider | Free OHLC provider | `SLOW_SWING`; reduced sizing and wider freshness tolerance |
-| Commodities | GOLD, OIL, SILVER | Free periodic provider | Free OHLC provider | `SLOW_SWING`; reduced sizing and market-session awareness |
-
-Feed health and execution freshness are different concepts. A connected socket
-is not sufficient: the daemon checks recent message timestamps and independent
-price agreement. When a fast source expires, the engine falls back or blocks
-instead of treating old WebSocket state as executable.
-
-Charts display OHLC candles and a separate latest price. A candle timestamp is
-the start of its interval, not the time of the newest tick. The browser chooses
-the closest supported local timezone on first load and persists an explicit
-user selection.
-
-## Decision and Risk Layers
-
-The swing engine combines:
-
-- continuous higher-timeframe trend evidence;
-- short-term confirmation;
-- market structure and liquidity state;
-- crypto order-book and funding flow where available;
-- data quality and live-price displacement;
-- reachable take-profit distance;
-- after-cost net reward/risk;
-- strategy-version-scoped learning.
-
-The admission controller then applies:
-
-- directionally valid stop and target geometry;
-- after-cost expected-capture viability;
-- per-asset and total margin caps;
-- risk-at-stop sizing;
-- leverage and margin-mode limits;
-- drawdown, daily-loss, turnover, duplicate, and correlation guards;
-- accounting reconciliation;
-- learning quarantine and controlled recovery rules.
-
-`STRONG` is a paper sizing mode, not a quality claim. It is available only to
-high-conviction crypto candidates with real-time data, non-negative learning,
-and every downstream portfolio guard still active.
-
-## State and Persistence
-
-Redis contains active runtime state and lock ownership. Local JSON backups
-provide atomic recovery for portfolios and trade history. The execution ledger
-records hash-chained events for tamper-evident verification.
-
-An intentional empty trade list is valid after reset. Recovery code must not
-misclassify an empty array as corruption.
-
-Optional Supabase trade mirroring remains isolated from the critical path. The
-daemon must continue to trade in paper mode when Supabase or any LLM provider is
-disabled.
-
-## Reset and Learning Semantics
-
-An admin reset:
-
-1. Closes or removes current paper positions according to the reset path.
-2. Restores the selected paper portfolios to their configured initial capital.
-3. Clears current-strategy learning, opportunity evaluations, and trade reviews.
-4. Preserves older strategy-version records only for audit history.
-5. Records reset provenance.
-
-Old strategy outcomes do not automatically become active rules after reset.
-Current rules are rebuilt from new watched opportunities and closed trades under
-the exact current strategy version. This prevents legacy losses or wins from
-silently governing a materially different strategy.
-
-## Research and Release Gates
-
-Engineering correctness and strategy quality are separate gates.
-
-### Engineering Integrity
-
-- deterministic strategy audit passes;
-- typecheck, lint, and production build pass;
-- replay uses modeled fills and exact fee accounting;
-- stale windows cannot create trades;
-- execution and portfolio ledgers reconcile;
-- current scan and feed health advance in production.
-
-### Research Quality
-
-A replay is not research-valid merely because execution code ran. Candidate
-promotion requires at least:
-
-- 30 closed replay trades;
-- positive net return after modeled fills, fees, and carry;
-- profit factor of at least 1.10.
-
-Even a passing replay is only a candidate result. Production edge requires
-walk-forward evidence and a new post-release paper cohort. The operational
-system can be healthy while profitability remains unproven.
-
-## Authentication and Public Surface
-
-`verifyAuth()` accepts explicit bearer tokens only:
-
-- dashboard administrator token for operator actions;
-- `SPECTATOR` for the bounded read-only GET allowlist;
-- cron/daemon secret for approved machine actions.
-
-Infrastructure-specific headers are not trusted. Secrets, SSH keys, Redis
-dumps, environment files, and VPS origin details must remain outside Git.
-
-Primary spectator endpoints:
-
-```text
-GET /api/user/status
-GET /api/live-prices
-GET /api/chart
-GET /api/signals
+```mermaid
+flowchart TB
+    W["Exit watchdog — 5s"] --> A["Update profit watermark"]
+    A --> B{"Hard stop or<br/>target hit?"}
+    B -->|yes| CLOSE1["Close at that level"]
+    B -->|no| C["decideSwingExit<br/>every threshold in R,<br/>never in dollars"]
+    C --> D{"Confirmed opposite<br/>edge?"}
+    D -->|yes| CLOSE2["Close — SIGNAL_REVERSAL"]
+    D -->|no| E{"Loss past 1.5R<br/>backstop?"}
+    E -->|yes| CLOSE3["Close — price gapped<br/>through the stop"]
+    E -->|no| F{"Peak was >= 2R and<br/>45% given back?"}
+    F -->|yes| CLOSE4["Close — bank the move"]
+    F -->|no| G{"Run >= 2R?"}
+    G -->|yes| TRAIL["Trail 1.15R behind<br/>the watermark"]
+    G -->|no| H{"Run >= 1.2R?"}
+    H -->|yes| LOCK["Lock 0.15R of profit"]
+    H -->|no| HOLD["Hold — do nothing"]
 ```
 
-## Deployment and Verification
+**Weak opposing evidence never moves the stop.** It is recorded for the
+dashboard and blocks scale-ins, but only a *confirmed* opposite edge closes a
+trade. The previous behaviour — tightening to 0.35% of price on any opposing
+signal — stopped trades out inside ordinary crypto noise.
 
-GitHub Actions checks out one commit, runs lint/build/typecheck/audits, creates a
-runtime source manifest, and deploys that exact SHA to the Oracle VPS. The
-workflow preserves Redis, creates a pre-deploy backup, rebuilds application
-containers, and waits for health and scan advancement.
+## How the cross-sectional book rebalances
 
-A release is verified only when all of these agree:
+```mermaid
+flowchart TB
+    A["Rebalance tick — 12h"] --> B{"Drawdown past<br/>25% breaker?"}
+    B -->|yes| HOLD1["Hold the book,<br/>add no new risk"]
+    B -->|no| C["Screen universe<br/>point-in-time"]
+    C --> D{"At least 36<br/>rankable symbols?"}
+    D -->|no| HOLD2["Skip — refuse to trade<br/>a thin cross-section"]
+    D -->|yes| E["Rank by 72h return"]
+    E --> F["Keep held names still<br/>inside rank 24<br/>(hysteresis)"]
+    F --> G["Top up to 12 long<br/>and 12 short"]
+    G --> H{"Book drift<br/>above 2%?"}
+    H -->|no| HOLD3["Hold — churn is not<br/>worth the cost"]
+    H -->|yes| I["Emit only the changes<br/>reductions before increases"]
+    I --> J["Fill each at modelled cost<br/>maker on rebalance,<br/>taker on reduction"]
+```
 
-- GitHub main SHA;
-- deployed API commit metadata;
-- VPS checkout SHA;
-- runtime source manifest;
-- healthy Compose services;
-- advancing scan IDs;
-- fresh-enough feed samples;
-- no new daemon or dashboard errors.
+Hysteresis is not cosmetic. Without it the book replaces ~89% of its notional
+every rebalance purely because names shuffle around the cut-off; with it, ~27%.
+The gap *widens* as costs rise, which is exactly the robustness worth buying.
 
-## Deliberately Removed or Excluded
+## Deployment and safety
 
-- The former `agent/optimize` endpoint was removed because it wrote random
-  parameter drift that the strategy never consumed, attempted to call a
-  nonexistent Python worker, and advertised optimization without research
-  evidence.
-- Real exchange order placement is excluded.
-- Automatic threshold relaxation to create more trades is excluded.
-- Rust or Python migration is deferred until profiling identifies a real
-  throughput or numerical bottleneck. Free public feeds and a one-minute scan
-  remain the limiting factors, not TypeScript execution speed.
+```mermaid
+flowchart LR
+    PUSH["git push main"] --> CI["GitHub Actions"]
+    CI --> G1["lint"] --> G2["build"] --> G3["tsc"] --> G4["audit:strategy<br/>94 invariant checks"] --> G5["ledger verify"] --> G6["source manifest"]
+    G6 --> SNAP["Snapshot on VPS:<br/>commit, worktree patch,<br/>runtime tarball, redis dump"]
+    SNAP --> BUILD["Rebuild containers"]
+    BUILD --> VERIFY["Health + scan advancement<br/>+ source parity + image revision"]
+    VERIFY -->|fail| RED["Deploy reported failed"]
+    VERIFY -->|pass| GREEN["Release recorded"]
+```
 
-## Source of Truth
+**A push to `main` deploys straight to production.** There is no staging step.
+The gates above are what make that safe — they have already refused one bad
+release, and the snapshot means any deploy is reversible.
 
-| Concern | Primary implementation |
+Two manual workflows sit alongside it, both dry-run by default:
+
+| Workflow | Purpose |
 |---|---|
-| Market feeds and candles | `src/lib/market.ts`, `src/lib/data/websocketDataMesh.ts` |
-| Signal and entry paths | `src/lib/swingEngine.ts` |
-| Admission and margin | `src/lib/trading/tradeAdmission.ts` |
-| Execution costs | `src/lib/trading/executionCostModel.ts` |
-| Portfolio budgets | `src/lib/trading/portfolioRiskBudget.ts`, `src/lib/trading/portfolioGuards.ts` |
-| Learning | `src/lib/trading/localLearning.ts`, `src/lib/trading/opportunityJournal.ts`, `src/lib/trading/tradeReviewJournal.ts` |
-| Runtime writer | `src/daemon/swingDaemon.ts` |
-| Replay and research | `src/lib/backtest/replayEngine.ts`, `src/lib/research/walkForward.ts` |
-| Deployment | `docker-compose.yml`, `.github/workflows/deploy.yml`, `scripts/vps-deploy-check.sh` |
+| `Reset Paper Trading Arena` | Zero all three portfolios to the same capital on the same date. Snapshots Redis first, stops the daemons so a mid-scan save cannot resurrect old state. Requires typing `RESET`. |
+| `VPS Maintenance` | Reclaim Docker disk, or restore a portfolio from any snapshot. The restore scans backwards for one that still holds trade history rather than blindly taking the newest. |
+
+## Where state lives
+
+| Namespace | Owner | Contents |
+|---|---|---|
+| `ai:*` | swing daemon | portfolio, trades, signals |
+| `user:*` | manual entry via dashboard | portfolio, trades |
+| `xsec:*` | cross-sectional daemon | book portfolio, fills, rebalance snapshot, live equity |
+| `swing:*` | swing daemon | scan snapshot, cooldowns, lifetime counters |
+| `perp:*` | cross-sectional daemon | ticker and kline caches, all TTL'd |
+| `learning:<version>:*` | both | rules derived from closed trades, namespaced by strategy version |
+| `./data` | both | JSON backups, hash-chained execution ledger, deploy and reset snapshots |
+
+The three portfolios are deliberately separate accounts. The dashboard reports
+them separately for the same reason — summing two independent $10,000 accounts
+would misrepresent the comparison against the human portfolio.
+
+## Reading the dashboard
+
+| Panel | Scope | What "healthy" looks like |
+|---|---|---|
+| AI Trading Agent card | both strategies, broken out | swing and book P&L shown on separate lines |
+| Cross-Sectional Book | book only | 24 positions, 12L/12S, net exposure near 0%, gross ~1.0x |
+| Autonomous Swing Scan | swing only | scan counter advancing every ~60s |
+| Swing Engine NLV / Balances / Performance | **swing only** | labelled as such; the book is not included |
+| Terminal telemetry | both | `[SWING SCAN]` every 60s, `[XSEC] rebalance` every 12h |
+
+Long quiet stretches are normal. The book rebalances twice a day; the swing
+engine is designed to decline most setups. "Nothing changed since I last
+looked" is usually correct behaviour, not a fault.
+
+Genuine fault signals: book positions at 0 past a rebalance window, net
+exposure drifting past ±10%, a frozen scan counter, or `[XSEC]` errors in
+telemetry.
+
+## Verifying any claim in this repository
+
+Nothing here asks to be taken on trust:
+
+```bash
+npm run replay:xsec        # cross-sectional book over 12 months of Bybit history
+npm run replay:strategy    # swing engine, same cost model
+npm run audit:strategy     # 94 invariant checks, also gates every deploy
+npm run ledger:verify      # hash chain integrity
+```
+
+## What this system does not claim
+
+A 12-month replay showing Sharpe 2.76 will not repeat live. Backtested Sharpe
+is almost always optimistic, the sample covers one regime, and a look-ahead
+bias had to be corrected mid-study before the number could be trusted at all.
+Treat the direction and the robustness as the finding, and the magnitude as a
+ceiling. Whether the strategy earns its keep is a question only forward time
+answers.

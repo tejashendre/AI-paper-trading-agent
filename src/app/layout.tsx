@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "BTC Quant Trader | Algorithmic Trading System",
+    title: "Autonomous Paper Trading Agent | Multi-Strategy Simulation",
     description: "Multi-timeframe algorithmic Bitcoin trading system with technical analysis confluence scoring",
 };
 
