@@ -39,3 +39,6 @@ ssh-key-*.key*
 *.tar.gz
 *.zip
 .replay-cache/
+
+# personal working notes, not part of the system
+docs/notes/

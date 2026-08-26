@@ -1,0 +1,125 @@
+name: VPS Maintenance
+
+# Manual only. Two jobs that need shell access on the box but should not need
+# a human at a terminal: reclaiming Docker disk, and restoring a portfolio from
+# one of the snapshots the deploy and reset workflows leave behind.
+on:
+  workflow_dispatch:
+    inputs:
+      prune_docker:
+        description: 'Reclaim Docker build cache, unused images and stopped containers.'
+        type: boolean
+        required: false
+        default: true
+      restore_human_portfolio:
+        description: 'Restore the human portfolio and its trade history from the newest pre-reset snapshot.'
+        type: boolean
+        required: false
+        default: false
+      dry_run:
+        description: 'Report only. Nothing is pruned or restored.'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run maintenance on Oracle VPS
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 20m
+          script: |
+            set -eu
+            cd /home/ubuntu/version-6
+            DRY="${{ inputs.dry_run }}"
+
+            echo "=================== DISK BEFORE ==================="
+            df -h . | tail -1
+            docker system df
+
+            # ---------------------------------------------------------------
+            # Restore the human portfolio from the newest pre-reset snapshot.
+            # ---------------------------------------------------------------
+            if [ "${{ inputs.restore_human_portfolio }}" = "true" ]; then
+              echo ""
+              echo "=================== PORTFOLIO RESTORE ==================="
+              SNAP="$(ls -1dt data/reset-backups/*/ 2>/dev/null | head -1 || true)"
+              if [ -z "$SNAP" ] || [ ! -f "${SNAP}redis-dump.rdb" ]; then
+                echo "No reset snapshot with a redis-dump.rdb was found under data/reset-backups/."
+                echo "Nothing to restore from; skipping."
+              else
+                echo "Using snapshot: $SNAP"
+                WORK="$(mktemp -d)"
+                cp "${SNAP}redis-dump.rdb" "$WORK/dump.rdb"
+                chmod 644 "$WORK/dump.rdb"
+
+                # Load the snapshot into a throwaway Redis so the live instance
+                # is never asked to import a whole historical dataset.
+                docker rm -f snapshot-redis >/dev/null 2>&1 || true
+                docker run --rm -d --name snapshot-redis \
+                  -v "$WORK":/data redis:7-alpine \
+                  redis-server --dbfilename dump.rdb --dir /data >/dev/null
+                sleep 4
+
+                echo "--- values in the snapshot ---"
+                docker exec snapshot-redis redis-cli GET user:portfolio | head -c 400 || true
+                echo ""
+                TRADE_COUNT="$(docker exec snapshot-redis redis-cli LLEN user:trades || echo 0)"
+                echo "human trade history entries: $TRADE_COUNT"
+
+                if [ "$DRY" = "true" ]; then
+                  echo "Dry run: the values above would be written to the live Redis."
+                else
+                  # -x reads the value from stdin, so JSON braces and quotes are
+                  # never re-parsed by the shell.
+                  docker exec snapshot-redis redis-cli GET user:portfolio > "$WORK/user_portfolio.json"
+                  if [ -s "$WORK/user_portfolio.json" ]; then
+                    docker exec -i quant-redis redis-cli -x SET user:portfolio < "$WORK/user_portfolio.json"
+                    echo "user:portfolio restored."
+                  else
+                    echo "Snapshot had no user:portfolio; leaving the live value alone."
+                  fi
+
+                  if [ "$TRADE_COUNT" -gt 0 ]; then
+                    # Rebuild the list oldest-first so LPUSH leaves newest at
+                    # head, which is the order the app reads.
+                    docker exec quant-redis redis-cli DEL user:trades >/dev/null
+                    docker exec snapshot-redis redis-cli LRANGE user:trades 0 -1 > "$WORK/trades.txt"
+                    tac "$WORK/trades.txt" | while IFS= read -r line; do
+                      [ -z "$line" ] && continue
+                      printf '%s' "$line" | docker exec -i quant-redis redis-cli -x LPUSH user:trades >/dev/null
+                    done
+                    echo "user:trades restored: $(docker exec quant-redis redis-cli LLEN user:trades) entries."
+                  fi
+                fi
+
+                docker rm -f snapshot-redis >/dev/null 2>&1 || true
+                rm -rf "$WORK"
+              fi
+            fi
+
+            # ---------------------------------------------------------------
+            # Reclaim Docker disk. Never touches volumes, so redis_data and the
+            # project data directory are safe.
+            # ---------------------------------------------------------------
+            if [ "${{ inputs.prune_docker }}" = "true" ]; then
+              echo ""
+              echo "=================== DOCKER PRUNE ==================="
+              if [ "$DRY" = "true" ]; then
+                sh scripts/vps-maintenance.sh --dry-run
+              else
+                sh scripts/vps-maintenance.sh --apply
+              fi
+            fi
+
+            echo ""
+            echo "=================== DISK AFTER ==================="
+            df -h . | tail -1
+            docker system df
+            docker compose ps
