@@ -60,11 +60,11 @@ jobs:
               echo "--- scanning snapshots for a human portfolio with trades ---"
               for CAND in $(ls -1dt data/reset-backups/*/ data/deploy-backups/*/ 2>/dev/null); do
                 if [ ! -f "${CAND}redis-dump.rdb" ]; then continue; fi
-                rm -f "$WORK/dump.rdb"
+                WORK="$(mktemp -d)"
                 cp "${CAND}redis-dump.rdb" "$WORK/dump.rdb"
                 chmod 644 "$WORK/dump.rdb"
                 docker rm -f snapshot-redis >/dev/null 2>&1 || true
-                docker run --rm -d --name snapshot-redis -v "$WORK":/data redis:7-alpine redis-server --dbfilename dump.rdb --dir /data >/dev/null
+                docker run --rm -d --name snapshot-redis --user "$(id -u):$(id -g)" -v "$WORK":/data redis:7-alpine redis-server --dbfilename dump.rdb --dir /data >/dev/null
                 sleep 3
                 CAND_TRADES="$(docker exec snapshot-redis redis-cli LLEN user:trades 2>/dev/null || echo 0)"
                 CAND_USD="$(docker exec snapshot-redis redis-cli GET user:portfolio 2>/dev/null | grep -o '"usd":[0-9.]*' | head -1 || true)"
@@ -84,11 +84,11 @@ jobs:
               else
                 echo ""
                 echo "Using snapshot: $SNAP"
-                rm -f "$WORK/dump.rdb"
+                WORK="$(mktemp -d)"
                 cp "${SNAP}redis-dump.rdb" "$WORK/dump.rdb"
                 chmod 644 "$WORK/dump.rdb"
                 docker rm -f snapshot-redis >/dev/null 2>&1 || true
-                docker run --rm -d --name snapshot-redis -v "$WORK":/data redis:7-alpine redis-server --dbfilename dump.rdb --dir /data >/dev/null
+                docker run --rm -d --name snapshot-redis --user "$(id -u):$(id -g)" -v "$WORK":/data redis:7-alpine redis-server --dbfilename dump.rdb --dir /data >/dev/null
                 sleep 4
 
                 echo "--- snapshot contents ---"
