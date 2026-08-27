@@ -36,6 +36,7 @@ import { analyseEdgeDecay, MIN_WINDOWS_FOR_VERDICT } from "../src/lib/research/e
 import { estimateHalfSpreadBps, estimateOneWayCostBps } from "../src/lib/execution/liquidityCost";
 import { estimateBookCapacity, estimateStrategyCapacity } from "../src/lib/execution/capacity";
 import { compareSleeves, MIN_OVERLAP, pearson } from "../src/lib/research/sleeveCorrelation";
+import { analyseRegimeConditioning, MIN_PERIODS_PER_BUCKET } from "../src/lib/research/regimeConditioning";
 import { DEFAULT_UNIVERSE } from "../src/lib/strategy/crossSectionalMomentum";
 import {
   CRYPTO_EXECUTION_PROVIDER,
@@ -1984,6 +1985,55 @@ function auditSleeveCorrelation(): AuditResult[] {
   return out;
 }
 
+/**
+ * The regime test decides whether a displayed label is a forecast or
+ * decoration. Its dangerous failure is declaring a noise label informative,
+ * because that invites conditioning trades on nothing.
+ */
+function auditRegimeConditioning(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const n = MIN_PERIODS_PER_BUCKET * 4;
+  const wobble = (i: number) => Math.sin(i * 12.9898) * 0.02;
+
+  // Labels assigned without regard to the returns must never be called
+  // informative, however the returns happen to fall.
+  const noiseLabels = Array.from({ length: n }, (_, i) => (i % 3 === 0 ? "TRENDING" : i % 3 === 1 ? "CHOPPY" : "MEAN_REVERTING"));
+  const noiseReturns = Array.from({ length: n }, (_, i) => wobble(i));
+  const noise = analyseRegimeConditioning({ labels: noiseLabels, returns: noiseReturns });
+  out.push(noise.verdict === "REGIME_IS_DECORATIVE"
+    ? result("PASS", "an unrelated label is called decorative", `p = ${noise.pValue.toFixed(3)} across ${noise.buckets.length} buckets`)
+    : result("FAIL", "an unrelated label is called decorative", `labels unrelated to returns were graded ${noise.verdict} at p = ${noise.pValue.toFixed(3)}`));
+
+  // A label that genuinely separates outcomes must be detected, or the test
+  // rejects everything and carries no information.
+  const realLabels = Array.from({ length: n }, (_, i) => (i % 2 === 0 ? "GOOD" : "BAD"));
+  const realReturns = realLabels.map((label, i) => (label === "GOOD" ? 0.01 : -0.01) + wobble(i) * 0.1);
+  const real = analyseRegimeConditioning({ labels: realLabels, returns: realReturns });
+  out.push(real.verdict === "REGIME_IS_INFORMATIVE"
+    ? result("PASS", "a genuinely predictive label is detected", `${real.spreadBps.toFixed(0)}bps spread, p = ${real.pValue.toFixed(4)}`)
+    : result("FAIL", "a genuinely predictive label is detected", `a label separating +100bps from -100bps was graded ${real.verdict}`));
+
+  // Thin buckets must refuse rather than guess.
+  const thin = analyseRegimeConditioning({
+    labels: realLabels.slice(0, 10),
+    returns: realReturns.slice(0, 10),
+  });
+  out.push(thin.verdict === "INSUFFICIENT_DATA"
+    ? result("PASS", "thin regime buckets refuse a verdict", `${MIN_PERIODS_PER_BUCKET} periods per bucket required`)
+    : result("FAIL", "thin regime buckets refuse a verdict", `graded ${thin.verdict} on 5 periods per bucket`));
+
+  // Unequal variances must not inflate significance. Two buckets with the same
+  // mean but very different spreads is the case Student's t gets wrong.
+  const skewLabels = Array.from({ length: n }, (_, i) => (i % 2 === 0 ? "CALM" : "WILD"));
+  const skewReturns = skewLabels.map((label, i) => (label === "CALM" ? wobble(i) * 0.05 : wobble(i) * 5));
+  const skew = analyseRegimeConditioning({ labels: skewLabels, returns: skewReturns });
+  out.push(skew.verdict === "REGIME_IS_DECORATIVE"
+    ? result("PASS", "unequal variance does not fake significance", `Welch t = ${skew.welchT.toFixed(2)}, p = ${skew.pValue.toFixed(3)}`)
+    : result("FAIL", "unequal variance does not fake significance", `same-mean buckets with 100x variance difference were graded ${skew.verdict}`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2296,6 +2346,7 @@ async function main() {
     ...auditLiquidityCost(),
     ...auditCapacity(),
     ...auditSleeveCorrelation(),
+    ...auditRegimeConditioning(),
   ];
 
   try {
