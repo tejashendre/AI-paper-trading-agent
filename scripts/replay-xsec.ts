@@ -22,6 +22,8 @@ import {
 import { deflatedSharpeRatio, returnMoments } from "@/lib/research/deflatedSharpe";
 import { analyseEdgeDecay, renderEdgePlot } from "@/lib/research/edgeDecay";
 import { estimateOneWayCostBps } from "@/lib/execution/liquidityCost";
+import { analyseRegimeConditioning } from "@/lib/research/regimeConditioning";
+import { hurstExponent } from "@/lib/statistics";
 
 const CACHE = path.join(process.cwd(), ".replay-cache", "perps");
 const HOUR = 3600;
@@ -376,6 +378,39 @@ async function main() {
     for (const line of renderEdgePlot(decay.windows)) console.log(line);
     console.log("");
     console.log(`${decay.verdict}: ${decay.explanation}`);
+
+    // Does the regime label the dashboard displays predict anything? Uses the
+    // same Hurst estimator and the same thresholds production classifies with,
+    // so the answer applies to the label users actually see.
+    const reference = series.get("BTCUSDT") ?? series.get(symbols[0]);
+    if (reference) {
+      const labels: string[] = [];
+      const labelled: number[] = [];
+      for (let i = 0; i < stamps.length; i++) {
+        const t = stamps[i];
+        const window: number[] = [];
+        for (let h = 200; h >= 1; h--) {
+          const price = reference.get(t - h * HOUR);
+          if (price !== undefined) window.push(price);
+        }
+        if (window.length < 60) continue;
+        const h = hurstExponent(window, 20);
+        labels.push(h > 0.55 ? "TRENDING" : h < 0.45 ? "MEAN_REVERTING" : "CHOPPY");
+        labelled.push(periodReturns[i]);
+      }
+      const regime = analyseRegimeConditioning({ labels, returns: labelled });
+      console.log("");
+      console.log("Regime conditioning");
+      for (const bucket of regime.buckets) {
+        console.log(
+          `  ${bucket.regime.padEnd(15)}${String(bucket.periods).padStart(5)} periods  ` +
+          `${bucket.meanBps >= 0 ? "+" : ""}${bucket.meanBps.toFixed(1)}bps  t=${bucket.tStat.toFixed(2)}  ` +
+          `hit ${(bucket.hitRate * 100).toFixed(0)}%`
+        );
+      }
+      console.log("");
+      console.log(`${regime.verdict}: ${regime.explanation}`);
+    }
 
     console.log("");
     console.log(deflated.verdict);
