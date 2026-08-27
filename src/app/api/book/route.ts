@@ -9,6 +9,7 @@ import {
 import { DEFAULT_STRATEGY, DEFAULT_UNIVERSE } from "@/lib/strategy/crossSectionalMomentum";
 import { RECONCILIATION_VERDICT_KEY, CostVerdict } from "@/lib/execution/costModelReconciliation";
 import { EdgeVerdict } from "@/lib/research/edgeDecay";
+import { estimateBookCapacity } from "@/lib/execution/capacity";
 
 interface StoredEdgeVerdict {
   at: string;
@@ -69,6 +70,13 @@ export async function GET() {
     }).sort((a, b) => b.unrealizedUsd - a.unrealizedUsd);
 
     const equity = bookEquityUsd(portfolio, prices);
+    // A return percentage means nothing above the size at which the trades
+    // stop being fillable, so the ceiling is reported alongside it.
+    const capacity = estimateBookCapacity({
+      weights: new Map(Object.values(portfolio.positions).map((p) => [p.symbol, p.weight])),
+      prices,
+      currentEquityUsd: equity,
+    });
     const grossNotional = positions.reduce((sum, p) => sum + p.notionalUsd, 0);
     const netNotional = positions.reduce((sum, p) => sum + (p.side === "LONG" ? p.notionalUsd : -p.notionalUsd), 0);
 
@@ -122,6 +130,7 @@ export async function GET() {
       // Rolling re-validation of the live book against its own history.
       // Null until enough rebalance periods have accumulated to judge.
       edgeCheck: edgeVerdict,
+      capacity,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
