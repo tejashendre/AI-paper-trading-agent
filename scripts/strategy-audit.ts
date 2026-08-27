@@ -33,6 +33,8 @@ import {
   returnMoments,
 } from "../src/lib/research/deflatedSharpe";
 import { analyseEdgeDecay, MIN_WINDOWS_FOR_VERDICT } from "../src/lib/research/edgeDecay";
+import { estimateHalfSpreadBps, estimateOneWayCostBps } from "../src/lib/execution/liquidityCost";
+import { DEFAULT_UNIVERSE } from "../src/lib/strategy/crossSectionalMomentum";
 import {
   CRYPTO_EXECUTION_PROVIDER,
   CRYPTO_EXECUTION_SOURCE,
@@ -1795,6 +1797,47 @@ function auditEdgeDecay(): AuditResult[] {
   return out;
 }
 
+/**
+ * The backtest cost curve decides whether adding illiquid names to the
+ * universe looks profitable. If it ever stops penalising thin markets, every
+ * breadth experiment run against it becomes worthless.
+ */
+function auditLiquidityCost(): AuditResult[] {
+  const out: AuditResult[] = [];
+
+  const ladder = [500e3, 1.5e6, 3e6, 7e6, 15e6, 50e6, 500e6];
+  const spreads = ladder.map(estimateHalfSpreadBps);
+  const monotone = spreads.every((v, i) => i === 0 || v <= spreads[i - 1]);
+  out.push(monotone
+    ? result("PASS", "thinner markets are never charged less", ladder.map((t, i) => `$${(t / 1e6).toFixed(1)}M:${spreads[i]}bps`).join(" "))
+    : result("FAIL", "thinner markets are never charged less", `spread curve is not monotone: ${spreads.join(", ")}`));
+
+  // The gap has to be large enough to actually bite. A curve that charges a
+  // $500k market a tenth of a basis point more than a $500M one would pass a
+  // monotonicity check while still making breadth look free.
+  const thin = estimateOneWayCostBps(500e3);
+  const deep = estimateOneWayCostBps(500e6);
+  out.push(thin >= deep * 2
+    ? result("PASS", "the liquidity penalty is material", `$500k market costs ${thin.toFixed(1)}bps one-way vs ${deep.toFixed(1)}bps for a $500M market`)
+    : result("FAIL", "the liquidity penalty is material", `${thin.toFixed(1)}bps vs ${deep.toFixed(1)}bps is too small a gap to influence a universe test`));
+
+  // Production screens at $10M. The replay must not be cheaper than what the
+  // live book has actually been assuming, or backtests flatter the live book.
+  const atProductionFloor = estimateOneWayCostBps(DEFAULT_UNIVERSE.minTurnover24hUsd);
+  out.push(atProductionFloor >= 6
+    ? result("PASS", "the replay is not cheaper than the live assumption", `${atProductionFloor.toFixed(1)}bps at the $${(DEFAULT_UNIVERSE.minTurnover24hUsd / 1e6).toFixed(0)}M production floor, against the 6bps the live book assumed`)
+    : result("WARN", "the replay is not cheaper than the live assumption", `${atProductionFloor.toFixed(1)}bps at the production floor undercuts the 6bps live assumption`));
+
+  // Zero and nonsense turnover must land on the most expensive bucket rather
+  // than falling through to free.
+  const zero = estimateOneWayCostBps(0);
+  out.push(zero >= thin
+    ? result("PASS", "unknown liquidity is charged the worst rate", `${zero.toFixed(1)}bps for zero reported turnover`)
+    : result("FAIL", "unknown liquidity is charged the worst rate", `${zero.toFixed(1)}bps is cheaper than the thinnest measured bucket`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2104,6 +2147,7 @@ async function main() {
     ...auditReplayEngine(),
     ...auditDeflatedSharpe(),
     ...auditEdgeDecay(),
+    ...auditLiquidityCost(),
   ];
 
   try {
