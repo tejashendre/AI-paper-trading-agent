@@ -21,6 +21,15 @@ interface BookPosition {
   unrealizedPercent: number;
 }
 
+interface CostVerdict {
+  sampleSize: number;
+  totalRatio: number | null;
+  modelTotalBps: number;
+  observedTotalBps: number;
+  verdict: "INSUFFICIENT_DATA" | "MODEL_HONEST" | "MODEL_OPTIMISTIC" | "MODEL_CONSERVATIVE";
+  message: string;
+}
+
 interface BookResponse {
   strategy: { name: string; version: string; lookbackHours: number; holdHours: number; bookSize: number; rankBuffer: number; universeCap: number };
   performance: {
@@ -31,10 +40,11 @@ interface BookResponse {
   exposure: { openPositions: number; longs: number; shorts: number; grossExposure: number; netExposure: number };
   positions: BookPosition[];
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
+  costModel: CostVerdict | null;
   error?: string;
 }
 
-export default function CrossSectionalBook({ isDark }: { isDark: boolean }) {
+export default function CrossSectionalBook({ isDark, plainLanguage = false }: { isDark: boolean; plainLanguage?: boolean }) {
   const [data, setData] = useState<BookResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -94,12 +104,28 @@ export default function CrossSectionalBook({ isDark }: { isDark: boolean }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Cross-Sectional Book</div>
-          <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-            Long the {strategy.bookSize} strongest perps, short the {strategy.bookSize} weakest, dollar-neutral.
-          </p>
-          <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
-            {strategy.lookbackHours}h momentum · rebalanced every {strategy.holdHours}h · ranked from up to {strategy.universeCap} markets
-          </p>
+          {plainLanguage ? (
+            <>
+              <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                Every {strategy.holdHours} hours the bot scores up to {strategy.universeCap} crypto markets on how
+                much they moved in the last {strategy.lookbackHours} hours. It buys the {strategy.bookSize} strongest
+                and bets against the {strategy.bookSize} weakest.
+              </p>
+              <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                Because it buys and sells the same amount of money, it can profit whether crypto goes up or down —
+                what matters is whether the strong keep beating the weak.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                Long the {strategy.bookSize} strongest perps, short the {strategy.bookSize} weakest, dollar-neutral.
+              </p>
+              <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                {strategy.lookbackHours}h momentum · rebalanced every {strategy.holdHours}h · ranked from up to {strategy.universeCap} markets
+              </p>
+            </>
+          )}
         </div>
         <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border whitespace-nowrap ${
           isDark ? "border-emerald-900/40 text-emerald-300 bg-emerald-950/20" : "border-emerald-200 text-emerald-700 bg-emerald-50"
@@ -124,10 +150,15 @@ export default function CrossSectionalBook({ isDark }: { isDark: boolean }) {
           <div className={`text-sm font-bold font-mono ${textPrimary}`}>{performance.maxDrawdownPercent.toFixed(2)}%</div>
         </div>
         <div className={`p-2 rounded-lg border ${bgSub}`}>
-          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Net Exposure</div>
+          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>{plainLanguage ? "Market Bet" : "Net Exposure"}</div>
           <div className={`text-sm font-bold font-mono ${Math.abs(exposure.netExposure) < 0.1 ? textPrimary : "text-amber-400"}`}>
             {(exposure.netExposure * 100).toFixed(1)}%
           </div>
+          {plainLanguage && (
+            <div className={`text-[7px] font-mono ${textMuted}`}>
+              {Math.abs(exposure.netExposure) < 0.1 ? "balanced — not betting on direction" : "leaning one way"}
+            </div>
+          )}
         </div>
       </div>
 
@@ -140,6 +171,37 @@ export default function CrossSectionalBook({ isDark }: { isDark: boolean }) {
         <span>funding {money(-performance.fundingPaidUsd)}</span>
         <span>{performance.totalRebalances} rebalances</span>
       </div>
+
+      {data.costModel && (
+        <div className={`mt-3 p-2 rounded-lg border ${
+          data.costModel.verdict === "MODEL_OPTIMISTIC"
+            ? (isDark ? "border-rose-900/50 bg-rose-950/20" : "border-rose-200 bg-rose-50")
+            : data.costModel.verdict === "MODEL_HONEST"
+              ? (isDark ? "border-emerald-900/40 bg-emerald-950/20" : "border-emerald-200 bg-emerald-50")
+              : bgSub
+        }`}>
+          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>
+            {plainLanguage ? "Are the cost estimates realistic?" : "Cost model reconciliation"}
+          </div>
+          <div className={`text-[10px] font-mono mt-0.5 ${textPrimary}`}>
+            {plainLanguage
+              ? (data.costModel.verdict === "INSUFFICIENT_DATA"
+                  ? `Still measuring. ${data.costModel.sampleSize} trades checked so far.`
+                  : data.costModel.verdict === "MODEL_HONEST"
+                    ? "Yes. What trading actually costs matches what the bot assumed, so its past results can be trusted."
+                    : data.costModel.verdict === "MODEL_OPTIMISTIC"
+                      ? "No — trading is costing more than the bot assumed, so its past results look better than reality."
+                      : "Trading is cheaper than the bot assumed, so its past results understate what it can do.")
+              : data.costModel.message}
+          </div>
+          {data.costModel.totalRatio !== null && (
+            <div className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+              observed {data.costModel.observedTotalBps.toFixed(1)}bps vs modelled {data.costModel.modelTotalBps.toFixed(1)}bps
+              {" "}({data.costModel.totalRatio.toFixed(2)}x) · {data.costModel.sampleSize} fills measured
+            </div>
+          )}
+        </div>
+      )}
 
       {lastRebalance?.at && (
         <p className={`text-[9px] font-mono mt-2 ${textMuted}`}>

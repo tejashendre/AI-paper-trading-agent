@@ -325,6 +325,11 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
   const [showActivityDetails, setShowActivityDetails] = useState(true);
+  // Plain-language mode. The engine already computes readable sentences on
+  // every scan (simpleStatus / simpleReason / nextStep) and the UI was showing
+  // the raw scores instead, which made the dashboard unreadable to anyone who
+  // had not built it.
+  const [plainLanguage, setPlainLanguage] = useState(false);
   // The cross-sectional book is a separate paper account with its own daemon.
   // Without this the headline cards report only the swing engine, so a live
   // book of 24 positions reads on screen as "no activity" — which is exactly
@@ -345,6 +350,15 @@ function DashboardContent({ secret }: { secret: string }) {
   }, [secret]);
 
   // Load theme preference from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("dashboard:plainLanguage");
+      if (stored !== null) setPlainLanguage(stored === "true");
+    } catch {
+      // A blocked storage API must not stop the dashboard rendering.
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const loadBook = async () => {
@@ -1358,10 +1372,28 @@ function DashboardContent({ secret }: { secret: string }) {
                   <div className={`p-4 rounded-xl border ${bgCard} flex items-start gap-3`}>
                     <Info size={16} className="text-blue-500 mt-0.5 shrink-0" />
                     <div>
-                      <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Latest AI Decision Engine Status</div>
-                      <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-                        <span className="font-bold text-blue-500 uppercase">{signals.composite.action}</span> - {signals.composite.reasoning}
-                      </p>
+                      <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>
+                        {plainLanguage ? "What the bot is doing right now" : "Latest AI Decision Engine Status"}
+                      </div>
+                      {plainLanguage ? (
+                        <>
+                          <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                            {plainScanStatus(data?.swingScan?.results?.find((r: any) => r.asset === activeAsset))}
+                          </p>
+                          <p className={`text-[10px] font-mono mt-1 ${textMuted}`}>
+                            {plainScanReason(data?.swingScan?.results?.find((r: any) => r.asset === activeAsset))}
+                          </p>
+                          {data?.swingScan?.results?.find((r: any) => r.asset === activeAsset)?.nextStep && (
+                            <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                              Next: {data.swingScan.results.find((r: any) => r.asset === activeAsset).nextStep}
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
+                          <span className="font-bold text-blue-500 uppercase">{signals.composite.action}</span> - {signals.composite.reasoning}
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1515,7 +1547,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 )}
 
-                {viewMode === "ai" && <CrossSectionalBook isDark={isDark} />}
+                {viewMode === "ai" && <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />}
 
                 {viewMode === "ai" && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
@@ -2121,9 +2153,25 @@ function DashboardContent({ secret }: { secret: string }) {
 
             {/* Hedge-Fund Portfolio Performance Metrics Panel */}
             <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
-              <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>
-                Performance Statistics
-              </h2>
+              <div className={`flex items-center justify-between border-b ${borderCol} pb-3`}>
+                <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>
+                  Performance Statistics
+                </h2>
+                <button
+                  onClick={() => {
+                    const next = !plainLanguage;
+                    setPlainLanguage(next);
+                    try { window.localStorage.setItem("dashboard:plainLanguage", String(next)); } catch {}
+                  }}
+                  className={`text-[8px] font-mono font-bold px-2 py-1 rounded border transition ${
+                    plainLanguage
+                      ? (isDark ? "bg-indigo-950/40 text-indigo-300 border-indigo-800" : "bg-indigo-50 text-indigo-700 border-indigo-200")
+                      : (isDark ? "bg-[#12121a] text-slate-400 border-[#1f2937]" : "bg-[#f8fafc] text-[#475569] border-[#e2e8f0]")
+                  }`}
+                >
+                  {plainLanguage ? "PLAIN ENGLISH: ON" : "PLAIN ENGLISH: OFF"}
+                </button>
+              </div>
               <p className={`text-[9px] font-mono ${textMuted}`}>Swing engine only, closed trades only. The cross-sectional book keeps its own equity and is reported in its own panel.</p>
               <div className="grid grid-cols-2 gap-3">
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
