@@ -20,9 +20,11 @@ import {
   applyBookPlan,
   bookEquityUsd,
   currentWeights,
+  getEquityCurve,
   loadBookPortfolio,
   logRebalance,
   recordBookTrades,
+  recordEquityPoint,
   recordReconciliation,
   saveBookPortfolio,
   settleFunding,
@@ -31,6 +33,7 @@ import {
   buildCostVerdict,
   settlePendingSlippageSamples,
 } from "../lib/execution/costModelReconciliation";
+import { summariseRealisedEdge } from "../lib/research/edgeDecay";
 
 const CONFIG = DEFAULT_STRATEGY;
 const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
@@ -39,6 +42,13 @@ const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
 const EQUITY_KEY = "xsec:equity";
 const LOCK_KEY = "xsec:lock";
+const EDGE_VERDICT_KEY = "xsec:edgeVerdict";
+/**
+ * Rolling window for live re-validation, in rebalance periods. Thirty 12-hour
+ * periods is roughly a fortnight of trading: long enough that a couple of bad
+ * days do not dominate, short enough to notice decay while it matters.
+ */
+const EDGE_WINDOW_PERIODS = 30;
 
 /** Circuit breaker: stop opening new risk if the book bleeds this far. */
 const MAX_DRAWDOWN_PERCENT = 25;
@@ -80,6 +90,24 @@ async function runRebalance() {
         return;
       }
 
+      // Sample equity at the period boundary, before trading, so the return
+      // series describes what the last period's book earned rather than what
+      // this period's orders cost.
+      await recordEquityPoint(bookEquityUsd(portfolio, snapshot.prices));
+      const edge = await reviewEdge();
+      if (edge?.shouldHalt) {
+        await Logger.warn(
+          `[XSEC] edge re-validation stood the book down: ${edge.explanation} ` +
+          `Holding the existing positions and adding no new risk until a window comes back positive.`
+        );
+        // Deliberately a hold rather than an automatic liquidation. A single
+        // negative window is a weak signal on a strategy this noisy, and
+        // flattening on it would also deadlock the recovery test: a flat book
+        // produces flat returns, which can never clear the bar to resume.
+        // Unwinding is left to the owner, who can see this on the dashboard.
+        return;
+      }
+
       const weights = currentWeights(portfolio, snapshot.prices);
       const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: weights, config: CONFIG });
       const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config: CONFIG });
@@ -94,6 +122,36 @@ async function runRebalance() {
     await Logger.error(`[XSEC] rebalance failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     rebalancing = false;
+  }
+}
+
+/**
+ * Re-run the edge test on the book's own realised returns and publish the
+ * verdict. A backtest is a claim about the past; this is the running check
+ * that the claim still holds.
+ */
+async function reviewEdge() {
+  try {
+    const curve = await getEquityCurve();
+    if (curve.length < 4) return null;
+    const report = summariseRealisedEdge(curve, CONFIG.holdHours, EDGE_WINDOW_PERIODS);
+    await getRedis().set(EDGE_VERDICT_KEY, {
+      at: new Date().toISOString(),
+      verdict: report.verdict,
+      explanation: report.explanation,
+      baselineMeanBps: report.baselineMeanBps,
+      recentMeanBps: report.recentMeanBps,
+      retentionRatio: report.retentionRatio,
+      trendBpsPerWindow: report.trendBpsPerWindow,
+      windowPeriods: EDGE_WINDOW_PERIODS,
+      windowsAnalysed: report.windows.length,
+      periodsRecorded: curve.length,
+      shouldHalt: report.shouldHalt,
+    });
+    return report;
+  } catch (error) {
+    await Logger.warn(`[XSEC] edge re-validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
 }
 

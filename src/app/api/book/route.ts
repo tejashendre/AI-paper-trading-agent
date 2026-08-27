@@ -8,6 +8,21 @@ import {
 } from "@/lib/execution/bookRebalancer";
 import { DEFAULT_STRATEGY, DEFAULT_UNIVERSE } from "@/lib/strategy/crossSectionalMomentum";
 import { RECONCILIATION_VERDICT_KEY, CostVerdict } from "@/lib/execution/costModelReconciliation";
+import { EdgeVerdict } from "@/lib/research/edgeDecay";
+
+interface StoredEdgeVerdict {
+  at: string;
+  verdict: EdgeVerdict;
+  explanation: string;
+  baselineMeanBps: number;
+  recentMeanBps: number;
+  retentionRatio: number | null;
+  trendBpsPerWindow: number;
+  windowPeriods: number;
+  windowsAnalysed: number;
+  periodsRecorded: number;
+  shouldHalt: boolean;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +43,10 @@ export async function GET() {
       getRedis().get<any>("xsec:lastRebalance").catch(() => null),
       getRedis().get<any>("xsec:equity").catch(() => null),
     ]);
-    const costVerdict = await getRedis().get<CostVerdict>(RECONCILIATION_VERDICT_KEY).catch(() => null);
+    const [costVerdict, edgeVerdict] = await Promise.all([
+      getRedis().get<CostVerdict>(RECONCILIATION_VERDICT_KEY).catch(() => null),
+      getRedis().get<StoredEdgeVerdict>("xsec:edgeVerdict").catch(() => null),
+    ]);
 
     const positions = Object.values(portfolio.positions).map((position) => {
       const mark = prices.get(position.symbol)?.markPrice ?? position.entryPrice;
@@ -101,6 +119,9 @@ export async function GET() {
       // Whether the cost model that every backtest number rests on is telling
       // the truth. Null until enough fills have been measured.
       costModel: costVerdict,
+      // Rolling re-validation of the live book against its own history.
+      // Null until enough rebalance periods have accumulated to judge.
+      edgeCheck: edgeVerdict,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
