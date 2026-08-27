@@ -21,6 +21,7 @@ import {
 } from "@/lib/strategy/crossSectionalMomentum";
 import { deflatedSharpeRatio, returnMoments } from "@/lib/research/deflatedSharpe";
 import { analyseEdgeDecay, renderEdgePlot } from "@/lib/research/edgeDecay";
+import { estimateOneWayCostBps } from "@/lib/execution/liquidityCost";
 
 const CACHE = path.join(process.cwd(), ".replay-cache", "perps");
 const HOUR = 3600;
@@ -28,7 +29,8 @@ const HOUR = 3600;
 interface Bar { time: number; close: number; turnover: number }
 interface Options {
   months: number; lookback: number; hold: number; book: number;
-  oneWayBps: number; minTurnover: number; maxSymbols: number; trials: number; json: boolean;
+  oneWayBps: number; flatCost: boolean;
+  minTurnover: number; maxSymbols: number; trials: number; json: boolean;
 }
 
 function parseArgs(): Options {
@@ -44,9 +46,11 @@ function parseArgs(): Options {
     lookback: read("--lookback", DEFAULT_STRATEGY.lookbackHours),
     hold: read("--hold", DEFAULT_STRATEGY.holdHours),
     book: read("--book", DEFAULT_STRATEGY.bookSize),
-    // Maker-side fee plus a spread allowance. The measured break-even is
-    // around 26bps one-way, so this is not a delicate assumption.
+    // Only used with --flat-cost. By default each name is charged according
+    // to its own liquidity, because a flat rate makes thin markets look as
+    // cheap as deep ones and so decides the breadth question in advance.
     oneWayBps: read("--cost-bps", 6),
+    flatCost: args.includes("--flat-cost"),
     minTurnover: read("--min-turnover", DEFAULT_UNIVERSE.minTurnover24hUsd),
     maxSymbols: read("--max-symbols", DEFAULT_UNIVERSE.maxSymbols),
     // How many configurations were evaluated before this one was chosen.
@@ -174,6 +178,7 @@ async function main() {
 
   let weights = new Map<string, number>();
   const periodReturns: number[] = [];
+  const periodCostBps: number[] = [];
   const stamps: number[] = [];
   let rebalances = 0, holds = 0, totalTurnover = 0;
 
@@ -236,7 +241,15 @@ async function main() {
       if (r === null) continue;
       gross += weight * r;
     }
-    const cost = (plan.skipped ? 0 : plan.turnover) * (options.oneWayBps / 1e4);
+    // Charge each order at its own name's liquidity rather than a blanket
+    // rate. Without this, adding illiquid names to the universe looks free.
+    const cost = plan.skipped ? 0 : plan.orders.reduce((sum, order) => {
+      const bps = options.flatCost
+        ? options.oneWayBps
+        : estimateOneWayCostBps(trailingTurnover.get(order.symbol)?.get(t) ?? 0);
+      return sum + Math.abs(order.weightDelta) * (bps / 1e4);
+    }, 0);
+    periodCostBps.push(plan.skipped || plan.turnover <= 0 ? 0 : (cost / plan.turnover) * 1e4);
     periodReturns.push(gross - cost);
     stamps.push(t);
   }
@@ -288,7 +301,10 @@ async function main() {
     strategy: "cross-sectional momentum",
     universe: symbols.length,
     window: `${new Date(T0 * 1000).toISOString().slice(0, 10)} .. ${new Date(T1 * 1000).toISOString().slice(0, 10)}`,
-    config: { lookbackHours: config.lookbackHours, holdHours: config.holdHours, bookSize: config.bookSize, oneWayBps: options.oneWayBps },
+    config: { lookbackHours: config.lookbackHours, holdHours: config.holdHours, bookSize: config.bookSize, oneWayBps: options.oneWayBps, flatCost: options.flatCost },
+    avgCostBps: periodCostBps.filter((c) => c > 0).length > 0
+      ? periodCostBps.filter((c) => c > 0).reduce((a, b) => a + b, 0) / periodCostBps.filter((c) => c > 0).length
+      : 0,
     periods: n, rebalances, holds,
     avgUniverse: universeSizes.length > 0 ? universeSizes.reduce((a, b) => a + b, 0) / universeSizes.length : 0,
     avgTurnover: rebalances > 0 ? totalTurnover / rebalances : 0,
@@ -310,7 +326,10 @@ async function main() {
     console.log("===============================");
     console.log(`Universe:        ${report.universe} loaded, ${report.avgUniverse.toFixed(0)} eligible on average (point-in-time)`);
     console.log(`Window:          ${report.window}`);
-    console.log(`Config:          ${config.lookbackHours}h lookback, ${config.holdHours}h hold, ${config.bookSize} per side, ${options.oneWayBps}bps one-way`);
+    const tradedCosts = periodCostBps.filter((c) => c > 0);
+    const avgCostBps = tradedCosts.length > 0 ? tradedCosts.reduce((a, b) => a + b, 0) / tradedCosts.length : 0;
+    console.log(`Config:          ${config.lookbackHours}h lookback, ${config.holdHours}h hold, ${config.bookSize} per side`);
+    console.log(`Cost charged:    ${options.flatCost ? `${options.oneWayBps}bps flat` : `${avgCostBps.toFixed(1)}bps average, by each name's own liquidity`}`);
     console.log(`Periods:         ${n} (${rebalances} rebalanced, ${holds} held below threshold)`);
     console.log(`Avg turnover:    ${(report.avgTurnover * 100).toFixed(1)}% one-way per rebalance`);
     console.log(`Mean period:     ${report.meanPeriodBps.toFixed(1)}bps  (t = ${tStat.toFixed(2)})`);
