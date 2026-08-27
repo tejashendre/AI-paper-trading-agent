@@ -27,6 +27,12 @@ import { evaluatePortfolioRiskBudget } from "../src/lib/trading/portfolioRiskBud
 import { computeExecutionEventHash, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
 import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
 import {
+  deflatedSharpeRatio,
+  expectedMaxSharpeUnderNull,
+  normalCdf,
+  returnMoments,
+} from "../src/lib/research/deflatedSharpe";
+import {
   CRYPTO_EXECUTION_PROVIDER,
   CRYPTO_EXECUTION_SOURCE,
   marketImbalanceKey,
@@ -1640,6 +1646,72 @@ function syntheticCandles(startPrice: number, drift: number, count = 2_080): Can
   return candles;
 }
 
+/**
+ * The multiple-testing correction is the one number that can veto a strategy,
+ * so it has to be right. These check it against values that are known
+ * independently of the implementation.
+ */
+function auditDeflatedSharpe(): AuditResult[] {
+  const out: AuditResult[] = [];
+
+  // Textbook normal CDF values.
+  const cdfErrors = [
+    [0, 0.5], [1, 0.8413447], [-1, 0.1586553], [1.96, 0.9750021], [-2.5758, 0.0049998],
+  ].map(([x, want]) => Math.abs(normalCdf(x) - want));
+  const worstCdf = Math.max(...cdfErrors);
+  out.push(worstCdf < 1e-5
+    ? result("PASS", "normal CDF accuracy", `max error ${worstCdf.toExponential(1)} against tabulated values`)
+    : result("FAIL", "normal CDF accuracy", `max error ${worstCdf.toExponential(1)} is too large to trust a p-value`));
+
+  // The bar has to rise as more configurations are searched. If it did not,
+  // the correction would be decorative.
+  const few = expectedMaxSharpeUnderNull(5, 500);
+  const many = expectedMaxSharpeUnderNull(500, 500);
+  out.push(many > few * 1.5
+    ? result("PASS", "search bar rises with trial count", `5 trials -> ${few.toFixed(4)}, 500 trials -> ${many.toFixed(4)} per-period Sharpe`)
+    : result("FAIL", "search bar rises with trial count", `5 trials -> ${few.toFixed(4)}, 500 trials -> ${many.toFixed(4)}; the correction is not biting`));
+
+  // A strategy with no edge must not pass, no matter how few trials are declared.
+  const noEdge = deflatedSharpeRatio({ observedSharpePerPeriod: 0, periods: 600, skew: 0, kurtosis: 3, trials: 1 });
+  out.push(!noEdge.passes && noEdge.deflatedSharpe < 0.5
+    ? result("PASS", "zero-edge strategy is rejected", `deflated Sharpe ${(noEdge.deflatedSharpe * 100).toFixed(1)}%`)
+    : result("FAIL", "zero-edge strategy is rejected", `a zero Sharpe scored ${(noEdge.deflatedSharpe * 100).toFixed(1)}%`));
+
+  // A genuinely strong, lightly searched result must still be able to pass,
+  // otherwise the gate rejects everything and carries no information.
+  const strong = deflatedSharpeRatio({ observedSharpePerPeriod: 0.25, periods: 600, skew: 0, kurtosis: 3, trials: 4 });
+  out.push(strong.passes
+    ? result("PASS", "strong lightly-searched result can pass", `deflated Sharpe ${(strong.deflatedSharpe * 100).toFixed(1)}%`)
+    : result("FAIL", "strong lightly-searched result can pass", `a 0.25 per-period Sharpe over 600 periods scored only ${(strong.deflatedSharpe * 100).toFixed(1)}%`));
+
+  // Same observed Sharpe, more searching, lower confidence. This is the whole point.
+  const lightly = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: 0, kurtosis: 3, trials: 2 });
+  const heavily = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: 0, kurtosis: 3, trials: 2000 });
+  out.push(lightly.deflatedSharpe > heavily.deflatedSharpe
+    ? result("PASS", "identical Sharpe is discounted by search effort", `2 trials -> ${(lightly.deflatedSharpe * 100).toFixed(1)}%, 2000 trials -> ${(heavily.deflatedSharpe * 100).toFixed(1)}%`)
+    : result("FAIL", "identical Sharpe is discounted by search effort", "search effort did not reduce confidence"));
+
+  // Fat tails and negative skew must widen the error bars, not narrow them.
+  const gaussian = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: 0, kurtosis: 3, trials: 100 });
+  const fatTailed = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: -1.2, kurtosis: 9, trials: 100 });
+  out.push(fatTailed.deflatedSharpe < gaussian.deflatedSharpe
+    ? result("PASS", "fat tails reduce confidence", `normal ${(gaussian.deflatedSharpe * 100).toFixed(1)}% vs skewed/fat ${(fatTailed.deflatedSharpe * 100).toFixed(1)}%`)
+    : result("FAIL", "fat tails reduce confidence", "crash-prone returns scored at least as well as normal ones"));
+
+  // Moment estimates against a hand-computable series.
+  const symmetric = returnMoments([-2, -1, 0, 1, 2]);
+  out.push(Math.abs(symmetric.skew) < 1e-9 && Math.abs(symmetric.mean) < 1e-9
+    ? result("PASS", "return moments on a symmetric series", `skew ${symmetric.skew.toFixed(6)}, mean ${symmetric.mean.toFixed(6)}`)
+    : result("FAIL", "return moments on a symmetric series", `skew ${symmetric.skew}, mean ${symmetric.mean}`));
+
+  const rightTailed = returnMoments([-1, -1, -1, -1, 8]);
+  out.push(rightTailed.skew > 1
+    ? result("PASS", "return moments detect a one-sided tail", `skew ${rightTailed.skew.toFixed(2)}`)
+    : result("FAIL", "return moments detect a one-sided tail", `skew ${rightTailed.skew.toFixed(2)} on an obviously right-tailed series`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -1947,6 +2019,7 @@ async function main() {
     ...auditLearningAggregation(),
     ...auditTradeReviewMemory(),
     ...auditReplayEngine(),
+    ...auditDeflatedSharpe(),
   ];
 
   try {
