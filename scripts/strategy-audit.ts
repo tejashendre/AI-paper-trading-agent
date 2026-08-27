@@ -32,6 +32,7 @@ import {
   normalCdf,
   returnMoments,
 } from "../src/lib/research/deflatedSharpe";
+import { analyseEdgeDecay, MIN_WINDOWS_FOR_VERDICT } from "../src/lib/research/edgeDecay";
 import {
   CRYPTO_EXECUTION_PROVIDER,
   CRYPTO_EXECUTION_SOURCE,
@@ -1712,6 +1713,88 @@ function auditDeflatedSharpe(): AuditResult[] {
   return out;
 }
 
+/**
+ * Rolling re-validation is what stands the live book down, so a false EDGE_GONE
+ * costs real trading and a missed one costs real money. Both directions are
+ * checked against series whose correct verdict is not in doubt.
+ */
+function auditEdgeDecay(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const periodHours = 12;
+  const windowSize = 30;
+  // Enough periods to produce comfortably more than the minimum window count.
+  const total = windowSize + MIN_WINDOWS_FOR_VERDICT * Math.floor(windowSize / 4) + 20;
+
+  // Deterministic pseudo-noise so the audit does not flap between runs.
+  const noise = (i: number) => Math.sin(i * 12.9898) * 0.004;
+
+  const steady = Array.from({ length: total }, (_, i) => 0.0025 + noise(i));
+  const steadyReport = analyseEdgeDecay({ returns: steady, windowSize, periodHours });
+  out.push(steadyReport.verdict === "EDGE_STABLE" && !steadyReport.shouldHalt
+    ? result("PASS", "steady edge is not called decayed", `verdict ${steadyReport.verdict}, ${(steadyReport.retentionRatio ?? 0 * 100).toFixed(2)} retention`)
+    : result("FAIL", "steady edge is not called decayed", `a constant positive edge was graded ${steadyReport.verdict}, which would stand the book down for nothing`));
+
+  // Positive throughout, then flatly negative for the final stretch.
+  const decayed = steady.map((r, i) => (i < total - windowSize ? r : -0.003 + noise(i)));
+  const decayedReport = analyseEdgeDecay({ returns: decayed, windowSize, periodHours });
+  out.push(decayedReport.verdict === "EDGE_GONE" && decayedReport.shouldHalt
+    ? result("PASS", "a dead recent window stands the book down", `verdict ${decayedReport.verdict}, recent ${decayedReport.recentMeanBps.toFixed(1)}bps vs ${decayedReport.baselineMeanBps.toFixed(1)}bps baseline`)
+    : result("FAIL", "a dead recent window stands the book down", `a persistently negative final window was graded ${decayedReport.verdict}`));
+
+  // Halved but still positive: worth telling the owner, not worth halting.
+  const thinner = steady.map((r, i) => (i < total - windowSize ? r : 0.0006 + noise(i) * 0.25));
+  const thinnerReport = analyseEdgeDecay({ returns: thinner, windowSize, periodHours });
+  out.push(thinnerReport.verdict === "EDGE_WEAKENING" && !thinnerReport.shouldHalt
+    ? result("PASS", "a thinner but positive edge warns without halting", `verdict ${thinnerReport.verdict}, ${((thinnerReport.retentionRatio ?? 0) * 100).toFixed(0)}% retained`)
+    : result("FAIL", "a thinner but positive edge warns without halting", `graded ${thinnerReport.verdict}, shouldHalt=${thinnerReport.shouldHalt}`));
+
+  // A short series must refuse to judge rather than guess.
+  const short = analyseEdgeDecay({ returns: steady.slice(0, windowSize + 2), windowSize, periodHours });
+  out.push(short.verdict === "INSUFFICIENT_DATA" && !short.shouldHalt
+    ? result("PASS", "a short series refuses to judge", `${short.windows.length} window(s) available, ${MIN_WINDOWS_FOR_VERDICT} required`)
+    : result("FAIL", "a short series refuses to judge", `graded ${short.verdict} on ${short.windows.length} window(s)`));
+
+  // A strategy that never worked must not be reported as stable just because
+  // nothing got worse.
+  const neverWorked = Array.from({ length: total }, (_, i) => -0.001 + noise(i));
+  const neverReport = analyseEdgeDecay({ returns: neverWorked, windowSize, periodHours });
+  out.push(neverReport.verdict === "NO_ESTABLISHED_EDGE" && !neverReport.shouldHalt
+    ? result("PASS", "a never-profitable series is not called stable or decayed", `verdict ${neverReport.verdict}, baseline t = ${neverReport.baselineTStat.toFixed(2)}`)
+    : result("FAIL", "a never-profitable series is not called stable or decayed", `graded ${neverReport.verdict}, shouldHalt=${neverReport.shouldHalt}`));
+
+  // The case that motivated splitting baseline from recent: a real edge that
+  // dies drags the whole-series statistic down with it. Judging the series as
+  // a whole would report "never had an edge" exactly when it should report
+  // decay, which is the failure mode that matters most.
+  const wholeSeriesT = (() => {
+    const mean = decayed.reduce((a, b) => a + b, 0) / decayed.length;
+    const sd = Math.sqrt(decayed.reduce((a, b) => a + (b - mean) ** 2, 0) / (decayed.length - 1));
+    return sd > 0 ? mean / (sd / Math.sqrt(decayed.length)) : 0;
+  })();
+  out.push(wholeSeriesT < 2 && decayedReport.verdict === "EDGE_GONE"
+    ? result("PASS", "decay is not masked by the decayed periods themselves", `whole-series t = ${wholeSeriesT.toFixed(2)} would have read as unproven, but the baseline t = ${decayedReport.baselineTStat.toFixed(2)} correctly identifies decay`)
+    : result("FAIL", "decay is not masked by the decayed periods themselves", `whole-series t = ${wholeSeriesT.toFixed(2)}, verdict ${decayedReport.verdict}`));
+
+  // A near-zero baseline must never produce a confident retention ratio. This
+  // is the defect the real 24-month replay exposed: a 1.9bps baseline reported
+  // "539% retained" and graded EDGE_STABLE on pure noise.
+  const flat = Array.from({ length: total }, (_, i) => noise(i) * 0.5 + 0.00002);
+  const flatReport = analyseEdgeDecay({ returns: flat, windowSize, periodHours });
+  out.push(flatReport.verdict === "NO_ESTABLISHED_EDGE" && flatReport.retentionRatio === null
+    ? result("PASS", "a near-zero baseline reports no ratio", `verdict ${flatReport.verdict}, baseline ${flatReport.baselineMeanBps.toFixed(2)}bps at t = ${flatReport.baselineTStat.toFixed(2)}`)
+    : result("FAIL", "a near-zero baseline reports no ratio", `graded ${flatReport.verdict} with retention ${flatReport.retentionRatio}`));
+
+  // The most recent periods must always be inside the final window, whatever
+  // the step size lands on. Missing them would defeat the entire check.
+  const awkward = analyseEdgeDecay({ returns: steady, windowSize, periodHours, stepSize: 7 });
+  const lastWindow = awkward.windows[awkward.windows.length - 1];
+  out.push(lastWindow?.endIndex === steady.length - 1
+    ? result("PASS", "the final window always reaches the newest period", `last window ends at period ${lastWindow.endIndex} of ${steady.length - 1}`)
+    : result("FAIL", "the final window always reaches the newest period", `last window ends at ${lastWindow?.endIndex} but the series runs to ${steady.length - 1}`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2020,6 +2103,7 @@ async function main() {
     ...auditTradeReviewMemory(),
     ...auditReplayEngine(),
     ...auditDeflatedSharpe(),
+    ...auditEdgeDecay(),
   ];
 
   try {

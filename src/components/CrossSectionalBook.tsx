@@ -30,6 +30,18 @@ interface CostVerdict {
   message: string;
 }
 
+interface EdgeCheck {
+  verdict: "INSUFFICIENT_DATA" | "NO_ESTABLISHED_EDGE" | "EDGE_STABLE" | "EDGE_WEAKENING" | "EDGE_GONE";
+  explanation: string;
+  baselineMeanBps: number;
+  recentMeanBps: number;
+  retentionRatio: number | null;
+  windowPeriods: number;
+  windowsAnalysed: number;
+  periodsRecorded: number;
+  shouldHalt: boolean;
+}
+
 interface BookResponse {
   strategy: { name: string; version: string; lookbackHours: number; holdHours: number; bookSize: number; rankBuffer: number; universeCap: number };
   performance: {
@@ -41,6 +53,7 @@ interface BookResponse {
   positions: BookPosition[];
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
   costModel: CostVerdict | null;
+  edgeCheck: EdgeCheck | null;
   error?: string;
 }
 
@@ -200,6 +213,40 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
               {" "}({data.costModel.totalRatio.toFixed(2)}x) · {data.costModel.sampleSize} fills measured
             </div>
           )}
+        </div>
+      )}
+
+      {data.edgeCheck && (
+        <div className={`mt-2 p-2 rounded-lg border ${
+          data.edgeCheck.verdict === "EDGE_GONE"
+            ? (isDark ? "border-rose-900/50 bg-rose-950/20" : "border-rose-200 bg-rose-50")
+            : data.edgeCheck.verdict === "EDGE_WEAKENING"
+              ? (isDark ? "border-amber-900/50 bg-amber-950/20" : "border-amber-200 bg-amber-50")
+              : data.edgeCheck.verdict === "EDGE_STABLE"
+                ? (isDark ? "border-emerald-900/40 bg-emerald-950/20" : "border-emerald-200 bg-emerald-50")
+                : bgSub
+        }`}>
+          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>
+            {plainLanguage ? "Is the strategy still working?" : "Rolling edge re-validation"}
+          </div>
+          <div className={`text-[10px] font-mono mt-0.5 ${textPrimary}`}>
+            {plainLanguage
+              ? (data.edgeCheck.verdict === "INSUFFICIENT_DATA"
+                  ? `Too early to say. The bot needs about ${data.edgeCheck.windowPeriods * 2} trading rounds before it can judge itself; it has ${data.edgeCheck.periodsRecorded} so far.`
+                  : data.edgeCheck.verdict === "NO_ESTABLISHED_EDGE"
+                    ? "Not proven yet. The bot is making money and losing it in roughly the proportions luck alone would produce, so there is no demonstrated skill here to have gone missing. This is the honest reading, not a malfunction."
+                    : data.edgeCheck.verdict === "EDGE_STABLE"
+                      ? "Yes. Recent trading is earning about what it earned before, so nothing has stopped working."
+                      : data.edgeCheck.verdict === "EDGE_WEAKENING"
+                        ? "Partly. It is still making money, but noticeably less per trade than it used to. Worth watching."
+                        : "No. Recent trading has turned loss-making after a stretch that worked, so the bot has stopped opening new positions on its own.")
+              : data.edgeCheck.explanation}
+          </div>
+          <div className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+            recent {data.edgeCheck.recentMeanBps.toFixed(1)}bps vs baseline {data.edgeCheck.baselineMeanBps.toFixed(1)}bps
+            {data.edgeCheck.retentionRatio !== null && ` (${(data.edgeCheck.retentionRatio * 100).toFixed(0)}% retained)`}
+            {" "}· {data.edgeCheck.periodsRecorded} periods recorded
+          </div>
         </div>
       )}
 

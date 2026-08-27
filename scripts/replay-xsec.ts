@@ -20,6 +20,7 @@ import {
   UniverseCandidate,
 } from "@/lib/strategy/crossSectionalMomentum";
 import { deflatedSharpeRatio, returnMoments } from "@/lib/research/deflatedSharpe";
+import { analyseEdgeDecay, renderEdgePlot } from "@/lib/research/edgeDecay";
 
 const CACHE = path.join(process.cwd(), ".replay-cache", "perps");
 const HOUR = 3600;
@@ -340,6 +341,23 @@ async function main() {
     ] as const;
     for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
     const passed = checks.every(([, ok]) => ok);
+
+    // Rolling re-validation. A full-sample statistic can stay positive long
+    // after a strategy has stopped working, because a few good early months
+    // keep the average alive. This shows whether the edge is a stable property
+    // of the data or an artefact of one stretch.
+    const decay = analyseEdgeDecay({
+      returns: periodReturns,
+      timestamps: stamps.map((t) => new Date(t * 1000).toISOString()),
+      windowSize: Math.max(20, Math.floor(n / 8)),
+      periodHours: config.holdHours,
+    });
+    console.log("");
+    console.log(`Rolling edge, ${decay.windows[0]?.periods ?? 0}-period windows`);
+    for (const line of renderEdgePlot(decay.windows)) console.log(line);
+    console.log("");
+    console.log(`${decay.verdict}: ${decay.explanation}`);
+
     console.log("");
     console.log(deflated.verdict);
     console.log(passed ? "RESULT: PASS" : "RESULT: FAIL");
