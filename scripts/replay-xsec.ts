@@ -19,6 +19,7 @@ import {
   StrategyConfig,
   UniverseCandidate,
 } from "@/lib/strategy/crossSectionalMomentum";
+import { deflatedSharpeRatio, returnMoments } from "@/lib/research/deflatedSharpe";
 
 const CACHE = path.join(process.cwd(), ".replay-cache", "perps");
 const HOUR = 3600;
@@ -26,7 +27,7 @@ const HOUR = 3600;
 interface Bar { time: number; close: number; turnover: number }
 interface Options {
   months: number; lookback: number; hold: number; book: number;
-  oneWayBps: number; minTurnover: number; maxSymbols: number; json: boolean;
+  oneWayBps: number; minTurnover: number; maxSymbols: number; trials: number; json: boolean;
 }
 
 function parseArgs(): Options {
@@ -47,6 +48,10 @@ function parseArgs(): Options {
     oneWayBps: read("--cost-bps", 6),
     minTurnover: read("--min-turnover", DEFAULT_UNIVERSE.minTurnover24hUsd),
     maxSymbols: read("--max-symbols", DEFAULT_UNIVERSE.maxSymbols),
+    // How many configurations were evaluated before this one was chosen.
+    // Reporting a t-statistic without this number overstates the evidence,
+    // so it is a required input to the acceptance test rather than a note.
+    trials: read("--trials", 100),
     json: args.includes("--json"),
   };
 }
@@ -247,6 +252,17 @@ async function main() {
   const periodsPerYear = (365 * 24) / config.holdHours;
   const sharpe = sd > 0 ? (mean / sd) * Math.sqrt(periodsPerYear) : 0;
 
+  // The t-statistic above is the headline number, and on its own it is
+  // misleading: it was selected as the best of a parameter search. Deflate it.
+  const moments = returnMoments(periodReturns);
+  const deflated = deflatedSharpeRatio({
+    observedSharpePerPeriod: sd > 0 ? mean / sd : 0,
+    periods: n,
+    skew: moments.skew,
+    kurtosis: moments.kurtosis,
+    trials: options.trials,
+  });
+
   let equity = 1, peak = 1, maxDd = 0;
   const curve: number[] = [];
   for (const r of periodReturns) {
@@ -276,6 +292,10 @@ async function main() {
     avgUniverse: universeSizes.length > 0 ? universeSizes.reduce((a, b) => a + b, 0) / universeSizes.length : 0,
     avgTurnover: rebalances > 0 ? totalTurnover / rebalances : 0,
     meanPeriodBps: mean * 1e4, tStat, sharpe,
+    deflatedSharpe: deflated.deflatedSharpe,
+    trialsSearched: options.trials,
+    effectiveTrials: deflated.effectiveTrials,
+    skew: moments.skew, kurtosis: moments.kurtosis,
     totalReturn: equity - 1, maxDrawdown: maxDd,
     isReturn, oosReturn,
     positiveMonths, totalMonths: months.length,
@@ -294,6 +314,8 @@ async function main() {
     console.log(`Avg turnover:    ${(report.avgTurnover * 100).toFixed(1)}% one-way per rebalance`);
     console.log(`Mean period:     ${report.meanPeriodBps.toFixed(1)}bps  (t = ${tStat.toFixed(2)})`);
     console.log(`Sharpe:          ${sharpe.toFixed(2)}`);
+    console.log(`Deflated Sharpe: ${(deflated.deflatedSharpe * 100).toFixed(1)}% (after correcting for ${options.trials} configurations tried, ${deflated.effectiveTrials} effective)`);
+    console.log(`Return shape:    skew ${moments.skew.toFixed(2)}, kurtosis ${moments.kurtosis.toFixed(2)}`);
     console.log(`Total return:    ${((equity - 1) * 100).toFixed(1)}%`);
     console.log(`Max drawdown:    ${(maxDd * 100).toFixed(1)}%`);
     console.log(`In-sample:       ${(isReturn * 100).toFixed(1)}%`);
@@ -309,6 +331,7 @@ async function main() {
     console.log("Acceptance");
     const checks = [
       ["t-statistic >= 2.0", tStat >= 2.0],
+      ["deflated Sharpe >= 95%", deflated.passes],
       ["Sharpe >= 1.0", sharpe >= 1.0],
       ["out-of-sample positive", oosReturn > 0],
       ["in-sample positive", isReturn > 0],
@@ -317,6 +340,8 @@ async function main() {
     ] as const;
     for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
     const passed = checks.every(([, ok]) => ok);
+    console.log("");
+    console.log(deflated.verdict);
     console.log(passed ? "RESULT: PASS" : "RESULT: FAIL");
     setTimeout(() => process.exit(passed ? 0 : 1), 50);
   }
