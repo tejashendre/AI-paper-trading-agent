@@ -1,5 +1,11 @@
 import crypto from "crypto";
 import { getRedis } from "@/lib/redis";
+import {
+  BOOK_EQUITY_CURVE_KEY as SHARED_BOOK_KEY,
+  EquityPoint,
+  getEquityCurve as readCurve,
+  recordEquityPoint as recordCurvePoint,
+} from "./equityCurve";
 import { Logger } from "@/lib/logger";
 import {
   deriveExecutionCostProfile,
@@ -34,8 +40,7 @@ export const BOOK_SNAPSHOT_KEY = "xsec:lastRebalance";
  * decay analysis actually needs; minute marks would measure noise between
  * decisions rather than the decisions themselves.
  */
-export const BOOK_EQUITY_CURVE_KEY = "xsec:equityCurve";
-const EQUITY_CURVE_MAX_POINTS = 2000;
+export { BOOK_EQUITY_CURVE_KEY } from "./equityCurve";
 
 /** Bybit VIP0 maker fee. Rebalances are scheduled, so they can rest as limits. */
 export const MAKER_FEE_RATE = 0.0002;
@@ -354,22 +359,17 @@ export async function recordBookTrades(trades: BookTrade[]): Promise<void> {
   await redis.ltrim(BOOK_TRADES_KEY, 0, 999);
 }
 
-export interface EquityPoint { at: string; equityUsd: number }
-
-export async function recordEquityPoint(equityUsd: number): Promise<void> {
-  if (!Number.isFinite(equityUsd) || equityUsd <= 0) return;
-  const redis = getRedis();
-  await redis.lpush(BOOK_EQUITY_CURVE_KEY, { at: new Date().toISOString(), equityUsd });
-  await redis.ltrim(BOOK_EQUITY_CURVE_KEY, 0, EQUITY_CURVE_MAX_POINTS - 1);
+export async function recordEquityPoint(portfolio: BookPortfolio, equityUsd: number): Promise<void> {
+  await recordCurvePoint(SHARED_BOOK_KEY, {
+    equityUsd,
+    // Closed-trade equity, so the sleeve comparison is measuring realised
+    // outcomes on both sides rather than one sleeve's marking schedule.
+    realizedEquityUsd: portfolio.initialCapitalUsd + portfolio.realizedPnlUsd,
+  });
 }
 
-/** Oldest first, which is the order every downstream statistic assumes. */
-export async function getEquityCurve(limit = EQUITY_CURVE_MAX_POINTS): Promise<EquityPoint[]> {
-  const rows = await getRedis().lrange(BOOK_EQUITY_CURVE_KEY, 0, limit - 1).catch(() => [] as string[]);
-  return rows
-    .map((row) => { try { return JSON.parse(row) as EquityPoint; } catch { return null; } })
-    .filter((p): p is EquityPoint => p !== null && Number.isFinite(p.equityUsd))
-    .reverse();
+export async function getEquityCurve(limit?: number): Promise<EquityPoint[]> {
+  return readCurve(SHARED_BOOK_KEY, limit);
 }
 
 export async function getBookTrades(limit = 100): Promise<BookTrade[]> {
