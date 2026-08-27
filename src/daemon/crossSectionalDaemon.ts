@@ -23,9 +23,14 @@ import {
   loadBookPortfolio,
   logRebalance,
   recordBookTrades,
+  recordReconciliation,
   saveBookPortfolio,
   settleFunding,
 } from "../lib/execution/bookRebalancer";
+import {
+  buildCostVerdict,
+  settlePendingSlippageSamples,
+} from "../lib/execution/costModelReconciliation";
 
 const CONFIG = DEFAULT_STRATEGY;
 const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
@@ -81,6 +86,7 @@ async function runRebalance() {
 
       await saveBookPortfolio(portfolio);
       await recordBookTrades(result.trades);
+      await recordReconciliation(result.reconciliation);
       await logRebalance(result, plan);
       await getRedis().set(LAST_REBALANCE_KEY, Date.now());
     });
@@ -96,6 +102,12 @@ async function runMark() {
   marking = true;
   try {
     const prices = await fetchTickers();
+
+    // Fills become measurable a minute after execution, so the mark loop is
+    // where the cost model gets checked against what the market actually did.
+    const settled = await settlePendingSlippageSamples(prices).catch(() => 0);
+    if (settled > 0) await buildCostVerdict().catch(() => undefined);
+
     const portfolio = await loadBookPortfolio();
     const equity = bookEquityUsd(portfolio, prices);
 

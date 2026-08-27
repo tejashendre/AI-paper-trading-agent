@@ -13,6 +13,7 @@ import {
   StrategyConfig,
 } from "@/lib/strategy/crossSectionalMomentum";
 import { PerpTicker } from "@/lib/data/perpUniverse";
+import { recordFillForReconciliation } from "@/lib/execution/costModelReconciliation";
 
 /**
  * Paper execution for the cross-sectional book.
@@ -155,6 +156,13 @@ function fillFor(
   });
 }
 
+export interface PendingReconciliation {
+  symbol: string;
+  side: "BUY" | "SELL";
+  ticker: PerpTicker;
+  fill: PaperFillEstimate;
+}
+
 export interface RebalanceResult {
   executed: number;
   skipped: number;
@@ -164,6 +172,9 @@ export interface RebalanceResult {
   feesUsd: number;
   trades: BookTrade[];
   reason: string;
+  /** Fills to hand to the cost-model reconciler. Kept out of applyBookPlan's
+   *  own I/O so the function stays pure and replayable. */
+  reconciliation: PendingReconciliation[];
 }
 
 /**
@@ -179,6 +190,7 @@ export function applyBookPlan(input: {
   const { portfolio, plan, prices } = input;
   const equityBefore = bookEquityUsd(portfolio, prices);
   const trades: BookTrade[] = [];
+  const reconciliation: PendingReconciliation[] = [];
   let executed = 0;
   let skipped = 0;
   let feesUsd = 0;
@@ -187,6 +199,7 @@ export function applyBookPlan(input: {
     return {
       executed: 0, skipped: plan.orders.length, turnover: plan.turnover,
       equityBefore, equityAfter: equityBefore, feesUsd: 0, trades, reason: plan.reason,
+      reconciliation,
     };
   }
 
@@ -209,6 +222,12 @@ export function applyBookPlan(input: {
     const isReducing = existingQty !== 0 && Math.abs(targetQty) < Math.abs(existingQty);
     const fill = fillFor(order.symbol, ticker, deltaQty, isReducing);
     const fillPrice = fill.fillPrice;
+    reconciliation.push({
+      symbol: order.symbol,
+      side: deltaQty > 0 ? "BUY" : "SELL",
+      ticker,
+      fill,
+    });
 
     // Realise PnL on whatever part of the trade closes existing exposure.
     let realized = 0;
@@ -280,7 +299,7 @@ export function applyBookPlan(input: {
     if (drawdown > portfolio.maxDrawdownPercent) portfolio.maxDrawdownPercent = drawdown;
   }
 
-  return { executed, skipped, turnover: plan.turnover, equityBefore, equityAfter, feesUsd, trades, reason: plan.reason };
+  return { executed, skipped, turnover: plan.turnover, equityBefore, equityAfter, feesUsd, trades, reason: plan.reason, reconciliation };
 }
 
 /**
@@ -313,6 +332,11 @@ export async function loadBookPortfolio(initialCapitalUsd = 10_000): Promise<Boo
 
 export async function saveBookPortfolio(portfolio: BookPortfolio): Promise<void> {
   await getRedis().set(BOOK_PORTFOLIO_KEY, portfolio);
+}
+
+/** Hand the rebalance's fills to the cost-model reconciler. */
+export async function recordReconciliation(pending: PendingReconciliation[]): Promise<void> {
+  for (const item of pending) await recordFillForReconciliation(item).catch(() => undefined);
 }
 
 export async function recordBookTrades(trades: BookTrade[]): Promise<void> {

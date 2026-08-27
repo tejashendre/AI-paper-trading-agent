@@ -7,6 +7,7 @@ import {
   loadBookPortfolio,
 } from "@/lib/execution/bookRebalancer";
 import { DEFAULT_STRATEGY, DEFAULT_UNIVERSE } from "@/lib/strategy/crossSectionalMomentum";
+import { RECONCILIATION_VERDICT_KEY, CostVerdict } from "@/lib/execution/costModelReconciliation";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,7 @@ export async function GET() {
       getRedis().get<any>("xsec:lastRebalance").catch(() => null),
       getRedis().get<any>("xsec:equity").catch(() => null),
     ]);
+    const costVerdict = await getRedis().get<CostVerdict>(RECONCILIATION_VERDICT_KEY).catch(() => null);
 
     const positions = Object.values(portfolio.positions).map((position) => {
       const mark = prices.get(position.symbol)?.markPrice ?? position.entryPrice;
@@ -96,6 +98,9 @@ export async function GET() {
       recentTrades: trades,
       lastRebalance,
       liveSnapshot: equitySnapshot,
+      // Whether the cost model that every backtest number rests on is telling
+      // the truth. Null until enough fills have been measured.
+      costModel: costVerdict,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
