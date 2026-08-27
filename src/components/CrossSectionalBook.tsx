@@ -42,6 +42,16 @@ interface EdgeCheck {
   shouldHalt: boolean;
 }
 
+interface Capacity {
+  capacityUsd: number;
+  bindingSymbol: string | null;
+  bindingTurnoverUsd: number;
+  utilisation: number;
+  participationLimit: number;
+  namesAssessed: number;
+  explanation: string;
+}
+
 interface BookResponse {
   strategy: { name: string; version: string; lookbackHours: number; holdHours: number; bookSize: number; rankBuffer: number; universeCap: number };
   performance: {
@@ -54,6 +64,7 @@ interface BookResponse {
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
   costModel: CostVerdict | null;
   edgeCheck: EdgeCheck | null;
+  capacity: Capacity | null;
   error?: string;
 }
 
@@ -108,6 +119,15 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
   const { strategy, performance, exposure, positions, lastRebalance } = data;
   const positive = performance.totalReturnUsd >= 0;
   const money = (v: number) => `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`;
+  // Capacity figures span thousands to billions, so they are abbreviated
+  // rather than printed in full; an exact dollar is meaningless on an estimate.
+  const usd = (v: number) => {
+    if (!Number.isFinite(v)) return "no limit";
+    if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+    if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+    if (v >= 1e3) return `$${(v / 1e3).toFixed(0)}k`;
+    return `$${v.toFixed(0)}`;
+  };
   const longs = positions.filter((p) => p.side === "LONG");
   const shorts = positions.filter((p) => p.side === "SHORT");
   const shown = expanded ? positions : positions.slice(0, 6);
@@ -246,6 +266,23 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
             recent {data.edgeCheck.recentMeanBps.toFixed(1)}bps vs baseline {data.edgeCheck.baselineMeanBps.toFixed(1)}bps
             {data.edgeCheck.retentionRatio !== null && ` (${(data.edgeCheck.retentionRatio * 100).toFixed(0)}% retained)`}
             {" "}· {data.edgeCheck.periodsRecorded} periods recorded
+          </div>
+        </div>
+      )}
+
+      {data.capacity && data.capacity.namesAssessed > 0 && (
+        <div className={`mt-2 p-2 rounded-lg border ${bgSub}`}>
+          <div className={`text-[7px] font-mono uppercase ${textMuted}`}>
+            {plainLanguage ? "How much money could this actually handle?" : "Capacity"}
+          </div>
+          <div className={`text-[10px] font-mono mt-0.5 ${textPrimary}`}>
+            {plainLanguage
+              ? `About ${usd(data.capacity.capacityUsd)}. Past that, the bot's own orders would be too large a share of daily trading in ${data.capacity.bindingSymbol ?? "its thinnest holding"} and would move the price against it. Percentage returns only mean something below this line.`
+              : data.capacity.explanation}
+          </div>
+          <div className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+            ceiling {usd(data.capacity.capacityUsd)} · using {(data.capacity.utilisation * 100).toFixed(2)}% of it ·
+            {" "}capped by {data.capacity.bindingSymbol} at ${(data.capacity.bindingTurnoverUsd / 1e6).toFixed(1)}M/day
           </div>
         </div>
       )}

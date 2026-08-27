@@ -34,6 +34,7 @@ import {
 } from "../src/lib/research/deflatedSharpe";
 import { analyseEdgeDecay, MIN_WINDOWS_FOR_VERDICT } from "../src/lib/research/edgeDecay";
 import { estimateHalfSpreadBps, estimateOneWayCostBps } from "../src/lib/execution/liquidityCost";
+import { estimateBookCapacity, estimateStrategyCapacity } from "../src/lib/execution/capacity";
 import { DEFAULT_UNIVERSE } from "../src/lib/strategy/crossSectionalMomentum";
 import {
   CRYPTO_EXECUTION_PROVIDER,
@@ -1838,6 +1839,78 @@ function auditLiquidityCost(): AuditResult[] {
   return out;
 }
 
+/**
+ * Capacity is the figure that stops a paper return being read as a promise.
+ * Getting it wrong in the optimistic direction is the expensive direction, so
+ * these checks are weighted toward catching over-statement.
+ */
+function auditCapacity(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const ticker = (symbol: string, turnover: number) => [symbol, {
+    symbol, lastPrice: 100, markPrice: 100, bid: 99.95, ask: 100.05,
+    turnover24h: turnover, fundingRate: 0,
+  }] as const;
+
+  const prices = new Map<string, any>([
+    ticker("DEEPUSDT", 500e6),
+    ticker("MIDUSDT", 50e6),
+    ticker("THINUSDT", 5e6),
+  ]);
+  const weights = new Map([["DEEPUSDT", 0.1], ["MIDUSDT", -0.1], ["THINUSDT", 0.1]]);
+
+  const report = estimateBookCapacity({ weights, prices, currentEquityUsd: 10_000 });
+  out.push(report.bindingSymbol === "THINUSDT"
+    ? result("PASS", "capacity is set by the thinnest holding", `${report.bindingSymbol} at $${(report.bindingTurnoverUsd / 1e6).toFixed(0)}M/day caps the book at $${(report.capacityUsd / 1e6).toFixed(2)}M`)
+    : result("FAIL", "capacity is set by the thinnest holding", `binding name was ${report.bindingSymbol}, not the thinnest`));
+
+  // Doubling every market's depth must double the ceiling, or the model is not
+  // actually tracking liquidity.
+  const deeper = new Map([...prices.entries()].map(([k, v]) => [k, { ...v, turnover24h: v.turnover24h * 2 }]));
+  const doubled = estimateBookCapacity({ weights, prices: deeper, currentEquityUsd: 10_000 });
+  out.push(Math.abs(doubled.capacityUsd / report.capacityUsd - 2) < 0.01
+    ? result("PASS", "capacity scales with market depth", `${(doubled.capacityUsd / report.capacityUsd).toFixed(2)}x ceiling for 2x depth`)
+    : result("FAIL", "capacity scales with market depth", `2x depth produced a ${(doubled.capacityUsd / report.capacityUsd).toFixed(2)}x ceiling`));
+
+  // A heavier weight in the same market means less total book fits.
+  const concentrated = new Map([["THINUSDT", 0.4]]);
+  const heavy = estimateBookCapacity({ weights: concentrated, prices, currentEquityUsd: 10_000 });
+  const light = estimateBookCapacity({ weights: new Map([["THINUSDT", 0.1]]), prices, currentEquityUsd: 10_000 });
+  out.push(heavy.capacityUsd < light.capacityUsd
+    ? result("PASS", "concentration reduces capacity", `40% weight caps at $${(heavy.capacityUsd / 1e6).toFixed(2)}M vs $${(light.capacityUsd / 1e6).toFixed(2)}M at 10%`)
+    : result("FAIL", "concentration reduces capacity", "a larger per-name weight did not lower the ceiling"));
+
+  // A market reporting no turnover must contribute zero capacity, never
+  // infinite. Treating missing data as unlimited depth is the failure that
+  // would matter most.
+  const dark = estimateBookCapacity({
+    weights: new Map([["DARKUSDT", 0.1]]),
+    prices: new Map<string, any>([ticker("DARKUSDT", 0)]),
+    currentEquityUsd: 10_000,
+  });
+  out.push(dark.capacityUsd === 0
+    ? result("PASS", "a market with no reported volume permits no size", dark.explanation.slice(0, 80))
+    : result("FAIL", "a market with no reported volume permits no size", `zero turnover produced a $${dark.capacityUsd} ceiling`));
+
+  // The strategy-level figure has to reflect the thinnest name it could be
+  // forced to hold, not the average or the deepest. The ranking picks extremes
+  // without regard to liquidity, so over enough rebalances it will hold them.
+  const strategy = estimateStrategyCapacity({
+    eligibleTurnoversUsd: [500e6, 100e6, 40e6, 12e6],
+    bookSize: 2,
+    maxWeightPerName: 0.1,
+  });
+  const fromThinnest = estimateStrategyCapacity({
+    eligibleTurnoversUsd: [12e6],
+    bookSize: 2,
+    maxWeightPerName: 0.1,
+  });
+  out.push(Math.abs(strategy.capacityUsd - fromThinnest.capacityUsd) < 1
+    ? result("PASS", "strategy capacity assumes the thinnest eligible name", `$${(strategy.capacityUsd / 1e6).toFixed(2)}M, set by the $12M market`)
+    : result("FAIL", "strategy capacity assumes the thinnest eligible name", `$${(strategy.capacityUsd / 1e6).toFixed(2)}M against $${(fromThinnest.capacityUsd / 1e6).toFixed(2)}M for the thinnest name alone`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2148,6 +2221,7 @@ async function main() {
     ...auditDeflatedSharpe(),
     ...auditEdgeDecay(),
     ...auditLiquidityCost(),
+    ...auditCapacity(),
   ];
 
   try {
