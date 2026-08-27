@@ -93,7 +93,7 @@ async function runRebalance() {
       // Sample equity at the period boundary, before trading, so the return
       // series describes what the last period's book earned rather than what
       // this period's orders cost.
-      await recordEquityPoint(bookEquityUsd(portfolio, snapshot.prices));
+      await recordEquityPoint(portfolio, bookEquityUsd(portfolio, snapshot.prices));
       const edge = await reviewEdge();
       if (edge?.shouldHalt) {
         await Logger.warn(

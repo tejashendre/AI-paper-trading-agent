@@ -35,6 +35,7 @@ import {
 import { analyseEdgeDecay, MIN_WINDOWS_FOR_VERDICT } from "../src/lib/research/edgeDecay";
 import { estimateHalfSpreadBps, estimateOneWayCostBps } from "../src/lib/execution/liquidityCost";
 import { estimateBookCapacity, estimateStrategyCapacity } from "../src/lib/execution/capacity";
+import { compareSleeves, MIN_OVERLAP, pearson } from "../src/lib/research/sleeveCorrelation";
 import { DEFAULT_UNIVERSE } from "../src/lib/strategy/crossSectionalMomentum";
 import {
   CRYPTO_EXECUTION_PROVIDER,
@@ -1911,6 +1912,78 @@ function auditCapacity(): AuditResult[] {
   return out;
 }
 
+/**
+ * The sleeve comparison decides whether a second strategy is worth running.
+ * Its expensive failure is calling a duplicate "diversifying", so that case is
+ * tested directly rather than inferred from a correlation number.
+ */
+function auditSleeveCorrelation(): AuditResult[] {
+  const out: AuditResult[] = [];
+
+  // Pearson against values computable by hand.
+  const perfect = pearson([1, 2, 3, 4], [2, 4, 6, 8]);
+  const inverse = pearson([1, 2, 3, 4], [8, 6, 4, 2]);
+  out.push(perfect !== null && Math.abs(perfect - 1) < 1e-9 && inverse !== null && Math.abs(inverse + 1) < 1e-9
+    ? result("PASS", "correlation is arithmetically correct", `identical series ${perfect.toFixed(4)}, mirrored series ${inverse.toFixed(4)}`)
+    : result("FAIL", "correlation is arithmetically correct", `got ${perfect} and ${inverse} where 1 and -1 were required`));
+
+  const flat = pearson([1, 1, 1, 1], [1, 2, 3, 4]);
+  out.push(flat === null
+    ? result("PASS", "a constant series yields no correlation", "a zero-variance sleeve returns null rather than a spurious number")
+    : result("FAIL", "a constant series yields no correlation", `a constant series produced ${flat}`));
+
+  const days = (n: number, f: (i: number) => number) =>
+    Array.from({ length: n }, (_, i) => ({
+      // Fixed base date: the audit must not change its verdict by the day it runs.
+      at: new Date(Date.UTC(2026, 0, 1 + i, 12)).toISOString(),
+      equityUsd: f(i),
+    }));
+
+  const wobble = (i: number) => Math.sin(i * 12.9898) * 0.03;
+  const n = MIN_OVERLAP + 15;
+
+  // A sleeve compared against a copy of itself must never be called
+  // diversifying. This is the failure that would cost real money.
+  let e = 10_000;
+  const base = days(n, (i) => (e = i === 0 ? 10_000 : e * (1 + wobble(i))));
+  const twin = compareSleeves({ name: "A", points: base }, { name: "A-copy", points: base });
+  out.push(twin.verdict === "REDUNDANT"
+    ? result("PASS", "a duplicate sleeve is called redundant", `correlation ${twin.correlation?.toFixed(3)} over ${twin.overlappingPeriods} shared days`)
+    : result("FAIL", "a duplicate sleeve is called redundant", `a sleeve compared against itself was graded ${twin.verdict}`));
+
+  // Opposing series are as far from redundant as it is possible to be.
+  let f1 = 10_000;
+  const opposite = days(n, (i) => (f1 = i === 0 ? 10_000 : f1 * (1 - wobble(i))));
+  const hedged = compareSleeves({ name: "A", points: base }, { name: "mirror", points: opposite });
+  out.push(hedged.verdict === "DIVERSIFYING"
+    ? result("PASS", "an opposing sleeve is called diversifying", `correlation ${hedged.correlation?.toFixed(3)}`)
+    : result("FAIL", "an opposing sleeve is called diversifying", `an inversely-moving sleeve was graded ${hedged.verdict}`));
+
+  // Too little shared history must produce a refusal, not a guess.
+  const thin = compareSleeves(
+    { name: "A", points: base.slice(0, 5) },
+    { name: "B", points: opposite.slice(0, 5) }
+  );
+  out.push(thin.verdict === "INSUFFICIENT_OVERLAP" && thin.correlation === null
+    ? result("PASS", "too little shared history refuses a verdict", `${thin.overlappingPeriods} shared day(s), ${MIN_OVERLAP} required`)
+    : result("FAIL", "too little shared history refuses a verdict", `graded ${thin.verdict} on ${thin.overlappingPeriods} days`));
+
+  // Sleeves recording at different rates must still line up, because in
+  // production they genuinely do: the book marks per rebalance, the swing
+  // engine only on exits.
+  const sparse = base.filter((_, i) => i % 2 === 0);
+  const dense = base.flatMap((p) => [
+    p,
+    { at: p.at.replace("T12", "T18"), equityUsd: p.equityUsd },
+  ]);
+  const mixed = compareSleeves({ name: "sparse", points: sparse }, { name: "dense", points: dense });
+  out.push(mixed.overlappingPeriods >= sparse.length - 2
+    ? result("PASS", "different recording rates still align", `${mixed.overlappingPeriods} shared days from a ${sparse.length}-point and a ${dense.length}-point series`)
+    : result("FAIL", "different recording rates still align", `only ${mixed.overlappingPeriods} shared days from ${sparse.length} sparse points`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2222,6 +2295,7 @@ async function main() {
     ...auditEdgeDecay(),
     ...auditLiquidityCost(),
     ...auditCapacity(),
+    ...auditSleeveCorrelation(),
   ];
 
   try {

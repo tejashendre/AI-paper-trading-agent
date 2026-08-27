@@ -18,10 +18,23 @@ import { fitPaperExecutionPlanToRiskBudget } from "../lib/trading/executionCostM
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
 import { getAssetSpec } from "../lib/trading/assetSpecs";
+import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
+
+/**
+ * How often the swing sleeve's equity is written to its curve.
+ *
+ * The exit watchdog runs every five seconds, which would fill the 2000-point
+ * ring buffer in under three hours and leave nothing to compare against. The
+ * curve exists to be bucketed by day, so half-hourly resolution is already far
+ * more than the comparison can use.
+ */
+const EQUITY_SAMPLE_INTERVAL_MS = 30 * 60 * 1000;
+let lastEquitySampleAt = 0;
+let lastRealizedEquity: number | null = null;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
 
@@ -368,6 +381,32 @@ async function saveScanSnapshot(
   );
 }
 
+/**
+ * Record the swing sleeve's realised equity so it can be compared against the
+ * cross-sectional book. Realised rather than marked, because the book records
+ * both and the comparison is only meaningful between like measures — a
+ * continuously-marked series correlated against one that moves only on exits
+ * would describe the two recording schedules, not the two strategies.
+ *
+ * Written on change, and at least once per interval regardless, so that a
+ * quiet day still produces a point and the day-over-day return exists.
+ */
+async function sampleSwingEquity(portfolio: { initialCapital: number; totalPnl: number }) {
+  const realized = portfolio.initialCapital + portfolio.totalPnl;
+  if (!Number.isFinite(realized) || realized <= 0) return;
+
+  const changed = lastRealizedEquity === null || Math.abs(realized - lastRealizedEquity) > 1e-6;
+  const due = Date.now() - lastEquitySampleAt >= EQUITY_SAMPLE_INTERVAL_MS;
+  if (!changed && !due) return;
+
+  lastEquitySampleAt = Date.now();
+  lastRealizedEquity = realized;
+  await recordEquityPoint(SWING_EQUITY_CURVE_KEY, {
+    equityUsd: realized,
+    realizedEquityUsd: realized,
+  }).catch(() => undefined);
+}
+
 async function runExitWatchdog() {
   if (isExitWatching) return;
   isExitWatching = true;
@@ -380,6 +419,7 @@ async function runExitWatchdog() {
         const portfolio = await getAIPortfolio();
         ensurePortfolioShape(portfolio);
         await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
+        await sampleSwingEquity(portfolio);
       } finally {
         await portfolioRelease();
       }
