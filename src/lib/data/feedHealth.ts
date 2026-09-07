@@ -6,6 +6,7 @@
 import type { Candle, Timeframe, FeedHealthReport, FeedHealthStatus, DataSource } from '@/lib/types';
 import { TIMEFRAME_MS } from '@/lib/types';
 import { SUPPORTED_ASSETS } from '@/lib/market';
+import { isWeekdayMarketOpen } from '@/lib/trading/marketSession';
 
 interface FeedHealthInput {
   asset: string;
@@ -25,8 +26,8 @@ interface FeedHealthInput {
  *   -20 stale data (latest candle older than 2x expected interval)
  *   -15 fallback source used
  *   -20 large source price disagreement (agreement < 0.95)
- *   -10 per 5% missing candles (max -30)
- *   -5  per 5% zero-volume candles when volume expected (max -15)
+ *   -10 per 5% missing candles, counting only bars the market was open for (max -30)
+ *   -5  per 5% zero-volume candles, only when the venue reports volume at all (max -15)
  *   -5  per abnormal range candle (high/low range > 5x median range)
  *   -20 API failure streak >= 3
  *   -5  duplicate timestamps detected
@@ -66,7 +67,8 @@ export function scoreFeedHealth(input: FeedHealthInput): FeedHealthReport {
   }
 
   // ── Missing candles ──────────────────────────────────────────
-  const { missing, duplicates, zeroVolume, abnormalRange } = analyzeCandles(candles, intervalMs);
+  const { missing, duplicates, zeroVolume, abnormalRange, venueReportsVolume } =
+    analyzeCandles(candles, intervalMs, isCrypto);
 
   if (missing > 0) {
     const missingPct = (missing / Math.max(candles.length, 1)) * 100;
@@ -82,7 +84,12 @@ export function scoreFeedHealth(input: FeedHealthInput): FeedHealthReport {
   }
 
   // ── Zero-volume anomalies ────────────────────────────────────
-  if (zeroVolume > 0) {
+  // Only meaningful when the venue publishes volume for this instrument at all.
+  // Yahoo reports no volume for spot FX, so every bar reads zero forever; before
+  // this check that cost a permanent 15 points and pushed USDJPY under the
+  // threshold that disables autonomous entries. A feed that reports volume and
+  // then drops it on some bars is still a genuine anomaly and still penalised.
+  if (zeroVolume > 0 && venueReportsVolume) {
     const zvPct = (zeroVolume / Math.max(candles.length, 1)) * 100;
     const penalty = Math.min(15, Math.floor(zvPct / 5) * 5);
     score -= penalty;
@@ -138,14 +145,16 @@ export function scoreFeedHealth(input: FeedHealthInput): FeedHealthReport {
 
 // ── Internal candle analysis helpers ─────────────────────────────
 
-function analyzeCandles(candles: Candle[], intervalMs: number): {
+function analyzeCandles(candles: Candle[], intervalMs: number, expectsContinuousTrading: boolean): {
   missing: number;
   duplicates: number;
   zeroVolume: number;
   abnormalRange: number;
+  /** Whether this venue publishes volume for this instrument at all. */
+  venueReportsVolume: boolean;
 } {
   if (candles.length < 2) {
-    return { missing: 0, duplicates: 0, zeroVolume: 0, abnormalRange: 0 };
+    return { missing: 0, duplicates: 0, zeroVolume: 0, abnormalRange: 0, venueReportsVolume: false };
   }
 
   let missing = 0;
@@ -189,11 +198,41 @@ function analyzeCandles(candles: Candle[], intervalMs: number): {
     if (i > 0) {
       const gap = c.time - candles[i - 1].time;
       if (gap > tolerance) {
-        // Count how many candles are missing in this gap
-        missing += Math.max(0, Math.floor(gap / intervalSec) - 1);
+        const absent = Math.max(0, Math.floor(gap / intervalSec) - 1);
+        missing += expectsContinuousTrading
+          ? absent
+          : absentWhileOpen(candles[i - 1].time, absent, intervalSec);
       }
     }
   }
 
-  return { missing, duplicates, zeroVolume, abnormalRange };
+  return {
+    missing,
+    duplicates,
+    zeroVolume,
+    abnormalRange,
+    venueReportsVolume: zeroVolume < candles.length,
+  };
+}
+
+/**
+ * How many of the absent bars fall in hours the market was actually open.
+ *
+ * Forex and futures shut every weekend, so on a 15-minute series a normal
+ * weekend is roughly 200 absent bars. Counting those as missing data made
+ * every non-crypto feed look broken and cost the full 30-point gap penalty
+ * permanently, which is most of the distance between a healthy score and the
+ * one that disables trading. A gap during an open session is still real data
+ * loss and is still counted.
+ */
+function absentWhileOpen(lastSeenSec: number, absent: number, intervalSec: number): number {
+  // Long gaps are almost always closures; sampling caps the work while staying
+  // accurate enough, since the penalty saturates well before this many bars.
+  const inspect = Math.min(absent, 512);
+  let open = 0;
+  for (let step = 1; step <= inspect; step++) {
+    if (isWeekdayMarketOpen(new Date((lastSeenSec + step * intervalSec) * 1000))) open++;
+  }
+  // Scale back up if the gap was longer than the sample.
+  return absent > inspect ? Math.round((open / inspect) * absent) : open;
 }
