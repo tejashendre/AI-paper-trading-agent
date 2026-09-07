@@ -58,8 +58,10 @@ export function getMarketSessionState(
     };
   }
 
-  // Crypto is open 24/7 — always peak liquidity
-  if (config.category === "crypto") {
+  // Continuously quoted instruments are open 24/7. This follows the contract
+  // rather than the underlying: a gold perpetual keeps trading through the
+  // weekend even though the metal's futures pit does not.
+  if (config.bybitLinearSymbol) {
     return {
       isOpen: true,
       isPeakLiquidity: true,

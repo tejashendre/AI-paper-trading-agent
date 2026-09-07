@@ -10,6 +10,8 @@ import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/tradi
 import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
 import { scoreFeedHealth } from "../src/lib/data/feedHealth";
+import { primaryMarketDataProvider as routeProvider, tradesContinuously } from "../src/lib/market";
+import { getMarketSessionState as sessionState } from "../src/lib/trading/marketSession";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
 import {
   buildEntryGateDiagnostics,
@@ -244,19 +246,38 @@ function auditAssetSpecs(): AuditResult[] {
   const forexOk = forexAssets.every((spec) => spec.maxMarginPercent <= 0.1);
   checks.push(result(forexOk ? "PASS" : "WARN", "forex slower-risk treatment", forexOk ? "Forex starts from conservative margin caps in free-data mode." : "Forex margin caps are aggressive; verify live feed quality first."));
 
-  const instrumentIdentityOk = REQUIRED_ASSETS.every((asset) => {
+  // The provider an asset resolves through must match the instrument it is
+  // actually configured to trade, and that instrument must be named explicitly
+  // rather than inferred. Commodities moved from Yahoo futures to Bybit
+  // perpetuals on 2026-09-07, so category no longer determines provider -- but
+  // the binding between provider and instrument is exactly as strict as before.
+  //
+  // Every mapping is spelled out. A silent typo, or OIL quietly becoming Brent,
+  // must fail here rather than reaching a live book.
+  const EXPECTED_BYBIT_SYMBOL: Record<string, string> = {
+    BTC: "BTCUSDT", ETH: "ETHUSDT", SOL: "SOLUSDT",
+    GOLD: "XAUUSDT", SILVER: "XAGUSDT", OIL: "CLUSDT",
+  };
+  const misaligned = REQUIRED_ASSETS.filter((asset) => {
     const config = SUPPORTED_ASSETS[asset];
-    if (config.category === "crypto") {
-      return primaryMarketDataProvider(asset) === "BYBIT_LINEAR" && config.bybitLinearSymbol === `${asset}USDT`;
+    const expected = EXPECTED_BYBIT_SYMBOL[asset];
+    if (expected) {
+      return primaryMarketDataProvider(asset) !== "BYBIT_LINEAR" || config.bybitLinearSymbol !== expected;
     }
-    return primaryMarketDataProvider(asset) === "YAHOO" && config.yahooTicker.length > 0;
+    // No perpetual mapped: must fall to Yahoo, and must not carry a stray
+    // Bybit symbol that would silently take over the routing.
+    return (
+      primaryMarketDataProvider(asset) !== "YAHOO" ||
+      config.yahooTicker.length === 0 ||
+      config.bybitLinearSymbol.length > 0
+    );
   });
   checks.push(result(
-    instrumentIdentityOk ? "PASS" : "FAIL",
+    misaligned.length === 0 ? "PASS" : "FAIL",
     "instrument-aligned market providers",
-    instrumentIdentityOk
-      ? "Crypto execution is bound to Bybit USDT perpetuals; forex and commodity execution use matching Yahoo symbols."
-      : "At least one asset can resolve through an instrument that does not match its execution model."
+    misaligned.length === 0
+      ? "Crypto and commodity execution are bound to their named Bybit perpetuals (OIL=CLUSDT, WTI not Brent); forex resolves through matching Yahoo symbols."
+      : `${misaligned.join(", ")} resolve through an instrument that does not match the execution model.`
   ));
 
   const providerScopedCaches = REQUIRED_ASSETS.every((asset) => (
@@ -2188,6 +2209,68 @@ function auditFeedHealthScoring(): AuditResult[] {
   return out;
 }
 
+/**
+ * Commodities were moved from Yahoo futures to Bybit perpetuals on 2026-09-07,
+ * because Yahoo's intraday CME candles ran about ten hours behind while its
+ * quote stayed current, leaving GOLD, OIL and SILVER failing closed.
+ *
+ * The move is only correct if data routing, session hours and staleness
+ * tolerance all follow the *instrument* rather than the asset's category. These
+ * pin that, and pin that forex was not dragged along with it.
+ */
+function auditCommodityInstrumentRouting(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const commodities = ["GOLD", "OIL", "SILVER"];
+  const forex = ["EURUSD", "GBPUSD", "USDJPY"];
+  const crypto = ["BTC", "ETH", "SOL"];
+
+  const routed = commodities.filter((a) => routeProvider(a) === "BYBIT_LINEAR" && tradesContinuously(a));
+  out.push(routed.length === commodities.length
+    ? result("PASS", "commodities price from Bybit perpetuals", `${routed.join(", ")} route to BYBIT_LINEAR`)
+    : result("FAIL", "commodities price from Bybit perpetuals", `only ${routed.join(", ") || "none"} routed to Bybit`));
+
+  // OIL must be WTI. Bybit lists Brent as BZUSDT at a third of the turnover,
+  // and this system has always meant WTI by OIL.
+  out.push(SUPPORTED_ASSETS.OIL.bybitLinearSymbol === "CLUSDT"
+    ? result("PASS", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}, with BZUSDT deliberately unused`)
+    : result("FAIL", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}`));
+
+  // Forex has no perpetual and must stay on Yahoo with closed-market rules.
+  const fxOnYahoo = forex.every((a) => routeProvider(a) === "YAHOO" && !tradesContinuously(a));
+  out.push(fxOnYahoo
+    ? result("PASS", "forex was not dragged onto Bybit", "EURUSD, GBPUSD, USDJPY still route to YAHOO")
+    : result("FAIL", "forex was not dragged onto Bybit", "a forex pair changed provider"));
+
+  // A perpetual trades through the weekend; the metal's futures pit does not.
+  const saturday = new Date(Date.UTC(2026, 8, 5, 12));
+  const commodityOpen = commodities.every((a) => sessionState(a, saturday).isOpen);
+  const forexClosed = forex.every((a) => !sessionState(a, saturday).isOpen);
+  out.push(commodityOpen && forexClosed
+    ? result("PASS", "weekend hours follow the contract, not the underlying", "commodity perps open on Saturday; forex correctly closed")
+    : result("FAIL", "weekend hours follow the contract, not the underlying", `commodityOpen=${commodityOpen} forexClosed=${forexClosed}`));
+
+  // Staleness tolerance must tighten to the continuous standard. A perp has no
+  // excuse for an hour-old bar; a closed market does.
+  const HOUR = 3600;
+  const now = Math.floor(Date.now() / 1000);
+  const agedBars = (hoursOld: number) => Array.from({ length: 60 }, (_, i) => ({
+    time: now - (hoursOld + 59 - i) * HOUR, open: 100, high: 101, low: 99, close: 100, volume: 5,
+  }));
+  const base = { timeframe: "1h" as const, primarySource: "BYBIT_LINEAR" as const, fallbackUsed: false, cacheAgeSeconds: 5, sourceAgreementScore: 1, apiFailureStreak: 0 };
+  const goldStale = scoreFeedHealth({ ...base, asset: "GOLD", candles: agedBars(4) });
+  const fxTolerant = scoreFeedHealth({ ...base, asset: "EURUSD", primarySource: "YAHOO", candles: agedBars(4) });
+  out.push(goldStale.stale && !fxTolerant.stale
+    ? result("PASS", "commodity staleness tightened to the continuous standard", "a 4h-old 1h bar is stale for a gold perp but tolerated for closed-market forex")
+    : result("FAIL", "commodity staleness tightened to the continuous standard", `gold stale=${goldStale.stale}, forex stale=${fxTolerant.stale}`));
+
+  // Crypto must be untouched by any of this.
+  out.push(crypto.every((a) => routeProvider(a) === "BYBIT_LINEAR" && tradesContinuously(a) && sessionState(a, saturday).isOpen)
+    ? result("PASS", "crypto routing is unchanged", "BTC, ETH, SOL still Bybit and still 24/7")
+    : result("FAIL", "crypto routing is unchanged", "the commodity move disturbed crypto routing"));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2503,6 +2586,7 @@ async function main() {
     ...auditRegimeConditioning(),
     ...auditNonCryptoExclusion(),
     ...auditFeedHealthScoring(),
+    ...auditCommodityInstrumentRouting(),
   ];
 
   try {

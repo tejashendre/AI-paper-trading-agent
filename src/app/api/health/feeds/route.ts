@@ -36,8 +36,8 @@ export async function GET() {
     const feeds = Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => ({
       asset,
       category: config.category,
-      upstream: config.category === "crypto" ? "Bybit linear perpetuals" : "Yahoo Finance",
-      instrument: config.category === "crypto" ? config.bybitLinearSymbol : config.yahooTicker,
+      upstream: config.bybitLinearSymbol ? "Bybit linear perpetuals" : "Yahoo Finance",
+      instrument: config.bybitLinearSymbol || config.yahooTicker,
     }));
 
     const blocked = matrix.assets.filter((a) => !a.safeForSwingExecution);
