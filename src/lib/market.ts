@@ -21,9 +21,22 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
   EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "EURUSD=X", coingeckoId: "" },
   GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "GBPUSD=X", coingeckoId: "" },
   USDJPY: { name: "USD/JPY", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
-  GOLD: { name: "Gold", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
-  OIL: { name: "Crude Oil", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
-  SILVER: { name: "Silver", category: "commodity", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
+  // Commodities are quoted from Bybit perpetuals rather than Yahoo futures.
+  // Yahoo's intraday candles for CME contracts run about ten hours behind while
+  // its quote stays current, which left signals computed on stale bars and the
+  // whole sleeve failing closed. The Bybit contracts trade continuously, return
+  // complete 15m/1h/4h series with no gaps and no zero-volume bars, and sit on
+  // the same venue as the crypto feed, so one outage story covers everything.
+  //
+  // The yahooTicker is kept as the reference the price was validated against:
+  // Bybit XAU 4410 vs Yahoo GC=F 4477, CL 92.47 vs CL=F 91.48, XAG 66.03 vs
+  // SI=F 66.75. The gaps are the ordinary spot-versus-futures basis, so these
+  // track the same underlying without being the same contract.
+  GOLD: { name: "Gold", category: "commodity", bybitLinearSymbol: "XAUUSDT", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
+  // WTI, not Brent. Bybit lists both; WTI turns over $34.7M a day against
+  // Brent's $10.2M, and WTI is what this system has always meant by OIL.
+  OIL: { name: "Crude Oil", category: "commodity", bybitLinearSymbol: "CLUSDT", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
+  SILVER: { name: "Silver", category: "commodity", bybitLinearSymbol: "XAGUSDT", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
 };
 
 export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
@@ -54,9 +67,24 @@ export function marketImbalanceKey(source: string, assetKey: string): string {
   return `market:imbalance:${source}:${assetKey}`;
 }
 
+/**
+ * Whether this asset is quoted from a continuously traded perpetual.
+ *
+ * Data routing, staleness tolerance and session hours all follow the
+ * *instrument* rather than the asset's category. Gold is a commodity, but a
+ * gold perpetual trades through the weekend and publishes a bar every minute,
+ * so applying commodity session rules to it would wrongly mark it closed and
+ * applying the eight-times staleness allowance would let genuinely stale data
+ * through. Category still governs risk treatment, where "is this a commodity"
+ * remains the right question.
+ */
+export function tradesContinuously(assetKey: string): boolean {
+  return Boolean(SUPPORTED_ASSETS[assetKey]?.bybitLinearSymbol);
+}
+
 export function primaryMarketDataProvider(assetKey: string): PrimaryMarketDataProvider {
   const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-  return config.category === "crypto" ? CRYPTO_EXECUTION_PROVIDER : "YAHOO";
+  return config.bybitLinearSymbol ? CRYPTO_EXECUTION_PROVIDER : "YAHOO";
 }
 
 export function marketPriceCacheKey(assetKey: string): string {
@@ -142,7 +170,9 @@ export class MarketService {
       "1h": 60 * 60_000,
       "4h": 4 * 60 * 60_000,
     };
-    const ageMultiplier = config.category === "crypto" ? 2.5 : 8.0;
+    // Tolerance follows the instrument: a continuously quoted perp has no
+    // excuse for an old bar, whereas a market that closes legitimately does.
+    const ageMultiplier = config.bybitLinearSymbol ? 2.5 : 8.0;
     return (timeframeMs[timeframe] || 60 * 60_000) * ageMultiplier;
   }
 
@@ -188,7 +218,7 @@ export class MarketService {
 
   static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number, openInterest?: number }> {
     const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || config.category !== "crypto" || !config.bybitLinearSymbol) return {};
+    if (!config || !config.bybitLinearSymbol) return {};
 
     const redis = getRedis();
     const cacheKey = `cache:deep_sensors:v2:${CRYPTO_EXECUTION_PROVIDER}:${assetKey}`;
@@ -271,7 +301,7 @@ export class MarketService {
     // Crypto signals, entries, and lifecycle prices must all describe the same
     // Bybit USDT perpetual instrument. Comparison venues never become hidden
     // execution fallbacks.
-    if (config.category === "crypto" && config.bybitLinearSymbol) {
+    if (config.bybitLinearSymbol) {
       try {
         const candles = this.normalizeCandles(
           assetKey,
@@ -453,7 +483,10 @@ export class MarketService {
     const cacheKey = marketPriceCacheKey(assetKey);
     const cacheMetaKey = marketPriceMetaCacheKey(assetKey);
 
-    if (config.category === "crypto") {
+    // Commodities reach the Bybit branch too. They are not on the websocket
+    // mesh, so the live-price lookup simply misses and the HTTP ticker below
+    // serves them, which is the same path crypto uses when its socket is cold.
+    if (config.bybitLinearSymbol) {
       try {
         const [livePrice, liveMeta] = await Promise.all([
           redis.get<number | string>(marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
@@ -580,7 +613,7 @@ export class MarketService {
 
     const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
 
-    if (config.category === "crypto" && config.bybitLinearSymbol) {
+    if (config.bybitLinearSymbol) {
       try {
         const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
         const close = Number(ticker.lastPrice);
@@ -659,7 +692,7 @@ export class MarketService {
     }
 
     const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || config.category !== "crypto" || !config.bybitLinearSymbol) {
+    if (!config || !config.bybitLinearSymbol) {
       return { bidVolume: 0, askVolume: 0, imbalanceRatio: 1, isBullish: false, isBearish: false };
     }
 

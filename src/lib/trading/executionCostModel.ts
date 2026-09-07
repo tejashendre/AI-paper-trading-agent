@@ -91,6 +91,14 @@ const PROFILES: Record<string, ExecutionCostProfile> = {
   EURUSD: { asset: "EURUSD", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.5, baseSlippageBps: 0.4, sizeImpactBps: 0.2, referenceNotionalUsd: 100_000, stopGapBps: 1.5, carryBpsPerDay: 1.0 },
   GBPUSD: { asset: "GBPUSD", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.8, baseSlippageBps: 0.6, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
   USDJPY: { asset: "USDJPY", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.7, baseSlippageBps: 0.5, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
+  // These three now price from Bybit perpetuals rather than a synthetic proxy.
+  // The figures below are deliberately left as they were, because measured
+  // against the live book they are now conservative: Bybit quotes gold at about
+  // 0.01bps half-spread, crude at 0.54 and silver at 0.76, against the 1.5, 2.5
+  // and 3.0 charged here. Over-charging understates the edge, which is the safe
+  // direction to be wrong in, so this is not tuned down. The stop-gap
+  // allowances are likewise generous now that these contracts trade through the
+  // weekend instead of gapping across a closed session.
   GOLD: { asset: "GOLD", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 1.5, baseSlippageBps: 1.0, sizeImpactBps: 0.5, referenceNotionalUsd: 20_000, stopGapBps: 4.0, carryBpsPerDay: 1.5 },
   OIL: { asset: "OIL", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 2.5, baseSlippageBps: 2.0, sizeImpactBps: 0.8, referenceNotionalUsd: 15_000, stopGapBps: 8.0, carryBpsPerDay: 2.0 },
   SILVER: { asset: "SILVER", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 3.0, baseSlippageBps: 2.5, sizeImpactBps: 1.0, referenceNotionalUsd: 12_500, stopGapBps: 8.0, carryBpsPerDay: 2.0 },

@@ -44,8 +44,10 @@ export function scoreFeedHealth(input: FeedHealthInput): FeedHealthReport {
   const latestCandleTime = candles.length > 0 ? candles[candles.length - 1].time * 1000 : 0;
   const candleAge = nowMs - latestCandleTime;
   const config = SUPPORTED_ASSETS[asset];
-  const isCrypto = config?.category === 'crypto';
-  const ageMultiplier = isCrypto ? 2.5 : 8.0;
+  // Follows the instrument, not the asset class: a commodity quoted from a
+  // perpetual trades continuously and is held to the continuous standard.
+  const continuous = Boolean(config?.bybitLinearSymbol);
+  const ageMultiplier = continuous ? 2.5 : 8.0;
   const stale = candles.length > 0 && candleAge > intervalMs * ageMultiplier;
 
   if (stale) {
@@ -68,7 +70,7 @@ export function scoreFeedHealth(input: FeedHealthInput): FeedHealthReport {
 
   // ── Missing candles ──────────────────────────────────────────
   const { missing, duplicates, zeroVolume, abnormalRange, venueReportsVolume } =
-    analyzeCandles(candles, intervalMs, isCrypto);
+    analyzeCandles(candles, intervalMs, continuous);
 
   if (missing > 0) {
     const missingPct = (missing / Math.max(candles.length, 1)) * 100;
