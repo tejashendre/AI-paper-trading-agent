@@ -59,9 +59,9 @@ markets it returns +96% in a 12-month replay. See
 ```mermaid
 flowchart LR
     subgraph FREE["Free public market data — no API keys"]
-        BYBIT["Bybit v5<br/>klines · tickers · funding"]
+        BYBIT["Bybit v5<br/>klines · tickers · funding<br/>crypto + commodities"]
         WS["Bybit / Binance / Kraken<br/>websockets"]
-        YAHOO["Yahoo<br/>forex + commodities"]
+        YAHOO["Yahoo<br/>forex only"]
     end
 
     subgraph ORACLE["Oracle Cloud VPS — Docker Compose"]
@@ -90,6 +90,42 @@ Request budget is deliberately tiny. One `tickers` call returns the price and
 turnover of every perpetual at once; momentum needs one `kline` call per symbol
 per rebalance. At a 12-hour cadence over ~50 symbols that is roughly a hundred
 requests a day, far inside free rate limits.
+
+### Which feed serves which asset, and why
+
+| Asset class | Assets | Feed | Instrument |
+|---|---|---|---|
+| Crypto | BTC, ETH, SOL | Bybit v5 | `BTCUSDT`, `ETHUSDT`, `SOLUSDT` |
+| Commodities | GOLD, OIL, SILVER | Bybit v5 | `XAUUSDT`, `CLUSDT`, `XAGUSDT` |
+| Forex | EURUSD, GBPUSD, USDJPY | Yahoo Finance | `EURUSD=X`, `GBPUSD=X`, `USDJPY=X` |
+
+Commodities are priced from a crypto venue, which is not the obvious choice, so
+the reason is worth stating. They were on Yahoo's CME futures until 2026-09-07,
+where the intraday candles ran about ten hours behind while the quote stayed
+current. Indicators are computed from candles and marks are taken from quotes,
+so the price was right and the signal was not, and the swing engine correctly
+refused to scan. The commodity sleeve was silently idle. The Bybit contracts
+return complete 15m, 1h and 4h series with no gaps and no zero-volume bars.
+
+`OIL` is WTI (`CLUSDT`), not Brent. Bybit lists Brent as `BZUSDT`, but WTI turns
+over roughly three times as much and WTI is what this system has always meant by
+oil. `strategy-audit.ts` names every expected mapping, so oil quietly becoming
+Brent fails before it reaches a book.
+
+**Routing follows the instrument, not the asset class.** Three behaviours key
+off `bybitLinearSymbol` rather than `category`:
+
+- **Data source.** Anything with a perpetual reads from Bybit.
+- **Session hours.** A gold perpetual trades through the weekend even though the metal's futures pit does not, so it is never marked closed.
+- **Staleness tolerance.** A continuously quoted contract is held to 2.5x its bar interval; a market that legitimately closes gets 8x.
+
+Category still governs *risk* treatment, where "is this a commodity" remains the
+right question: commodity leverage stays capped at 3x against crypto's 5x.
+
+Feed status for every asset is public at `/api/health/feeds`, because a stale
+feed does not announce itself: one stale timeframe rejects the whole scan for an
+asset, and nothing in the portfolio view distinguishes "found no setup" from
+"could not look".
 
 ## How a swing trade is decided
 

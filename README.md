@@ -22,7 +22,7 @@ The core decision path does **not** depend on an LLM. Optional language-model fe
 
 `mermaid
 graph TD
-    A[Market Data Providers] -->|Kraken/Yahoo APIs| B(Data Ingestion Service)
+    A[Market Data Providers] -->|Bybit v5 / Yahoo| B(Data Ingestion Service)
     B -->|Normalizes OHLCV| C[(Redis State Store)]
     C -->|Feed| D{Signal Generator}
     
@@ -55,9 +55,9 @@ This is an autonomous **swing-trading simulator**, not an HFT engine. It is buil
 
 ## 4. Tech Stack
 
-- **Framework:** Next.js 14, TypeScript
+- **Framework:** Next.js 15, TypeScript
 - **Database/Cache:** Redis
-- **Data Integrations:** Kraken API, Yahoo Finance API
+- **Data Integrations:** Bybit v5 public API (crypto and commodities), Yahoo Finance (forex). Kraken, Binance and Bybit websockets supply redundant realtime crypto prices. No API keys, no paid tiers.
 - **UI:** Lightweight-Charts
 - **Alerts:** Telegram API
 
