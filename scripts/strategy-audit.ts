@@ -37,7 +37,14 @@ import { estimateHalfSpreadBps, estimateOneWayCostBps } from "../src/lib/executi
 import { estimateBookCapacity, estimateStrategyCapacity } from "../src/lib/execution/capacity";
 import { compareSleeves, MIN_OVERLAP, pearson } from "../src/lib/research/sleeveCorrelation";
 import { analyseRegimeConditioning, MIN_PERIODS_PER_BUCKET } from "../src/lib/research/regimeConditioning";
-import { DEFAULT_UNIVERSE } from "../src/lib/strategy/crossSectionalMomentum";
+import {
+  baseCoinOf,
+  DEFAULT_UNIVERSE,
+  isNonCryptoSymbol,
+  NON_CRYPTO_BASE_COINS,
+  screenUniverseDetailed,
+  UniverseCandidate,
+} from "../src/lib/strategy/crossSectionalMomentum";
 import {
   CRYPTO_EXECUTION_PROVIDER,
   CRYPTO_EXECUTION_SOURCE,
@@ -2034,6 +2041,64 @@ function auditRegimeConditioning(): AuditResult[] {
   return out;
 }
 
+/**
+ * The universe screen is what makes "crypto cross-sectional momentum" true of
+ * the live book. On 2026-09-07 it was not: the book held short AAPL and short
+ * TSLA against long crypto, because the venue had begun listing tokenised
+ * equities that pass every liquidity and history test.
+ */
+function auditNonCryptoExclusion(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const candidate = (symbol: string, turnover = 50e6): UniverseCandidate => ({
+    symbol, turnover24h: turnover, historyHours: 24 * 365, barCoverage: 1,
+  });
+
+  // The exact instruments found in the live book and universe that day.
+  const contaminants = ["AAPLUSDT", "TSLAUSDT", "XOMUSDT", "XAUUSDT", "SOXLUSDT", "SNDKUSDT", "KORUUSDT", "CLUSDT"];
+  const crypto = ["BTCUSDT", "ETHUSDT", "ZECUSDT", "XMRUSDT", "TAOUSDT", "DASHUSDT", "ORCAUSDT", "1000PEPEUSDT", "FARTCOINUSDT"];
+
+  const screen = screenUniverseDetailed([...contaminants, ...crypto].map((s) => candidate(s)));
+  const leaked = contaminants.filter((s) => screen.eligible.includes(s));
+  out.push(leaked.length === 0
+    ? result("PASS", "tokenised equities cannot enter the ranking", `all ${contaminants.length} excluded: ${contaminants.map((s) => s.replace("USDT", "")).join(", ")}`)
+    : result("FAIL", "tokenised equities cannot enter the ranking", `${leaked.join(", ")} passed the screen into a crypto momentum book`));
+
+  const dropped = crypto.filter((s) => !screen.eligible.includes(s));
+  out.push(dropped.length === 0
+    ? result("PASS", "the exclusion does not catch real crypto", `${crypto.length} crypto names survived, including the spot-less ones (ZEC, XMR, TAO, DASH)`)
+    : result("FAIL", "the exclusion does not catch real crypto", `${dropped.join(", ")} were wrongly excluded`));
+
+  // The rejection list is the only defence against the hand-maintained
+  // denylist going stale, so it has to actually report.
+  out.push(screen.rejectedNonCrypto.length === contaminants.length
+    ? result("PASS", "non-crypto rejections are reported, not silent", `${screen.rejectedNonCrypto.length} reported for operator review`)
+    : result("FAIL", "non-crypto rejections are reported, not silent", `${screen.rejectedNonCrypto.length} reported against ${contaminants.length} excluded`));
+
+  // Excluding by base coin rather than full symbol, so a requote cannot re-admit.
+  out.push(isNonCryptoSymbol("AAPLUSDC") && isNonCryptoSymbol("AAPLUSD") && baseCoinOf("1000PEPEUSDT") === "1000PEPE"
+    ? result("PASS", "exclusion is by base coin, not symbol string", "AAPL is blocked under USDT, USDC and USD quotes")
+    : result("FAIL", "exclusion is by base coin, not symbol string", "a requoted equity perp would re-enter the universe"));
+
+  // An unrecognised symbol format must still be screened rather than admitted
+  // on the assumption that it parsed correctly.
+  out.push(baseCoinOf("WEIRD") === "WEIRD"
+    ? result("PASS", "an unparseable symbol still gets checked", "baseCoinOf falls back to the whole symbol rather than an empty base")
+    : result("FAIL", "an unparseable symbol still gets checked", `baseCoinOf("WEIRD") returned ${baseCoinOf("WEIRD")}`));
+
+  // A thin non-crypto name is excluded but not reported, so the operator's
+  // review list stays short enough to read.
+  const thin = screenUniverseDetailed([candidate("AAPLUSDT", 1e6), candidate("BTCUSDT")]);
+  out.push(!thin.eligible.includes("AAPLUSDT") && thin.rejectedNonCrypto.length === 0
+    ? result("PASS", "sub-threshold non-crypto names are excluded quietly", "only tradeable contaminants are surfaced for review")
+    : result("FAIL", "sub-threshold non-crypto names are excluded quietly", `eligible=${thin.eligible.join(",")} reported=${thin.rejectedNonCrypto.join(",")}`));
+
+  out.push(NON_CRYPTO_BASE_COINS.length >= 10
+    ? result("PASS", "the exclusion list covers what was found live", `${NON_CRYPTO_BASE_COINS.length} base coins listed`)
+    : result("WARN", "the exclusion list covers what was found live", `only ${NON_CRYPTO_BASE_COINS.length} entries`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2347,6 +2412,7 @@ async function main() {
     ...auditCapacity(),
     ...auditSleeveCorrelation(),
     ...auditRegimeConditioning(),
+    ...auditNonCryptoExclusion(),
   ];
 
   try {

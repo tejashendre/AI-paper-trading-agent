@@ -238,7 +238,12 @@ export async function buildCostVerdict(): Promise<CostVerdict> {
     verdict, message,
   };
 
-  await getRedis().set(RECONCILIATION_VERDICT_KEY, result, { ex: 3600 }).catch(() => undefined);
+  // No TTL. Fills only occur at a rebalance, so the verdict is only recomputed
+  // every twelve hours; a one-hour expiry meant the dashboard reported "no data"
+  // for roughly eleven hours in twelve, which read as the check being broken
+  // rather than as the measurement it is. The verdict is a durable statement
+  // about the model until new fills change it.
+  await getRedis().set(RECONCILIATION_VERDICT_KEY, result).catch(() => undefined);
   if (verdict === "MODEL_OPTIMISTIC") {
     await Logger.warn(`[COST] ${message}`).catch(() => undefined);
   }
