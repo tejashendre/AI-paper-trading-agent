@@ -2,7 +2,7 @@ import { getRedis } from "@/lib/redis";
 import { Logger } from "@/lib/logger";
 import {
   DEFAULT_UNIVERSE,
-  screenUniverse,
+  screenUniverseDetailed,
   UniverseCandidate,
   UniverseConfig,
 } from "@/lib/strategy/crossSectionalMomentum";
@@ -37,6 +37,12 @@ export interface MomentumSnapshot {
   takenAt: string;
   lookbackHours: number;
   universe: string[];
+  /**
+   * Liquid names dropped for not being crypto. Reported rather than discarded
+   * because the exclusion list is hand-maintained and this is how an operator
+   * sees whether it is still catching everything.
+   */
+  rejectedNonCrypto: string[];
   /** Trailing return over the lookback window, by symbol. */
   momentum: Map<string, number>;
   prices: Map<string, PerpTicker>;
@@ -179,7 +185,8 @@ export async function buildMomentumSnapshot(input: {
   });
   await Promise.all(workers);
 
-  const universe = screenUniverse(candidates, universeConfig);
+  const screen = screenUniverseDetailed(candidates, universeConfig);
+  const universe = screen.eligible;
   const momentum = new Map<string, number>();
 
   for (const symbol of universe) {
@@ -201,6 +208,7 @@ export async function buildMomentumSnapshot(input: {
     takenAt: new Date().toISOString(),
     lookbackHours: input.lookbackHours,
     universe: [...momentum.keys()],
+    rejectedNonCrypto: screen.rejectedNonCrypto,
     momentum,
     prices,
     warnings,
@@ -212,9 +220,17 @@ export async function buildMomentumSnapshot(input: {
       lookbackHours: snapshot.lookbackHours,
       size: snapshot.universe.length,
       symbols: snapshot.universe,
+      rejectedNonCrypto: screen.rejectedNonCrypto,
       warnings: warnings.slice(0, 10),
     }, { ex: 3600 })
     .catch(() => undefined);
+
+  if (screen.rejectedNonCrypto.length > 0) {
+    await Logger.info(
+      `[UNIVERSE] excluded ${screen.rejectedNonCrypto.length} liquid non-crypto instrument(s) from the ranking: ` +
+      `${screen.rejectedNonCrypto.join(", ")}.`
+    ).catch(() => undefined);
+  }
 
   if (warnings.length > 0) {
     await Logger.warn(`[UNIVERSE] ${warnings.length} symbol(s) excluded: ${warnings.slice(0, 3).join("; ")}`).catch(() => undefined);

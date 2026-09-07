@@ -41,6 +41,66 @@ export interface UniverseCandidate {
   barCoverage: number;
 }
 
+/**
+ * Base coins listed as perpetuals whose underlying is not a crypto asset.
+ *
+ * The venue began listing tokenised equities, leveraged equity ETFs and
+ * commodities as USDT perpetuals during 2026. They pass every screen this
+ * strategy had: they are liquid, they have months of history, and — unlike a
+ * real equity feed — they are quoted continuously, so the bar-coverage guard
+ * does not see the gaps that would give them away.
+ *
+ * That matters beyond labelling. This book claims to be market-neutral because
+ * a dollar-neutral basket of crypto perps cancels the direction of one asset
+ * class. Long ZEC against short AAPL cancels nothing; it is an unhedged bet
+ * across two unrelated markets. The leveraged ETFs are worse still: SOXL and
+ * KORU are 3x daily products that decay in choppy conditions regardless of
+ * direction, so a 72-hour momentum reading on them measures the decay, not a
+ * trend.
+ *
+ * Three behavioural discriminators were tested against live data on
+ * 2026-09-07 and all three failed, which is why this list is explicit:
+ *
+ *   - Weekend versus weekday volatility. Overlaps: BTC scored 0.47, XOM 0.63.
+ *   - Share of flat hourly bars. Caught XOM at 19%, but AAPL (0.14%), TSLA and
+ *     XAU are quoted continuously and scored the same as crypto.
+ *   - Presence of a spot pair on the same venue. Would have excluded ZEC, XMR,
+ *     TAO, DASH, ORCA and 1000PEPE, all genuine crypto.
+ *
+ * So the list is maintained by hand and cannot be self-maintaining. What
+ * protects it from rotting is `screenUniverseDetailed`, which reports what it
+ * dropped, and the rebalance log, which records the ranked universe so a new
+ * arrival is visible rather than silent.
+ *
+ * Identified by matching the perpetual's price against the real-world
+ * instrument: XAU quoted 4401 against gold's spot, SNDK 1778 against SanDisk,
+ * SOXL 126, XOM 159, AAPL 320, TSLA 355, CL 92 against WTI crude.
+ */
+export const NON_CRYPTO_BASE_COINS: readonly string[] = [
+  // Tokenised single-name equities, with the price that identified each.
+  "AAPL",     // Apple, 320
+  "TSLA",     // Tesla, 355
+  "XOM",      // Exxon Mobil, 159
+  "SNDK",     // SanDisk, 1780
+  "SKHYNIX",  // SK Hynix, 1322
+  "SKHY",     // SK Hynix, second listing, 179
+  "MSTR",     // Strategy (MicroStrategy), 143
+  "MU",       // Micron Technology, 1037
+  "CRCL",     // Circle Internet Group, 103
+  // Leveraged equity ETFs. 3x daily products whose value decays in choppy
+  // conditions regardless of direction, so a 72-hour momentum reading on one
+  // measures the decay rather than a trend.
+  "SOXL",     // Direxion Daily Semiconductor Bull 3x, 127
+  "SOXS",     // the inverse, listed on other venues
+  "KORU",     // Direxion Daily South Korea Bull 3x, 24
+  // Commodities. XAUT is a gold-backed token: the wrapper is crypto but the
+  // price it tracks is the gold price, which is the thing being ranked.
+  "XAU",      // gold, 4405
+  "XAUT",     // Tether Gold, 4396
+  "XAG",      // silver, 66
+  "CL",       // WTI crude, 92
+];
+
 export interface UniverseConfig {
   /** Minimum 24h turnover for a symbol to be rankable. */
   minTurnover24hUsd: number;
@@ -50,6 +110,12 @@ export interface UniverseConfig {
   minHistoryHours: number;
   /** Symbols never traded regardless of screen result. */
   excluded: string[];
+  /**
+   * Base coins whose underlying is not a crypto asset. Excluded by base rather
+   * than by full symbol so a relisting under a different quote or a size
+   * variant cannot slip back in.
+   */
+  excludedBaseCoins?: string[];
   /** Minimum fraction of expected hourly bars for a symbol to be rankable. */
   minBarCoverage: number;
 }
@@ -69,9 +135,9 @@ export const DEFAULT_UNIVERSE: UniverseConfig = {
   // One month. A freshly listed perp has no comparable momentum history and
   // its early prints are dominated by listing dynamics.
   minHistoryHours: 24 * 30,
-  // Stablecoins have no momentum worth ranking. Everything else earns its
-  // place through the liquidity and history screens rather than by name.
+  // Stablecoins have no momentum worth ranking.
   excluded: ["USDCUSDT", "USDEUSDT", "USDCUSDC"],
+  excludedBaseCoins: [...NON_CRYPTO_BASE_COINS],
   // Guards against a gappy or partially-backfilled feed, not against
   // non-crypto instruments — see the note on UniverseCandidate.barCoverage.
   minBarCoverage: 0.95,
@@ -162,22 +228,76 @@ export interface BookPlan {
 }
 
 /** Liquidity and history screen. Ordering is by turnover, largest first. */
+/**
+ * Base coin of a USDT-quoted perpetual. Returns the symbol unchanged when it
+ * does not end in a recognised quote, so an unexpected format fails toward
+ * being checked rather than toward being admitted.
+ */
+export function baseCoinOf(symbol: string): string {
+  for (const quote of ["USDT", "USDC", "USD"]) {
+    if (symbol.endsWith(quote) && symbol.length > quote.length) return symbol.slice(0, -quote.length);
+  }
+  return symbol;
+}
+
+export function isNonCryptoSymbol(
+  symbol: string,
+  config: UniverseConfig = DEFAULT_UNIVERSE
+): boolean {
+  const denied = new Set(config.excludedBaseCoins ?? []);
+  return denied.has(baseCoinOf(symbol));
+}
+
+export interface UniverseScreen {
+  eligible: string[];
+  /** Names dropped for being equities, ETFs or commodities rather than crypto. */
+  rejectedNonCrypto: string[];
+}
+
+/**
+ * Screen the universe, reporting what was dropped for not being crypto.
+ *
+ * The rejection list is returned rather than discarded because this screen
+ * cannot be self-maintaining: the venue keeps listing new non-crypto
+ * instruments, and no measurable property separates them reliably (see
+ * NON_CRYPTO_BASE_COINS). Surfacing what the list caught is the only way an
+ * operator can tell whether it is still complete.
+ */
+export function screenUniverseDetailed(
+  candidates: UniverseCandidate[],
+  config: UniverseConfig = DEFAULT_UNIVERSE
+): UniverseScreen {
+  const excluded = new Set(config.excluded);
+  const rejectedNonCrypto: string[] = [];
+
+  const eligible = candidates
+    .filter((c) => {
+      if (excluded.has(c.symbol)) return false;
+      if (isNonCryptoSymbol(c.symbol, config)) {
+        // Only report names that would otherwise have been tradeable, so the
+        // list is short enough to actually read.
+        if (c.turnover24h >= config.minTurnover24hUsd) rejectedNonCrypto.push(c.symbol);
+        return false;
+      }
+      return (
+        Number.isFinite(c.turnover24h) &&
+        c.turnover24h >= config.minTurnover24hUsd &&
+        c.historyHours >= config.minHistoryHours &&
+        c.barCoverage >= config.minBarCoverage
+      );
+    })
+    .sort((a, b) => b.turnover24h - a.turnover24h)
+    .slice(0, config.maxSymbols)
+    .map((c) => c.symbol);
+
+  return { eligible, rejectedNonCrypto };
+}
+
 export function screenUniverse(
   candidates: UniverseCandidate[],
   config: UniverseConfig = DEFAULT_UNIVERSE
 ): string[] {
-  const excluded = new Set(config.excluded);
-  return candidates
-    .filter((c) =>
-      !excluded.has(c.symbol) &&
-      Number.isFinite(c.turnover24h) &&
-      c.turnover24h >= config.minTurnover24hUsd &&
-      c.historyHours >= config.minHistoryHours &&
-      c.barCoverage >= config.minBarCoverage
-    )
-    .sort((a, b) => b.turnover24h - a.turnover24h)
-    .slice(0, config.maxSymbols)
-    .map((c) => c.symbol);
+  return screenUniverseDetailed(candidates, config).eligible;
 }
 
 /**

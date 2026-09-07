@@ -384,6 +384,9 @@ export async function logRebalance(result: RebalanceResult, plan: BookPlan): Pro
     at: new Date().toISOString(),
     strategyVersion: plan.strategyVersion,
     universeSize: plan.universeSize,
+    // The ranked names themselves, so a non-crypto instrument arriving in the
+    // universe is visible on the dashboard rather than only in a log line.
+    universe: plan.targets.map((t) => t.symbol),
     executed: result.executed,
     skipped: result.skipped,
     turnover: result.turnover,
