@@ -9,6 +9,7 @@ import { PortfolioGuards } from "../src/lib/trading/portfolioGuards";
 import { calculateLearningAdjustment, LocalLearningRule } from "../src/lib/trading/localLearning";
 import { SetupPerformance } from "../src/lib/trading/setupPerformance";
 import { hurstExponent } from "../src/lib/statistics";
+import { scoreFeedHealth } from "../src/lib/data/feedHealth";
 import { isEventBlackout } from "../src/lib/trading/eventCalendar";
 import {
   buildEntryGateDiagnostics,
@@ -2099,6 +2100,94 @@ function auditNonCryptoExclusion(): AuditResult[] {
   return out;
 }
 
+/**
+ * The feed-health scorer decides whether an asset is allowed to trade at all.
+ * On 2026-09-07 it was scoring forex on crypto assumptions: Yahoo publishes no
+ * volume for spot FX and FX shuts every weekend, so every FX feed carried a
+ * permanent 45-point penalty for behaving exactly as FX behaves. USDJPY fell
+ * under 50 and was disabled while its data was fresh and correct.
+ *
+ * These pin the correction without loosening the checks it must not touch.
+ */
+function auditFeedHealthScoring(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const HOUR = 3600;
+  const now = Math.floor(Date.now() / 1000);
+
+  // A clean continuous series ending now, walking forward from `startBack` hours ago.
+  const series = (hours: number, volume: number, skip?: (t: number) => boolean) => {
+    const bars = [];
+    for (let i = hours - 1; i >= 0; i--) {
+      const t = now - i * HOUR;
+      if (skip && skip(t)) continue;
+      bars.push({ time: t, open: 100, high: 101, low: 99, close: 100, volume });
+    }
+    return bars;
+  };
+
+  const base = {
+    timeframe: "1h" as const,
+    primarySource: "YAHOO" as const,
+    fallbackUsed: false,
+    cacheAgeSeconds: 5,
+    sourceAgreementScore: 1,
+    apiFailureStreak: 0,
+  };
+
+  // Forex: no volume ever reported, and weekends absent. Both are correct
+  // behaviour for the instrument and must not be scored as defects.
+  const fx = scoreFeedHealth({
+    ...base, asset: "EURUSD",
+    candles: series(240, 0, (t) => { const d = new Date(t * 1000).getUTCDay(); return d === 6 || d === 0; }),
+  });
+  out.push(fx.score >= 80 && fx.status === "GOOD"
+    ? result("PASS", "forex is not penalised for being forex", `EURUSD scores ${fx.score} (${fx.status}) with no volume and weekends absent`)
+    : result("FAIL", "forex is not penalised for being forex", `EURUSD scored ${fx.score} (${fx.status}); warnings: ${fx.warnings.join("; ")}`));
+
+  // The genuine anomaly must survive: a venue that reports volume and then
+  // drops it on some bars is still broken.
+  const partial = scoreFeedHealth({
+    ...base, asset: "BTC",
+    candles: series(240, 10).map((c, i) => (i % 3 === 0 ? { ...c, volume: 0 } : c)),
+  });
+  out.push(partial.warnings.some((w) => w.includes("zero volume")) && partial.score < 100
+    ? result("PASS", "partial volume loss is still an anomaly", `score ${partial.score}, flagged intermittent zero-volume bars`)
+    : result("FAIL", "partial volume loss is still an anomaly", `a feed dropping volume on a third of its bars scored ${partial.score} with warnings: ${partial.warnings.join("; ")}`));
+
+  // A hole during an open session is real data loss and must still be counted.
+  const midweekHole = series(240, 0).filter((c) => {
+    const d = new Date(c.time * 1000);
+    const day = d.getUTCDay();
+    return !(day >= 1 && day <= 4 && d.getUTCHours() >= 9 && d.getUTCHours() < 20);
+  });
+  const holed = scoreFeedHealth({ ...base, asset: "EURUSD", candles: midweekHole });
+  out.push(holed.warnings.some((w) => w.includes("missing candle"))
+    ? result("PASS", "gaps during open hours are still counted", `score ${holed.score}, flagged the weekday hole`)
+    : result("FAIL", "gaps during open hours are still counted", `weekday trading-hours data loss produced no warning (score ${holed.score})`));
+
+  // Crypto must keep the strict treatment: it trades continuously, so any gap
+  // is genuinely missing and any zero-volume bar is genuinely odd.
+  const cryptoGap = scoreFeedHealth({
+    ...base, asset: "BTC", primarySource: "BYBIT_LINEAR",
+    candles: series(240, 10, (t) => { const d = new Date(t * 1000).getUTCDay(); return d === 6 || d === 0; }),
+  });
+  out.push(cryptoGap.warnings.some((w) => w.includes("missing candle"))
+    ? result("PASS", "crypto weekend gaps are still failures", `BTC scored ${cryptoGap.score}; a 24/7 market missing weekends is a real fault`)
+    : result("FAIL", "crypto weekend gaps are still failures", `BTC tolerated missing weekends (score ${cryptoGap.score})`));
+
+  // Staleness must be untouched by any of this: it is what currently, and
+  // correctly, holds the commodity sleeve out of the market.
+  const staleCommodity = scoreFeedHealth({
+    ...base, asset: "GOLD",
+    candles: series(240, 0).map((c) => ({ ...c, time: c.time - 12 * HOUR })),
+  });
+  out.push(staleCommodity.stale && staleCommodity.warnings.some((w) => w.toLowerCase().includes("stale"))
+    ? result("PASS", "stale commodity data is still rejected", `12h-old 1h candles flagged stale, score ${staleCommodity.score}`)
+    : result("FAIL", "stale commodity data is still rejected", `12h-old candles were not flagged stale (score ${staleCommodity.score})`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2413,6 +2502,7 @@ async function main() {
     ...auditSleeveCorrelation(),
     ...auditRegimeConditioning(),
     ...auditNonCryptoExclusion(),
+    ...auditFeedHealthScoring(),
   ];
 
   try {

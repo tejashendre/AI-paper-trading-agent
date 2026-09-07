@@ -22,7 +22,11 @@ const PEAK_HOURS_UTC: Record<string, { open: number; close: number }> = {
 };
 
 // ─── Weekday market open check (unchanged from v1) ─────────────────────────
-function isWeekdayMarketOpen(now: Date): boolean {
+/**
+ * Exported so the feed-health scorer can tell a market being shut from a feed
+ * dropping data. Without that distinction every weekend looks like an outage.
+ */
+export function isWeekdayMarketOpen(now: Date): boolean {
   const day     = now.getUTCDay();
   const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
 
