@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
-import { SUPPORTED_ASSETS } from "@/lib/market";
+import { primaryMarketDataProvider, SUPPORTED_ASSETS } from "@/lib/market";
 
 export const dynamic = "force-dynamic";
 
@@ -33,12 +33,31 @@ export async function GET() {
 
     // The upstream each asset class depends on, so a reader can tell at a
     // glance whether a problem is one asset or one provider having an outage.
-    const feeds = Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => ({
-      asset,
-      category: config.category,
-      upstream: config.bybitLinearSymbol ? "Bybit linear perpetuals" : "Yahoo Finance",
-      instrument: config.bybitLinearSymbol || config.yahooTicker,
-    }));
+    // Derived from the router rather than restated here, so this can never
+    // drift from where the data actually comes from. It said "Yahoo" for the
+    // FX pairs for one deploy after they moved to Kraken, which is exactly the
+    // kind of quiet inaccuracy this endpoint exists to prevent.
+    const UPSTREAM_LABEL: Record<string, string> = {
+      BYBIT_LINEAR: "Bybit linear perpetuals",
+      KRAKEN: "Kraken spot",
+      YAHOO: "Yahoo Finance",
+    };
+    const feeds = Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => {
+      const provider = primaryMarketDataProvider(asset);
+      const instrument = provider === "BYBIT_LINEAR"
+        ? config.bybitLinearSymbol
+        : provider === "KRAKEN"
+          ? config.krakenPair
+          : config.yahooTicker;
+      return {
+        asset,
+        category: config.category,
+        provider,
+        upstream: UPSTREAM_LABEL[provider] ?? provider,
+        instrument,
+        streamsLive: Boolean(config.bybitLinearSymbol || config.krakenWsSymbol),
+      };
+    });
 
     const blocked = matrix.assets.filter((a) => !a.safeForSwingExecution);
     const plain = blocked.length === 0
