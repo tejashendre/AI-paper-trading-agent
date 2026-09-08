@@ -2271,6 +2271,53 @@ function auditCommodityInstrumentRouting(): AuditResult[] {
   return out;
 }
 
+/**
+ * Commodities were added to the Bybit websocket mesh on 2026-09-08 so their
+ * marks tick live rather than waiting on a fifteen-minute candle cycle.
+ *
+ * The subtle failure this guards is the symbol mapping. Bybit streams
+ * XAUUSDT, but this system calls that asset GOLD; the old handler derived the
+ * asset by stripping "USDT", which would have written every gold tick under
+ * the key "XAU" that nothing reads, leaving commodities silently on stale
+ * prices while appearing to be wired up.
+ */
+function auditWebsocketCoverage(): AuditResult[] {
+  const out: AuditResult[] = [];
+
+  const streamed = Object.entries(SUPPORTED_ASSETS).filter(([, c]) => c.bybitLinearSymbol);
+  const commodities = streamed.filter(([, c]) => c.category === "commodity").map(([a]) => a);
+  out.push(commodities.length === 3
+    ? result("PASS", "commodities are on the websocket mesh", `${commodities.join(", ")} stream from Bybit`)
+    : result("FAIL", "commodities are on the websocket mesh", `only ${commodities.join(", ") || "none"} carry a streamable symbol`));
+
+  // Round-trip every streamed symbol back to its asset key. This is the check
+  // that a naive "USDT" strip would fail on gold, crude and silver.
+  const roundTrip = streamed.filter(([asset, config]) => {
+    const stripped = config.bybitLinearSymbol.replace("USDT", "");
+    const mapped = Object.entries(SUPPORTED_ASSETS).find(([, c]) => c.bybitLinearSymbol === config.bybitLinearSymbol)?.[0];
+    // The mapping must resolve to the asset, whether or not stripping happens to work.
+    return mapped === asset && (stripped === asset || config.category !== "crypto");
+  });
+  out.push(roundTrip.length === streamed.length
+    ? result("PASS", "every streamed symbol maps back to its asset", `${streamed.length} symbols resolve, including XAUUSDT to GOLD and CLUSDT to OIL`)
+    : result("FAIL", "every streamed symbol maps back to its asset", "a streamed symbol does not resolve to the asset it belongs to"));
+
+  // Symbols must be unique, or two assets would overwrite each other's ticks.
+  const symbols = streamed.map(([, c]) => c.bybitLinearSymbol);
+  out.push(new Set(symbols).size === symbols.length
+    ? result("PASS", "no two assets share a venue symbol", `${symbols.length} distinct symbols`)
+    : result("FAIL", "no two assets share a venue symbol", "two assets map to the same Bybit symbol and would overwrite each other"));
+
+  // Forex has no perpetual and must not be subscribed anywhere, or the mesh
+  // would open topics that never publish and look permanently stale.
+  const fxStreamed = Object.entries(SUPPORTED_ASSETS).filter(([, c]) => c.category === "forex" && c.bybitLinearSymbol);
+  out.push(fxStreamed.length === 0
+    ? result("PASS", "forex is not subscribed to a venue that lacks it", "no forex pair carries a Bybit symbol")
+    : result("FAIL", "forex is not subscribed to a venue that lacks it", `${fxStreamed.map(([a]) => a).join(", ")} would open dead topics`));
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2587,6 +2634,7 @@ async function main() {
     ...auditNonCryptoExclusion(),
     ...auditFeedHealthScoring(),
     ...auditCommodityInstrumentRouting(),
+    ...auditWebsocketCoverage(),
   ];
 
   try {

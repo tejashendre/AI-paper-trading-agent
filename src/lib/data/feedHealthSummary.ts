@@ -56,6 +56,17 @@ export interface FeedHealthMatrix {
   plainFindings: string[];
 }
 
+/**
+ * Which treatment an asset qualifies for.
+ *
+ * Commodities now carry live websocket ticks like crypto, but they stay on
+ * SLOW_SWING deliberately. REALTIME_FAST demands two independent websocket
+ * sources so that one feed printing a wrong price can be caught by
+ * disagreement with another. Crypto has three venues quoting the same asset;
+ * gold, crude and silver are listed as perpetuals on Bybit alone, so there is
+ * nothing to cross-check them against. Faster data does not by itself make a
+ * feed verifiable, and the tier is about verification rather than latency.
+ */
 function assetMode(asset: string, category: AssetFeedHealthSummary["category"], health?: FeedHealthReport | null): AssetDataMode {
   if (health?.status === "BAD") return "DISABLED";
   if (category === "crypto" && ["BTC", "ETH", "SOL"].includes(asset)) return "REALTIME_FAST";
@@ -161,7 +172,10 @@ export class FeedHealthSummary {
       try {
         const frame = await buildMarketFrame(asset, "15m", 120, false);
         if (!frame) return fallbackReport(asset, config.category, "No market frame returned");
-        const websocketSources = config.category === "crypto"
+        // Counted for anything holding a perpetual, not just crypto.
+        // Commodities stream on Bybit's websocket now, and reporting zero for
+        // them would understate a feed that is genuinely live.
+        const websocketSources = config.bybitLinearSymbol
           ? await freshWebsocketSourceCount(redis, asset)
           : 0;
         return summarizeReport(asset, config.category, frame.feedHealth, websocketSources);

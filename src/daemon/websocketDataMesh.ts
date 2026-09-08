@@ -50,6 +50,37 @@ export class WebsocketDataMesh {
         return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].category === "crypto");
     }
 
+    /**
+     * Assets Bybit can stream, which is every asset holding a perpetual.
+     *
+     * Wider than the crypto list on purpose: gold, crude and silver price from
+     * Bybit perpetuals too, and all three publish on the same public linear
+     * stream at roughly five ticks a second. Before this they were polled on a
+     * fifteen-minute candle cycle, so their marks could be minutes stale while
+     * the contract had moved.
+     *
+     * Kraken and Binance keep the crypto-only list: neither lists these
+     * contracts, so subscribing there would only produce dead topics.
+     */
+    private getBybitAssets() {
+        return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].bybitLinearSymbol);
+    }
+
+    /**
+     * Bybit symbol back to the asset key this system uses.
+     *
+     * Needed because the two only coincide for crypto. Stripping "USDT" turns
+     * BTCUSDT into BTC correctly, but turns XAUUSDT into XAU when the asset is
+     * called GOLD, so a naive strip would write live ticks under a key nothing
+     * ever reads and silently leave commodities on stale prices.
+     */
+    private bybitSymbolToAsset(symbol: string): string | null {
+        for (const [asset, config] of Object.entries(SUPPORTED_ASSETS)) {
+            if (config.bybitLinearSymbol === symbol) return asset;
+        }
+        return null;
+    }
+
     private async writeLiveTick(symbol: string, price: number, source: string, details: LiveTickDetails = {}) {
         const persistenceKey = `${source}:${symbol}`;
         const now = Date.now();
@@ -250,9 +281,9 @@ export class WebsocketDataMesh {
                 this.bybitReconnectTimeout = null;
                 this.bybitConnectedAt = Date.now();
                 Logger.info("Connected to Bybit Futures WebSocket");
-                const streams = this.getCryptoAssets().flatMap((asset) => [
-                    `tickers.${asset}USDT`,
-                    `publicTrade.${asset}USDT`,
+                const streams = this.getBybitAssets().flatMap((asset) => [
+                    `tickers.${SUPPORTED_ASSETS[asset].bybitLinearSymbol}`,
+                    `publicTrade.${SUPPORTED_ASSETS[asset].bybitLinearSymbol}`,
                 ]);
                 ws.send(JSON.stringify({ op: "subscribe", args: streams }));
             });
@@ -266,7 +297,8 @@ export class WebsocketDataMesh {
 
                     const trades = isTrade && Array.isArray(parsed.data) ? parsed.data : [];
                     const trade = trades.length > 0 ? trades[trades.length - 1] : null;
-                    const symbol = String(isTicker ? parsed.topic.split(".")[1] : trade?.s || "").replace("USDT", "");
+                    const venueSymbol = String(isTicker ? parsed.topic.split(".")[1] : trade?.s || "");
+                    const symbol = venueSymbol ? this.bybitSymbolToAsset(venueSymbol) : null;
                     if (!symbol) return;
 
                     // Bybit ticker frames are deltas. Merge them with the last
