@@ -5,7 +5,14 @@ interface AssetConfig {
   name: string;
   category: "crypto" | "forex" | "commodity";
   bybitLinearSymbol: string;
+  /** Kraken REST pair code, e.g. XBTUSD or ZEURZUSD. */
   krakenPair: string;
+  /**
+   * Kraken websocket v2 symbol, e.g. "BTC/USD" or "EUR/USD". Distinct from
+   * krakenPair on purpose: the two APIs name the same market differently, and
+   * deriving one from the other works for crypto and breaks on FX.
+   */
+  krakenWsSymbol?: string;
   yahooTicker: string;
   coingeckoId: string;
 }
@@ -15,11 +22,21 @@ interface CandleRequestOptions {
 }
 
 export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
-  BTC: { name: "Bitcoin", category: "crypto", bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
-  ETH: { name: "Ethereum", category: "crypto", bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
-  SOL: { name: "Solana", category: "crypto", bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
-  EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "EURUSD=X", coingeckoId: "" },
-  GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "GBPUSD=X", coingeckoId: "" },
+  BTC: { name: "Bitcoin", category: "crypto", bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", krakenWsSymbol: "BTC/USD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
+  ETH: { name: "Ethereum", category: "crypto", bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", krakenWsSymbol: "ETH/USD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
+  SOL: { name: "Solana", category: "crypto", bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", krakenWsSymbol: "SOL/USD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
+  // EUR/USD and GBP/USD read from Kraken rather than Yahoo. Kraken quotes them
+  // as real fiat pairs on a venue this system already holds a websocket to, and
+  // its data is better on every axis measured 2026-09-08: 721 bars at every
+  // interval against Yahoo's 514, a native 4h series instead of one downsampled
+  // from 1h, no gaps, and real volume where Yahoo reports none at all. Quotes
+  // agree with Yahoo to within 0.06%.
+  EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZEURZUSD", krakenWsSymbol: "EUR/USD", yahooTicker: "EURUSD=X", coingeckoId: "" },
+  GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZGBPZUSD", krakenWsSymbol: "GBP/USD", yahooTicker: "GBPUSD=X", coingeckoId: "" },
+  // USD/JPY deliberately stays on Yahoo. Kraken lists it, but the book is thin:
+  // bid 152.57 against ask 155.64 is a ~100bps half-spread on 19k of daily
+  // volume, which would cost more than any edge the strategy is looking for.
+  // Faster data on an untradeable quote is worse than slower data on a real one.
   USDJPY: { name: "USD/JPY", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
   // Commodities are quoted from Bybit perpetuals rather than Yahoo futures.
   // Yahoo's intraday candles for CME contracts run about ten hours behind while
@@ -42,7 +59,7 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
 export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
 export const CRYPTO_EXECUTION_SOURCE = "BYBIT_LINEAR_WS" as const;
 
-export type PrimaryMarketDataProvider = typeof CRYPTO_EXECUTION_PROVIDER | "YAHOO";
+export type PrimaryMarketDataProvider = typeof CRYPTO_EXECUTION_PROVIDER | "KRAKEN" | "YAHOO";
 
 export interface MarketPriceSnapshot {
   price: number;
@@ -84,7 +101,11 @@ export function tradesContinuously(assetKey: string): boolean {
 
 export function primaryMarketDataProvider(assetKey: string): PrimaryMarketDataProvider {
   const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-  return config.bybitLinearSymbol ? CRYPTO_EXECUTION_PROVIDER : "YAHOO";
+  if (config.bybitLinearSymbol) return CRYPTO_EXECUTION_PROVIDER;
+  // Crypto carries a krakenPair as a comparison source but executes on Bybit,
+  // so the Bybit check has to come first or it would be silently overridden.
+  if (config.krakenPair) return "KRAKEN";
+  return "YAHOO";
 }
 
 export function marketPriceCacheKey(assetKey: string): string {
@@ -188,6 +209,70 @@ export class MarketService {
       fresh: this.candlesAreFresh(assetKey, timeframe, candles),
       asOf: latest ? new Date(latest * 1000).toISOString() : null,
     };
+  }
+
+  /**
+   * Kraken OHLC. Returns up to 721 candles per interval and, unlike Yahoo's FX
+   * series, carries real volume and a native 4h bucket.
+   */
+  private static async fetchKrakenCandles(pair: string, timeframe: Timeframe, timeoutMs = 10_000): Promise<Candle[]> {
+    const minutes: Record<Timeframe, number> = {
+      "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240,
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(
+        `https://api.kraken.com/0/public/OHLC?pair=${encodeURIComponent(pair)}&interval=${minutes[timeframe] || 60}`,
+        { signal: controller.signal, headers: { "User-Agent": "quant-paper-trader/1.0" } }
+      );
+      if (!response.ok) throw new Error(`Kraken HTTP ${response.status}`);
+      const payload = await response.json();
+      if (Array.isArray(payload?.error) && payload.error.length > 0) {
+        throw new Error(`Kraken error: ${payload.error.join(", ")}`);
+      }
+      // The result is keyed by Kraken's own pair name, which does not always
+      // match what was requested, so take the first non-"last" key rather than
+      // assuming the request echoes back.
+      const key = Object.keys(payload?.result || {}).find((k) => k !== "last");
+      if (!key) throw new Error(`Kraken returned no series for ${pair}`);
+      return (payload.result[key] as any[][])
+        .map((row) => ({
+          time: Number(row[0]),
+          open: Number(row[1]),
+          high: Number(row[2]),
+          low: Number(row[3]),
+          close: Number(row[4]),
+          volume: Number(row[6]),
+        }))
+        .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0)
+        .sort((a, b) => a.time - b.time);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private static async fetchKrakenTicker(pair: string, timeoutMs = 8_000): Promise<{ price: number; bid?: number; ask?: number }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(
+        `https://api.kraken.com/0/public/Ticker?pair=${encodeURIComponent(pair)}`,
+        { signal: controller.signal, headers: { "User-Agent": "quant-paper-trader/1.0" } }
+      );
+      if (!response.ok) throw new Error(`Kraken HTTP ${response.status}`);
+      const payload = await response.json();
+      if (Array.isArray(payload?.error) && payload.error.length > 0) {
+        throw new Error(`Kraken error: ${payload.error.join(", ")}`);
+      }
+      const key = Object.keys(payload?.result || {})[0];
+      const row = key ? payload.result[key] : null;
+      const price = Number(row?.c?.[0]);
+      if (!Number.isFinite(price) || price <= 0) throw new Error(`Kraken returned no price for ${pair}`);
+      return { price, bid: Number(row?.b?.[0]) || undefined, ask: Number(row?.a?.[0]) || undefined };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private static async fetchBybitJson(path: string, timeoutMs = 8_000): Promise<any> {
@@ -326,7 +411,33 @@ export class MarketService {
       throw new Error(`Selected Bybit linear candle feed is unavailable or stale for ${assetKey}/${timeframe}.`);
     }
 
-    // Yahoo is the selected instrument family for FX and commodities.
+    // Kraken serves the FX pairs it quotes deeply enough to trade.
+    if (config.krakenPair) {
+      try {
+        const candles = this.normalizeCandles(
+          assetKey,
+          timeframe,
+          await this.fetchKrakenCandles(config.krakenPair, timeframe)
+        );
+        if (candles && candles.length > 0) {
+          if (this.candlesAreFresh(assetKey, timeframe, candles)) {
+            const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
+            await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
+            return candles.slice(-limit);
+          }
+          staleCandidate = candles;
+        }
+      } catch (krakenError) {
+        console.error(`Selected Kraken instrument feed failed for ${assetKey}:`, krakenError);
+      }
+
+      if (staleCandidate && staleCandidate.length > 0 && options.allowStale) {
+        return staleCandidate.slice(-limit);
+      }
+      throw new Error(`Selected Kraken feed is unavailable or stale for ${assetKey}/${timeframe}.`);
+    }
+
+    // Yahoo is the selected instrument family for whatever is left.
     try {
       // Fix 3: For 4h timeframe, fetch 4× as many 1h candles then downsample to real 4h OHLCV.
       // This gives ~17 days of true 4h history instead of just ~4 days.
@@ -550,6 +661,53 @@ export class MarketService {
         return snapshot;
       } catch (error) {
         throw new Error(`Selected Bybit linear price feed failed for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (config.krakenPair) {
+      // Live websocket tick first, then cache, then REST. Same ladder the
+      // Bybit path uses, so a cold socket degrades to HTTP rather than failing.
+      try {
+        const [livePrice, liveMeta] = await Promise.all([
+          redis.get<number | string>(marketLivePriceKey("KRAKEN_SPOT_WS", assetKey)),
+          redis.get<any>(marketLiveMetaKey("KRAKEN_SPOT_WS", assetKey)),
+        ]);
+        const price = Number(livePrice);
+        const timestamp = new Date(String(liveMeta?.providerEventTime || liveMeta?.updatedAt || "")).getTime();
+        const ageMs = Date.now() - timestamp;
+        if (Number.isFinite(price) && price > 0 && Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 10_000) {
+          return {
+            price,
+            provider: "KRAKEN_SPOT_WS",
+            source: "WEBSOCKET",
+            venue: "KRAKEN",
+            instrument: config.krakenPair,
+            updatedAt: new Date(timestamp).toISOString(),
+            ...(Number.isFinite(Number(liveMeta?.bid)) ? { bid: Number(liveMeta.bid) } : {}),
+            ...(Number.isFinite(Number(liveMeta?.ask)) ? { ask: Number(liveMeta.ask) } : {}),
+          };
+        }
+      } catch {}
+
+      try {
+        const ticker = await this.fetchKrakenTicker(config.krakenPair);
+        const snapshot: MarketPriceSnapshot = {
+          price: ticker.price,
+          provider: "KRAKEN_HTTP",
+          source: "HTTP",
+          venue: "KRAKEN",
+          instrument: config.krakenPair,
+          updatedAt: new Date().toISOString(),
+          ...(ticker.bid ? { bid: ticker.bid } : {}),
+          ...(ticker.ask ? { ask: ticker.ask } : {}),
+        };
+        await Promise.all([
+          redis.set(cacheKey, ticker.price, { ex: 10 }),
+          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
+        ]);
+        return snapshot;
+      } catch (error) {
+        throw new Error(`Selected Kraken price feed failed for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 

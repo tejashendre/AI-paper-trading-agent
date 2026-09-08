@@ -81,6 +81,26 @@ export class WebsocketDataMesh {
         return null;
     }
 
+    /** Assets Kraken can stream, crypto plus the FX pairs it quotes deeply. */
+    private getKrakenAssets() {
+        return Object.keys(SUPPORTED_ASSETS).filter((key) => SUPPORTED_ASSETS[key].krakenWsSymbol);
+    }
+
+    /**
+     * Kraken websocket symbol back to the asset key.
+     *
+     * Same trap as Bybit, in a different shape. Taking the part before the
+     * slash turns "BTC/USD" into BTC correctly and "EUR/USD" into EUR, when
+     * the asset is called EURUSD, so FX ticks would land under a key nothing
+     * reads.
+     */
+    private krakenSymbolToAsset(symbol: string): string | null {
+        for (const [asset, config] of Object.entries(SUPPORTED_ASSETS)) {
+            if (config.krakenWsSymbol === symbol) return asset;
+        }
+        return null;
+    }
+
     private async writeLiveTick(symbol: string, price: number, source: string, details: LiveTickDetails = {}) {
         const persistenceKey = `${source}:${symbol}`;
         const now = Date.now();
@@ -205,7 +225,7 @@ export class WebsocketDataMesh {
                 this.krakenReconnectTimeout = null;
                 this.krakenConnectedAt = Date.now();
                 Logger.info("Connected to Kraken Spot WebSocket");
-                const symbols = this.getCryptoAssets().map((asset) => `${asset}/USD`);
+                const symbols = this.getKrakenAssets().map((asset) => SUPPORTED_ASSETS[asset].krakenWsSymbol as string);
                 ws.send(JSON.stringify({
                     method: "subscribe",
                     params: { channel: "ticker", symbol: symbols },
@@ -225,7 +245,8 @@ export class WebsocketDataMesh {
                     const observation = ticker || trade;
                     if (!observation?.symbol) return;
 
-                    const symbol = String(observation.symbol).split("/")[0];
+                    const symbol = this.krakenSymbolToAsset(String(observation.symbol));
+                    if (!symbol) return;
                     const price = Number(ticker?.last ?? trade?.price);
                     if (!Number.isFinite(price) || price <= 0) return;
 

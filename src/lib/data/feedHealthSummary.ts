@@ -172,10 +172,10 @@ export class FeedHealthSummary {
       try {
         const frame = await buildMarketFrame(asset, "15m", 120, false);
         if (!frame) return fallbackReport(asset, config.category, "No market frame returned");
-        // Counted for anything holding a perpetual, not just crypto.
-        // Commodities stream on Bybit's websocket now, and reporting zero for
-        // them would understate a feed that is genuinely live.
-        const websocketSources = config.bybitLinearSymbol
+        // Counted for anything actually streamed, not just crypto. Commodities
+        // stream on Bybit and two FX pairs stream on Kraken, so gating this on
+        // category would report zero live sources for feeds that have one.
+        const websocketSources = config.bybitLinearSymbol || config.krakenWsSymbol
           ? await freshWebsocketSourceCount(redis, asset)
           : 0;
         return summarizeReport(asset, config.category, frame.feedHealth, websocketSources);
