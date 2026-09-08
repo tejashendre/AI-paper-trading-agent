@@ -259,25 +259,41 @@ function auditAssetSpecs(): AuditResult[] {
     BTC: "BTCUSDT", ETH: "ETHUSDT", SOL: "SOLUSDT",
     GOLD: "XAUUSDT", SILVER: "XAGUSDT", OIL: "CLUSDT",
   };
+  // FX pairs Kraken quotes deeply enough to trade. USDJPY is absent on purpose:
+  // Kraken lists it on a ~100bps half-spread, so it stays on Yahoo.
+  const EXPECTED_KRAKEN_PAIR: Record<string, string> = {
+    EURUSD: "ZEURZUSD", GBPUSD: "ZGBPZUSD",
+  };
   const misaligned = REQUIRED_ASSETS.filter((asset) => {
     const config = SUPPORTED_ASSETS[asset];
-    const expected = EXPECTED_BYBIT_SYMBOL[asset];
-    if (expected) {
-      return primaryMarketDataProvider(asset) !== "BYBIT_LINEAR" || config.bybitLinearSymbol !== expected;
+    const expectedBybit = EXPECTED_BYBIT_SYMBOL[asset];
+    if (expectedBybit) {
+      return primaryMarketDataProvider(asset) !== "BYBIT_LINEAR" || config.bybitLinearSymbol !== expectedBybit;
     }
-    // No perpetual mapped: must fall to Yahoo, and must not carry a stray
-    // Bybit symbol that would silently take over the routing.
+    const expectedKraken = EXPECTED_KRAKEN_PAIR[asset];
+    if (expectedKraken) {
+      // Must reach Kraken, name the right pair, and carry no Bybit symbol that
+      // would silently take precedence in the routing order.
+      return (
+        primaryMarketDataProvider(asset) !== "KRAKEN" ||
+        config.krakenPair !== expectedKraken ||
+        config.bybitLinearSymbol.length > 0
+      );
+    }
+    // Nothing better mapped: must fall to Yahoo with a real ticker, and carry
+    // neither a perpetual nor a Kraken pair that would divert it.
     return (
       primaryMarketDataProvider(asset) !== "YAHOO" ||
       config.yahooTicker.length === 0 ||
-      config.bybitLinearSymbol.length > 0
+      config.bybitLinearSymbol.length > 0 ||
+      config.krakenPair.length > 0
     );
   });
   checks.push(result(
     misaligned.length === 0 ? "PASS" : "FAIL",
     "instrument-aligned market providers",
     misaligned.length === 0
-      ? "Crypto and commodity execution are bound to their named Bybit perpetuals (OIL=CLUSDT, WTI not Brent); forex resolves through matching Yahoo symbols."
+      ? "Crypto and commodity execution are bound to their named Bybit perpetuals (OIL=CLUSDT, WTI not Brent); EURUSD and GBPUSD to their Kraken pairs; USDJPY remains on Yahoo."
       : `${misaligned.join(", ")} resolve through an instrument that does not match the execution model.`
   ));
 
@@ -2236,11 +2252,28 @@ function auditCommodityInstrumentRouting(): AuditResult[] {
     ? result("PASS", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}, with BZUSDT deliberately unused`)
     : result("FAIL", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}`));
 
-  // Forex has no perpetual and must stay on Yahoo with closed-market rules.
-  const fxOnYahoo = forex.every((a) => routeProvider(a) === "YAHOO" && !tradesContinuously(a));
-  out.push(fxOnYahoo
-    ? result("PASS", "forex was not dragged onto Bybit", "EURUSD, GBPUSD, USDJPY still route to YAHOO")
-    : result("FAIL", "forex was not dragged onto Bybit", "a forex pair changed provider"));
+  // Bybit lists no FX at all, so a forex pair holding a perpetual symbol would
+  // mean a mismapping. None of them may trade continuously either: FX closes.
+  const fxOffBybit = forex.every((a) => routeProvider(a) !== "BYBIT_LINEAR" && !tradesContinuously(a));
+  out.push(fxOffBybit
+    ? result("PASS", "forex is never routed to a venue without FX", "no forex pair reaches Bybit or is treated as 24/7")
+    : result("FAIL", "forex is never routed to a venue without FX", "a forex pair was routed to Bybit or marked continuous"));
+
+  // EURUSD and GBPUSD moved to Kraken on measured evidence; USDJPY did not,
+  // because Kraken quotes it at a ~100bps half-spread on a thin book. That
+  // exclusion is the whole point and must not quietly regress.
+  out.push(routeProvider("EURUSD") === "KRAKEN" && routeProvider("GBPUSD") === "KRAKEN"
+    ? result("PASS", "deep FX pairs use Kraken", "EURUSD and GBPUSD read from Kraken, which carries real volume and a native 4h series")
+    : result("FAIL", "deep FX pairs use Kraken", `EURUSD=${routeProvider("EURUSD")} GBPUSD=${routeProvider("GBPUSD")}`));
+
+  out.push(routeProvider("USDJPY") === "YAHOO" && !SUPPORTED_ASSETS.USDJPY.krakenPair
+    ? result("PASS", "USDJPY is kept off Kraken's thin book", "stays on Yahoo; Kraken quotes it ~100bps wide on 19k daily volume")
+    : result("FAIL", "USDJPY is kept off Kraken's thin book", `routed to ${routeProvider("USDJPY")} with krakenPair="${SUPPORTED_ASSETS.USDJPY.krakenPair}"`));
+
+  // FX still closes at weekends whichever venue serves it.
+  out.push(!sessionState("EURUSD", new Date(Date.UTC(2026, 8, 5, 12))).isOpen
+    ? result("PASS", "Kraken FX still respects market hours", "EURUSD remains closed on Saturday despite the venue change")
+    : result("FAIL", "Kraken FX still respects market hours", "EURUSD reported open on a Saturday"));
 
   // A perpetual trades through the weekend; the metal's futures pit does not.
   const saturday = new Date(Date.UTC(2026, 8, 5, 12));
