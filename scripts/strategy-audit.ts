@@ -27,7 +27,8 @@ import {
   getExecutionCostProfile,
 } from "../src/lib/trading/executionCostModel";
 import { evaluatePortfolioRiskBudget } from "../src/lib/trading/portfolioRiskBudget";
-import { computeExecutionEventHash, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
+import { archiveLedgerDays, computeExecutionEventHash, ExecutionLedger, EXECUTION_LEDGER_SCHEMA_VERSION, TRADING_STRATEGY_VERSION } from "../src/lib/trading/executionLedger";
+import os from "os";
 import { buildWalkForwardResearchReport } from "../src/lib/research/walkForward";
 import {
   deflatedSharpeRatio,
@@ -2318,6 +2319,85 @@ function auditWebsocketCoverage(): AuditResult[] {
   return out;
 }
 
+/**
+ * The execution ledger had no retention policy and had reached 1.38GB on the
+ * VPS, growing about 26MB a day. It is hash-chained audit evidence, so the fix
+ * had to reclaim space without removing a single event.
+ *
+ * This builds a real ledger on disk, archives it, and verifies the chain
+ * survives. Anything less would be testing the intent rather than the code.
+ */
+function auditLedgerArchival(): AuditResult[] {
+  const out: AuditResult[] = [];
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-audit-"));
+
+  try {
+    // Nine days of events, chained exactly as the writer chains them.
+    let previousHash: string | null = null;
+    let events = 0;
+    for (let dayOffset = 9; dayOffset >= 1; dayOffset--) {
+      const day = new Date(Date.now() - dayOffset * 86_400_000).toISOString().slice(0, 10);
+      const rows: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const unsigned = {
+          schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
+          strategyVersion: TRADING_STRATEGY_VERSION,
+          executionCostModelVersion: "paper-cost-v2-2026-07-19",
+          timestamp: `${day}T${String(i % 24).padStart(2, "0")}:00:00.000Z`,
+          eventType: "SCAN_COMPLETED",
+          asset: "BTC",
+          portfolioType: "ai",
+          payload: { decision: "HOLD", note: "x".repeat(200) },
+          previousHash,
+        };
+        const hash = computeExecutionEventHash(unsigned as any);
+        rows.push(JSON.stringify({ ...unsigned, hash }));
+        previousHash = hash;
+        events++;
+      }
+      fs.writeFileSync(path.join(directory, `${day}.ndjson`), rows.join("\n") + "\n");
+    }
+
+    const before = ExecutionLedger.verify(directory);
+    out.push(before.valid && before.events === events
+      ? result("PASS", "ledger fixture chains correctly before archiving", `${before.events} events across ${before.files} files`)
+      : result("FAIL", "ledger fixture chains correctly before archiving", `valid=${before.valid} events=${before.events}/${events}`));
+
+    const archived = archiveLedgerDays({ keepDays: 3, directory });
+    out.push(archived.archived.length > 0
+      ? result("PASS", "old days are archived", `${archived.archived.length} day(s) compressed, ${archived.skipped.length} skipped`)
+      : result("FAIL", "old days are archived", `nothing was archived; skipped: ${archived.skipped.join(", ")}`));
+
+    // The whole point: not one event lost, chain still verifies, same head.
+    const after = ExecutionLedger.verify(directory);
+    out.push(after.valid && after.events === before.events && after.headHash === before.headHash
+      ? result("PASS", "archiving preserves every event and the hash chain", `${after.events} events still verify, head hash unchanged`)
+      : result("FAIL", "archiving preserves every event and the hash chain", `valid=${after.valid} events=${after.events}/${before.events} headMatch=${after.headHash === before.headHash}`));
+
+    const saved = archived.bytesBefore - archived.bytesAfter;
+    out.push(saved > 0 && archived.bytesAfter < archived.bytesBefore
+      ? result("PASS", "archiving actually reclaims disk", `${(archived.bytesBefore / 1e3).toFixed(0)}kB -> ${(archived.bytesAfter / 1e3).toFixed(0)}kB, ${((saved / archived.bytesBefore) * 100).toFixed(0)}% reclaimed`)
+      : result("FAIL", "archiving actually reclaims disk", `${archived.bytesBefore} -> ${archived.bytesAfter} bytes`));
+
+    // Recent days must stay uncompressed and appendable.
+    const plain = fs.readdirSync(directory).filter((f) => f.endsWith(".ndjson"));
+    out.push(plain.length >= 3
+      ? result("PASS", "recent days stay uncompressed for appending", `${plain.length} plain file(s) retained`)
+      : result("FAIL", "recent days stay uncompressed for appending", `only ${plain.length} plain file(s) left; the writer would append to a compressed file`));
+
+    // Running twice must be safe.
+    const again = archiveLedgerDays({ keepDays: 3, directory });
+    const stillValid = ExecutionLedger.verify(directory);
+    out.push(stillValid.valid && stillValid.events === events && again.archived.length === 0
+      ? result("PASS", "archiving is idempotent", "a second run archives nothing and leaves the chain intact")
+      : result("FAIL", "archiving is idempotent", `second run archived ${again.archived.length}, valid=${stillValid.valid}`));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+
+  return out;
+}
+
 function auditReplayEngine(): AuditResult[] {
   const report = runReplay({
     assets: {
@@ -2635,6 +2715,7 @@ async function main() {
     ...auditFeedHealthScoring(),
     ...auditCommodityInstrumentRouting(),
     ...auditWebsocketCoverage(),
+    ...auditLedgerArchival(),
   ];
 
   try {
