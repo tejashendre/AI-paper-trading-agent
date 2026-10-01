@@ -8,12 +8,16 @@ import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import {
   calculateInstrumentPnl,
+  decimalString,
+  floorOrderQty,
   instrumentFee,
   instrumentNotional,
   instrumentQuantityFromNotional,
   positionInstrument,
   positionLegIdentity,
+  validateOrderSize,
 } from "@/lib/trading/assetSpecs";
+import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
@@ -449,9 +453,26 @@ async function scaleIntoWinner(
   if (!Number.isFinite(addMarginUsd) || addMarginUsd < 50) return false;
 
   const addNotionalUsd = addMarginUsd * leverage;
-  // A scale-in adds to the same contract under the position's own model.
-  const addAmount = instrumentQuantityFromNotional(positionInstrument(pos), addNotionalUsd, currentPrice);
+  // Only Bybit linear positions may grow: adding venue-priced quantity to a
+  // legacy-model position would mix two quantity units in one position.
+  const instrument = positionInstrument(pos);
+  if (instrument.economicsModel !== "BYBIT_LINEAR_USDT_V1") return false;
+  // The added quantity obeys the same venue lot rules and capacity limits as
+  // an entry; missing metadata or liquidity simply means no scale-in now.
+  const [metadata, liquidity] = await Promise.all([
+    MarketService.getInstrumentMetadata(asset).catch(() => null),
+    MarketService.getLiquiditySnapshot(asset).catch(() => null),
+  ]);
+  if (!metadata) return false;
+  const addAmount = Number(floorOrderQty(decimalString(instrumentQuantityFromNotional(instrument, addNotionalUsd, currentPrice)), metadata));
   if (addAmount <= 0) return false;
+  const venueSize = validateOrderSize({
+    quantity: decimalString(addAmount),
+    price: currentPrice,
+    metadata,
+    maxNotionalUsdt: addNotionalUsd,
+  });
+  if (!venueSize.allowed) return false;
   const scaleFill = estimatePaperFill({
     asset,
     instrument: positionInstrument(pos),
@@ -469,6 +490,15 @@ async function scaleIntoWinner(
   });
   const entryFee = scaleFill.feeUsd;
   if (addMarginUsd + entryFee > portfolio.usd) return false;
+  const capacity = evaluateFillCapacity({
+    side: pos.direction === "SHORT" ? "SELL" : "BUY",
+    quantity: addAmount,
+    entryPrice: scaleFill.fillPrice,
+    stopPrice: pos.stopLoss,
+    impactBps: scaleFill.slippageBps,
+    liquidity,
+  });
+  if (!capacity.allowed) return false;
 
   const existingNotional = positionNotional(pos, pos.amount, pos.entryPrice);
   const existingAmount = pos.amount;

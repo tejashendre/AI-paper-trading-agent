@@ -273,8 +273,9 @@ test("new_entry_sizing_uses_the_linear_contract_for_usdjpy", () => {
     asset: "USDJPY", direction: "LONG", entryPrice: 150, stopLoss: 149, takeProfit: 153, amount: 10,
   });
   assert.ok(Math.abs(plan.entry.notionalUsd - 10 * plan.entry.fillPrice) < 1e-9);
-  // A one-yen stop on 10 contracts risks about 10 USDT, not 10/149.
-  assert.ok(plan.netLossUsd > 9 && plan.netLossUsd < 12, `netLossUsd ${plan.netLossUsd}`);
+  // A one-yen stop on 10 contracts risks about 10 USDT plus fees and slippage
+  // (the FX stress fee alone is about 1.65 USDT round trip), not 10/149.
+  assert.ok(plan.netLossUsd > 9 && plan.netLossUsd < 15, `netLossUsd ${plan.netLossUsd}`);
 
   // The legacy formula survives only for positions that were opened under it.
   const legacy = positionInstrument({ asset: "USDJPY", strategyType: "swing" });

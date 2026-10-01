@@ -1,5 +1,10 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { getConfiguredInstrument, InstrumentRef, legacyInstrument } from "@/lib/trading/instrumentRegistry";
+import {
+  BybitInstrumentMetadata,
+  getConfiguredInstrument,
+  InstrumentRef,
+  legacyInstrument,
+} from "@/lib/trading/instrumentRegistry";
 
 export type AssetClass = "crypto" | "forex" | "commodity";
 
@@ -21,8 +26,11 @@ export interface AssetContractSpec {
  * Version of the leverage, margin and minimum-margin policy below, frozen
  * onto every new position so later policy edits cannot relabel old risk.
  */
-export const RISK_POLICY_VERSION = "risk-policy-v1-2026-10-01";
+export const RISK_POLICY_VERSION = "risk-policy-v2-2026-10-01";
 
+// Fee rates below are the legacy synthetic assumptions, kept only so that
+// pre-upgrade positions are costed as they were opened. New Bybit contracts
+// use the versioned public schedules further down.
 const CRYPTO_MAKER_FEE_RATE = 0.0002;
 const CRYPTO_TAKER_FEE_RATE = 0.00055;
 const SYNTHETIC_FX_FEE_RATE = 0;
@@ -256,15 +264,173 @@ export function tradeInstrument(trade: Pick<Trade, "asset" | "instrument">): Ins
   return trade.instrument ?? legacyInstrument(trade.asset, "LEGACY_SYNTHETIC_V1");
 }
 
+export type FeeScheduleStatus = "PUBLIC_BASELINE" | "UNVERIFIED_STRESS_RATE";
+
+export interface FeeSchedule {
+  version: string;
+  scope: "crypto" | "forex" | "commodity";
+  makerRate: number;
+  takerRate: number;
+  effectiveFrom: string;
+  sourceUrl: string;
+  status: FeeScheduleStatus;
+  note?: string;
+}
+
+/**
+ * Public VIP0 baselines, not a claim about any authenticated account. A
+ * paper fill crosses the spread, so it pays taker; maker would only be earned
+ * by simulating a resting order, which nothing here does. Replace a schedule
+ * by adding a new version; fills keep the version they were costed with.
+ */
+export const FEE_SCHEDULES: Record<FeeSchedule["scope"], FeeSchedule> = {
+  crypto: {
+    version: "bybit-vip0-crypto-2026-10-01",
+    scope: "crypto",
+    makerRate: 0.0002,
+    takerRate: 0.00055,
+    effectiveFrom: "2026-10-01",
+    sourceUrl: "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+    status: "PUBLIC_BASELINE",
+  },
+  commodity: {
+    version: "bybit-vip0-tradfi-commodity-2026-10-01",
+    scope: "commodity",
+    makerRate: 0,
+    takerRate: 0.000275,
+    effectiveFrom: "2026-10-01",
+    sourceUrl: "https://announcements.bybit.com/en/article/tradfi-perpetuals-lower-fees-across-all-tiers-bltb196506dada4be39/",
+    status: "PUBLIC_BASELINE",
+  },
+  forex: {
+    version: "bybit-fx-stress-2026-10-01",
+    scope: "forex",
+    makerRate: 0.0002,
+    takerRate: 0.00055,
+    effectiveFrom: "2026-10-01",
+    sourceUrl: "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+    status: "UNVERIFIED_STRESS_RATE",
+    note: "No official current source confirms the FX perpetual fee group; crypto VIP0 rates are a stress assumption, and strategy promotion is blocked for this cost cohort.",
+  },
+};
+
+export function feeScheduleFor(instrument: InstrumentRef): FeeSchedule {
+  return FEE_SCHEDULES[getAssetSpec(instrument.asset).assetClass];
+}
+
 export function instrumentFee(
   instrument: InstrumentRef,
   quantity: number,
   price: number,
   liquidity: "maker" | "taker" = "taker"
 ): number {
+  if (isLinear(instrument)) {
+    const schedule = feeScheduleFor(instrument);
+    return instrumentNotional(instrument, quantity, price) * (liquidity === "maker" ? schedule.makerRate : schedule.takerRate);
+  }
   const spec = getAssetSpec(instrument.asset);
   const rate = liquidity === "maker" ? spec.makerFeeRate : spec.takerFeeRate;
   return instrumentNotional(instrument, quantity, price) * rate;
+}
+
+// ---------------------------------------------------------------------------
+// Venue lot and tick rules, in exact decimal arithmetic. Rounding only ever
+// shrinks an order or moves a stop toward entry, so it can never add risk.
+// ---------------------------------------------------------------------------
+
+const DECIMAL_STRING = /^\d+(\.\d+)?$/;
+
+function decimalPlaces(value: string): number {
+  const dot = value.indexOf(".");
+  return dot < 0 ? 0 : value.length - dot - 1;
+}
+
+function toScaled(value: string, scale: number): bigint {
+  const [whole, fraction = ""] = value.split(".");
+  return BigInt(whole + fraction.padEnd(scale, "0"));
+}
+
+function fromScaled(value: bigint, scale: number): string {
+  const digits = value.toString().padStart(scale + 1, "0");
+  if (scale === 0) return digits;
+  const text = `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return text.replace(/\.?0+$/, "");
+}
+
+/** Plain decimal text for a non-negative number, without exponent notation. */
+export function decimalString(value: number): string {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${value} is not a non-negative finite number`);
+  const text = String(value);
+  return /e/i.test(text) ? value.toFixed(20) : text;
+}
+
+/** Largest multiple of the venue step not above the desired quantity. */
+export function floorOrderQty(desiredQty: string, metadata: BybitInstrumentMetadata): string {
+  if (!DECIMAL_STRING.test(desiredQty)) {
+    throw new Error(`Quantity "${desiredQty}" is not a non-negative decimal string`);
+  }
+  const scale = Math.max(decimalPlaces(desiredQty), decimalPlaces(metadata.qtyStep));
+  const step = toScaled(metadata.qtyStep, scale);
+  const floored = (toScaled(desiredQty, scale) / step) * step;
+  return fromScaled(floored, scale);
+}
+
+/**
+ * Venue and risk checks for a market order. Reasons are "CODE: text"; a
+ * quantity below a venue minimum is rejected, never rounded up to it.
+ */
+export function validateOrderSize(input: {
+  quantity: string;
+  price: number;
+  metadata: BybitInstrumentMetadata;
+  maxNotionalUsdt: number;
+  stopPrice?: number;
+  maxLossUsdt?: number;
+}): { allowed: boolean; reasons: string[] } {
+  const { quantity, price, metadata } = input;
+  const reasons: string[] = [];
+  if (!DECIMAL_STRING.test(quantity)) {
+    return { allowed: false, reasons: [`QTY_INVALID: "${quantity}" is not a decimal quantity`] };
+  }
+  if (!(Number(quantity) > 0)) {
+    return { allowed: false, reasons: [`BELOW_MIN_QTY: the size floors to 0, below the venue minimum ${metadata.minOrderQty}`] };
+  }
+  const qty = Number(quantity);
+  const notional = qty * price;
+  if (!Number.isFinite(notional) || qty > 1e15) {
+    reasons.push(`UNSAFE_MAGNITUDE: quantity ${quantity} is outside the safe numeric range`);
+  }
+  const scale = Math.max(decimalPlaces(quantity), decimalPlaces(metadata.qtyStep));
+  if (toScaled(quantity, scale) % toScaled(metadata.qtyStep, scale) !== BigInt(0)) {
+    reasons.push(`QTY_NOT_ON_STEP: ${quantity} is not a multiple of ${metadata.qtyStep}`);
+  }
+  if (qty < Number(metadata.minOrderQty)) reasons.push(`BELOW_MIN_QTY: ${quantity} is below the venue minimum ${metadata.minOrderQty}`);
+  if (qty > Number(metadata.maxMarketOrderQty)) reasons.push(`ABOVE_MAX_MARKET_QTY: ${quantity} exceeds the market-order maximum ${metadata.maxMarketOrderQty}`);
+  if (notional < Number(metadata.minNotional)) reasons.push(`BELOW_MIN_NOTIONAL: ${notional.toFixed(4)} USDT is below the venue minimum ${metadata.minNotional}`);
+  if (notional > input.maxNotionalUsdt * (1 + 1e-9)) {
+    reasons.push(`ABOVE_RISK_NOTIONAL: ${notional.toFixed(2)} USDT exceeds the approved ${input.maxNotionalUsdt.toFixed(2)}`);
+  }
+  if (input.stopPrice !== undefined && input.maxLossUsdt !== undefined) {
+    const stopRisk = Math.abs(price - input.stopPrice) * qty;
+    if (stopRisk > input.maxLossUsdt * (1 + 1e-9)) {
+      reasons.push(`STOP_RISK_ABOVE_BUDGET: ${stopRisk.toFixed(4)} USDT at the stop exceeds the ${input.maxLossUsdt.toFixed(4)} budget`);
+    }
+  }
+  return { allowed: reasons.length === 0, reasons };
+}
+
+/**
+ * Put a stop or target on the venue tick, moving it toward entry: a closer
+ * stop risks less and a closer target promises less, so neither adds risk.
+ */
+export function alignStopTowardEntry(input: { price: number; entryPrice: number; metadata: BybitInstrumentMetadata }): number {
+  const priceText = decimalString(input.price);
+  const scale = Math.max(decimalPlaces(priceText), decimalPlaces(input.metadata.tickSize));
+  const tick = toScaled(input.metadata.tickSize, scale);
+  const value = toScaled(priceText, scale);
+  const below = (value / tick) * tick;
+  const aligned = below === value || input.price > input.entryPrice ? below : below + tick;
+  return Number(fromScaled(aligned, scale));
 }
 
 /** Identity every new autonomous position must carry from its first fill. */

@@ -9,6 +9,7 @@ import {
   isConfiguredAsset,
 } from "@/lib/trading/instrumentRegistry";
 import { BybitTickerState, bybitPublicGet, getBybitInstrumentMetadata } from "@/lib/data/bybitPublic";
+import type { LiquiditySnapshot } from "@/lib/execution/liquidityCost";
 
 interface AssetConfig {
   name: string;
@@ -500,6 +501,34 @@ export class MarketService {
     }
     await deps.cache.set(cacheKey, depth, { ex: 30 }).catch(() => undefined);
     return shape(depth);
+  }
+
+  /**
+   * Fifty levels each side plus 24h turnover, for per-fill capacity checks.
+   * Levels are kept as observed; an empty side stays empty.
+   */
+  static async getLiquiditySnapshot(assetKey: string): Promise<LiquiditySnapshot> {
+    const instrument = getConfiguredInstrument(assetKey);
+    const [book, ticker] = await Promise.all([
+      deps.bybitGet<{ b?: unknown[][]; a?: unknown[][] }>(
+        `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(instrument.symbol)}&limit=50`
+      ),
+      fetchTicker(instrument.symbol),
+    ]);
+    const levels = (rows: unknown[][] | undefined): Array<[number, number]> =>
+      (rows ?? [])
+        .map((level): [number, number] => [Number(level?.[0]), Number(level?.[1])])
+        .filter(([price, qty]) => price > 0 && qty > 0);
+    const bids = levels(book.result.b);
+    const asks = levels(book.result.a);
+    return {
+      bestBid: bids[0]?.[0] ?? Number.NaN,
+      bestAsk: asks[0]?.[0] ?? Number.NaN,
+      bids,
+      asks,
+      turnover24hUsdt: Number(ticker.row.turnover24h),
+      observedAtMs: book.serverTimeMs,
+    };
   }
 
   /**

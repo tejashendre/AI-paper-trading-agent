@@ -42,9 +42,11 @@ export const BOOK_SNAPSHOT_KEY = "xsec:lastRebalance";
  */
 export { BOOK_EQUITY_CURVE_KEY } from "./equityCurve";
 
-/** Bybit VIP0 maker fee. Rebalances are scheduled, so they can rest as limits. */
-export const MAKER_FEE_RATE = 0.0002;
-/** Taker, for anything that must cross the spread immediately. */
+/**
+ * Bybit VIP0 taker fee. Paper fills cross the spread, so every leg pays taker:
+ * maker would only be earned by simulating a resting order, and a scheduled
+ * rebalance is not evidence of one.
+ */
 export const TAKER_FEE_RATE = 0.00055;
 
 export interface BookPosition {
@@ -157,15 +159,13 @@ function fillFor(
     requestedPrice: ticker.markPrice,
     amount: Math.abs(quantity),
     context: {
-      // A scheduled rebalance can rest as a limit order; a risk-driven
-      // reduction cannot wait, so it pays the taker side.
       reason: isReducing ? "SIGNAL_INVALIDATION" : "ENTRY",
       assetMode: "REALTIME_FAST",
       dataQuality: 92,
       isPeakLiquidity: false,
     },
     profile,
-    feeRate: isReducing ? TAKER_FEE_RATE : MAKER_FEE_RATE,
+    feeRate: TAKER_FEE_RATE,
   });
 }
 

@@ -252,6 +252,10 @@ export interface OpenPosition {
   riskPolicyVersion?: string;
   /** Fields added by a state migration; deleting them restores the original record. */
   migrationAddedFields?: string[];
+  /** Order book and turnover observed for the entry fill, with the capacity policy version. */
+  fillLiquidity?: Record<string, unknown>;
+  /** Fee schedule version the entry was costed with. */
+  feeScheduleVersion?: string;
 }
 
 export interface InstrumentMigrationMarker {
@@ -373,6 +377,8 @@ export interface Trade {
   instrument?: InstrumentRef;
   economicsModel?: EconomicsModel;
   migrationAddedFields?: string[];
+  fillLiquidity?: Record<string, unknown>;
+  feeScheduleVersion?: string;
   // Filled when position is closed:
   pnl?: number;
   pnlPercent?: number;
