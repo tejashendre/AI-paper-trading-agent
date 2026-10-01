@@ -1,5 +1,6 @@
 import { getRedis } from "@/lib/redis";
 import { Logger } from "@/lib/logger";
+import { bybitPublicGet } from "@/lib/data/bybitPublic";
 import {
   DEFAULT_UNIVERSE,
   screenUniverseDetailed,
@@ -17,7 +18,6 @@ import {
  * that is ~51 requests a day, which sits far inside the free rate limits.
  */
 
-const BYBIT = "https://api.bybit.com";
 const TICKER_KEY = "perp:tickers:v1";
 const TICKER_TTL_SECONDS = 20;
 const CLOSES_TTL_SECONDS = 15 * 60;
@@ -49,21 +49,8 @@ export interface MomentumSnapshot {
   warnings: string[];
 }
 
-async function bybit<T>(path: string, timeoutMs = 12_000): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${BYBIT}${path}`, {
-      signal: controller.signal,
-      headers: { "User-Agent": "quant-paper-trader/1.0" },
-    });
-    if (!response.ok) throw new Error(`Bybit HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.retCode !== 0) throw new Error(`Bybit ${payload.retCode}: ${payload.retMsg}`);
-    return payload.result as T;
-  } finally {
-    clearTimeout(timer);
-  }
+async function bybit<T>(path: string): Promise<T> {
+  return (await bybitPublicGet<T>(path)).result;
 }
 
 /** Every linear USDT perpetual with its current price and 24h turnover. */
