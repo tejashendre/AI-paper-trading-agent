@@ -1,5 +1,6 @@
 import crypto from "crypto";
-import { MarketService } from "@/lib/market";
+import { entryInstrumentFor, MarketService } from "@/lib/market";
+import { validateExitQuote } from "@/lib/trading/entryEligibility";
 import { PortfolioManager } from "@/lib/portfolio";
 import { Logger } from "@/lib/logger";
 import { getRedis } from "@/lib/redis";
@@ -78,8 +79,19 @@ function positionEntryFee(pos: OpenPosition): number {
   return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice);
 }
 
+/**
+ * A price an exit may act on: the asset's own Bybit instrument, fresh, with
+ * correct provenance. Entry warm-up and learning vetoes never apply here.
+ * An invalid quote returns NaN, so the position is kept and retried next sweep.
+ */
 async function getLivePrice(asset: string): Promise<number> {
-  return MarketService.getCurrentPrice(asset);
+  const quote = await MarketService.getCurrentPriceSnapshot(asset);
+  const check = validateExitQuote({ instrument: entryInstrumentFor(asset), quote, nowMs: Date.now() });
+  if (!check.valid) {
+    await Logger.warn(`[SWING EXIT] ${asset} quote not usable for exits: ${check.reasons.join("; ")}`).catch(() => undefined);
+    return Number.NaN;
+  }
+  return quote.price;
 }
 
 function buildCloseTrade(

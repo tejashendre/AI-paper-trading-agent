@@ -1372,7 +1372,8 @@ function auditProductionRegressions(): AuditResult[] {
     !/kraken|yahoo|coingecko|binance/i.test(marketSource.replace(/\/\/.*$/gm, "")) &&
     websocketSource.includes("liveQuoteKey(asset)") &&
     sourceAgreementSource.includes("SINGLE_VENUE_TRANSPORT_CONSISTENCY") &&
-    daemonSource.includes("marketDataVenue === CRYPTO_EXECUTION_PROVIDER") &&
+    daemonSource.includes("evaluateEntryEligibility({") &&
+    daemonSource.includes("dataEligibility,") &&
     daemonSource.includes("entryMode: effectiveEntryMode") &&
     admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
     admissionSource.includes('return "PROBE"');

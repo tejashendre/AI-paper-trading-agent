@@ -1,5 +1,6 @@
 import { buildMarketFrame } from "@/lib/data/freeDataMesh";
-import { liveQuoteKey, SUPPORTED_ASSETS } from "@/lib/market";
+import { closedCandles, entryInstrumentFor, liveQuoteKey, MarketService, SUPPORTED_ASSETS } from "@/lib/market";
+import { evaluateEntryEligibility, EntryEligibility } from "@/lib/trading/entryEligibility";
 import type { BybitTickerState } from "@/lib/data/bybitPublic";
 import { getRedis } from "@/lib/redis";
 import type { FeedHealthReport } from "@/lib/types";
@@ -23,6 +24,11 @@ export interface AssetFeedHealthSummary {
   freshWebsocketSources: number;
   /** Every asset is priced by one venue; stream and REST are its two transports. */
   independentVenues: 1;
+  /**
+   * The same data-eligibility decision the daemon applies to a new entry.
+   * Data only: strategy, cost and risk checks still decide whether a trade happens.
+   */
+  dataEligibility: Pick<EntryEligibility, "allowed" | "state" | "reasons">;
   updatedAt: string;
 }
 
@@ -76,15 +82,46 @@ function fallbackReport(asset: string, category: AssetFeedHealthSummary["categor
     safeForSwingExecution: false,
     freshWebsocketSources: 0,
     independentVenues: 1,
+    dataEligibility: { allowed: false, state: "BLOCKED_DATA", reasons: [`FEED_UNAVAILABLE: ${message}`] },
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** The entry data decision, built from the same inputs the daemon uses. */
+async function dataEligibilityFor(asset: string): Promise<AssetFeedHealthSummary["dataEligibility"]> {
+  const [quote, metadata, m15, h1, h4, w1] = await Promise.all([
+    MarketService.getCurrentPriceSnapshot(asset).catch(() => null),
+    MarketService.getInstrumentMetadata(asset).catch(() => null),
+    MarketService.getCandles("15m", 101, asset).catch(() => []),
+    MarketService.getCandles("1h", 101, asset).catch(() => []),
+    MarketService.getCandles("4h", 100, asset).catch(() => []),
+    MarketService.getWeeklyCandles(20, asset).catch(() => []),
+  ]);
+  const nowMs = Date.now();
+  const referenceMs = quote?.eventTimeMs ?? nowMs;
+  const { allowed, state, reasons } = evaluateEntryEligibility({
+    instrument: entryInstrumentFor(asset),
+    metadata,
+    quote,
+    closedBarCounts: {
+      m15: closedCandles(m15, "15m", referenceMs).length,
+      h1: closedCandles(h1, "1h", referenceMs).length,
+      h4: closedCandles(h4, "4h", referenceMs).length,
+      w1: closedCandles(w1, "1w", referenceMs).length,
+    },
+    nowMs,
+    fastExecution: false,
+    depthAvailable: true,
+  });
+  return { allowed, state, reasons };
 }
 
 function summarizeReport(
   asset: string,
   category: AssetFeedHealthSummary["category"],
   health: FeedHealthReport,
-  freshWebsocketSources: number
+  freshWebsocketSources: number,
+  dataEligibility: AssetFeedHealthSummary["dataEligibility"]
 ): AssetFeedHealthSummary {
   const mode = assetMode(asset, category, health);
   // Single-venue policy: a swing entry may use a fresh REST quote, so a quiet
@@ -112,6 +149,7 @@ function summarizeReport(
     safeForSwingExecution,
     freshWebsocketSources,
     independentVenues: 1,
+    dataEligibility,
     updatedAt: health.lastUpdated,
   };
 }
@@ -141,7 +179,8 @@ function buildFindings(assets: AssetFeedHealthSummary[]) {
 export class FeedHealthSummary {
   static async build(): Promise<FeedHealthMatrix> {
     const redis = getRedis();
-    const cacheKey = "feedHealth:matrix:15m";
+    // Versioned: the row shape changed when data eligibility was added.
+    const cacheKey = "feedHealth:matrix:v2:15m";
     try {
       const cached = await redis.get<FeedHealthMatrix>(cacheKey);
       if (cached?.assets?.length) return cached;
@@ -153,8 +192,11 @@ export class FeedHealthSummary {
         const frame = await buildMarketFrame(asset, "15m", 120, false);
         if (!frame) return fallbackReport(asset, config.category, "No market frame returned");
         // Every configured asset streams from Bybit.
-        const websocketSources = await freshWebsocketSourceCount(redis, asset);
-        return summarizeReport(asset, config.category, frame.feedHealth, websocketSources);
+        const [websocketSources, eligibility] = await Promise.all([
+          freshWebsocketSourceCount(redis, asset),
+          dataEligibilityFor(asset),
+        ]);
+        return summarizeReport(asset, config.category, frame.feedHealth, websocketSources, eligibility);
       } catch (error) {
         return fallbackReport(asset, config.category, error);
       }
