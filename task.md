@@ -79,5 +79,5 @@ Next optional slice: implement the documented subsecond quote display with separ
 - [x] Extend real-daemon integration, coverage funnels and research visibility for the complete path.
 - [x] Subsecond browser quotes with reconnect/fallback and separate transport/candle-quality indicators.
 - [x] Whole-branch review and single regression/fix pass; 238/238 tests, TypeScript/lint/build/audit/fixtures.
-- [ ] State-preserving cloud release and deployed runtime/UI verification.
+- [x] State-preserving cloud release and deployed runtime/UI verification: PR #10, c90483d, deployment 36894427081 successful. All 103 historical fills/manual BTC preserved; XSEC flat; all nine data-ready, 18 SHADOW research configurations, desktop/mobile and source parity verified. See docs/BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md.
 Authorization continues the existing end-to-end deployment request. New family activation and XSEC risk release remain separately evidence-gated. Profit is an evaluation result, not a feature promise.

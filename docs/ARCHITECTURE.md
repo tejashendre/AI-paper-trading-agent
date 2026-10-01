@@ -1,16 +1,17 @@
 # Autonomous Paper Trading Agent — Architecture
 
-**Last runtime verification:** 2026-10-01, Release A commit `191761f`.
+**Last runtime verification:** 2026-10-01, complete release commit `c90483d`.
 
-**Remaining complete release, 2026-10-01:** branch `codex/bybit-complete-upgrade`
-adds closed-bar trend/range routing, instrument-scoped learning, preregistered
-research reviews, bounded compressed capture and direct browser quotes.
-Release A is deployed; this branch awaits its final reviewed rollout. Steps:
+**Complete release, 2026-10-01:** closed-bar trend/range routing, scoped
+learning, preregistered research, bounded compressed capture and direct browser
+quotes are deployed. Proof:
+[BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md](./BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md).
+Rollout and rollback steps:
 [BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md).
 
 ## Operating contract
 
-The remaining release uses trend pullback as the guarded baseline and range
+The complete release uses trend pullback as the guarded baseline and range
 reversion as SHADOW research. A neutral 4h ADX zone produces no family
 candidate. Every candidate records instrument, family, config, regime and
 closed feature cutoff. Existing baseline admission, costs, leverage and risk
