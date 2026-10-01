@@ -5,7 +5,7 @@ import zlib from "zlib";
 import { getRedis } from "@/lib/redis";
 import { EXECUTION_COST_MODEL_VERSION } from "./executionCostModel";
 
-export const TRADING_STRATEGY_VERSION = "swing-v4.3.0-2026-10-01";
+export const TRADING_STRATEGY_VERSION = "swing-v5.0.0-2026-10-01";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =
