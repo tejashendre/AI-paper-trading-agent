@@ -1,11 +1,17 @@
 import fs from "fs";
 import path from "path";
+import { randomUUID } from 'node:crypto';
 import { getRedis } from "@/lib/redis";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { getConfiguredInstrument } from './instrumentRegistry';
+import { fetchFundingSettlements } from '@/lib/data/bybitPublic';
+import { replayStrategyCandidate } from '@/lib/research/familyReplay';
+import { storeResearchOutcome, bindResearchManifest } from '@/lib/research/researchLoop';
+import type { StrategyCandidate } from '@/lib/swingEngine';
 
 // Derived learning is strategy-version scoped. Earlier observations remain in
 // Redis for audit, but cannot quarantine a materially different strategy.
@@ -16,6 +22,9 @@ const EVALUATIONS_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations`;
 const SUMMARY_KEY = `${OPPORTUNITY_NAMESPACE}:summary`;
 const DEDUPE_KEY_PREFIX = `${OPPORTUNITY_NAMESPACE}:last:`;
 const MAX_HISTORY = 500;
+const MAX_PENDING = 4096;
+export const OPPORTUNITY_QUEUE_STATUS_KEY = `${OPPORTUNITY_NAMESPACE}:queueStatus`;
+const QUEUE_LOCK = `${OPPORTUNITY_NAMESPACE}:queueLock`;
 const MAX_EVALUATIONS = 1000;
 const DEDUPE_SECONDS = 15 * 60;
 
@@ -25,6 +34,17 @@ type EvaluationHorizon = "15m" | "1h" | "4h" | "24h";
 type HypotheticalOutcome = "TAKE_PROFIT" | "STOP_LOSS" | "FAVORABLE" | "ADVERSE" | "FLAT" | "UNKNOWN";
 
 export interface OpportunityRecord {
+  candidateId?: string;
+  family?: string;
+  configHash?: string;
+  featureCutoffMs?: number;
+  mode?: string;
+  vetoCode?: string;
+  instrumentVersion?: string;
+  featureStartMs?: number;
+  fundingIntervalMinutes?: number;
+  halfSpreadBps?: number;
+  regime?: string;
   id: string;
   asset: string;
   timestamp: string;
@@ -48,6 +68,12 @@ export interface OpportunityRecord {
 }
 
 export interface OpportunityEvaluation {
+  candidateId?: string;
+  family?: string;
+  configHash?: string;
+  featureStartMs?: number;
+  featureCutoffMs?: number;
+  instrumentVersion?: string;
   id: string;
   opportunityId: string;
   asset: string;
@@ -90,7 +116,7 @@ function timeframeForHorizon(horizon: EvaluationHorizon): Timeframe {
   if (horizon === "15m") return "1m";
   if (horizon === "1h") return "5m";
   if (horizon === "4h") return "15m";
-  return "1h";
+  return "5m";
 }
 
 function dataPath(filename: string) {
@@ -147,7 +173,7 @@ function dueHorizons(record: OpportunityRecord, now = Date.now()): EvaluationHor
     ["4h", 4 * 60 * 60_000],
     ["24h", 24 * 60 * 60_000],
   ];
-  return due.filter(([horizon, ms]) => age >= ms && !already.has(horizon)).map(([horizon]) => horizon);
+  return due.filter(([horizon, ms]) => (!record.candidateId || horizon==='24h') && age >= ms && !already.has(horizon)).map(([horizon]) => horizon);
 }
 
 function inferDecision(action?: string, decisionState?: string): OpportunityDecision {
@@ -310,6 +336,13 @@ function simulatedNetOutcome(
   }
 }
 
+export function selectLabelPath(candles:Candle[], startMs:number,endMs:number,intervalMs:number) {
+  const path=candles.filter(c=>c.time*1000>=startMs && (c.time*1000+intervalMs)<=endMs).sort((a,b)=>a.time-b.time);
+  if (!path.length || path[0].time*1000>startMs+intervalMs ||
+    path[path.length-1].time*1000+intervalMs<endMs-intervalMs ||
+    path.some((c,i)=>i>0 && (c.time-path[i-1].time)*1000!==intervalMs)) return null;
+  return path;
+}
 async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizon, currentPrice: number) {
   if (record.direction === "NEUTRAL") {
     return evaluateCandles(record, [], currentPrice);
@@ -319,14 +352,28 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
     const startMs = new Date(record.timestamp).getTime();
     const endMs = startMs + HORIZON_MS[horizon];
     const timeframe = timeframeForHorizon(horizon);
-    const candles = await MarketService.getCandles(timeframe, 120, record.asset);
-    const pathCandles = candles.filter((candle) => {
-      const candleMs = candle.time * 1000;
-      return candleMs >= startMs && candleMs <= endMs + 5 * 60_000;
-    });
-    return evaluateCandles(record, pathCandles, currentPrice);
+    const intervalMs=({ '1m':60000,'5m':300000,'15m':900000 } as Record<string,number>)[timeframe];
+    const candles = await MarketService.getLabelCandles(timeframe, record.asset, startMs, endMs);
+    const pathCandles=selectLabelPath(candles,startMs,endMs,intervalMs);
+    if (!pathCandles) return null;
+    const labelPrice=pathCandles[pathCandles.length-1].close;
+    const result=evaluateCandles(record,pathCandles,labelPrice);
+    if (horizon==='24h' && record.candidateId && record.configHash) {
+      const instrument=getConfiguredInstrument(record.asset);
+      const funding=await fetchFundingSettlements(instrument.symbol,startMs,endMs).catch(()=>[]);
+      const replay=replayStrategyCandidate({candidate:{candidateId:record.candidateId,asset:instrument.asset,
+        instrument,family:record.family as StrategyCandidate['family'],configHash:record.configHash,
+        regime:record.regime as StrategyCandidate['regime'],direction:record.direction,entryPrice:record.entryPrice,
+        stopPrice:record.stopLoss!,targetPrice:record.takeProfit!,featureCutoffMs:startMs,
+        initialRiskUsdt:Math.abs(record.entryPrice-record.stopLoss!),mode:'SHADOW',reasons:[],netRewardRisk:0},
+        bars:pathCandles,barIntervalMs:intervalMs,featureStartMs:record.featureStartMs??startMs,
+        labelEndMs:endMs,funding,fundingIntervalMinutes:record.fundingIntervalMinutes??480,
+        halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:false,researchOrigin:'SHADOW'});
+      if (replay.status==='COMPLETED') await storeResearchOutcome(await bindResearchManifest(replay.outcome));
+    }
+    return {...result,currentPrice:labelPrice};
   } catch {
-    return evaluateCandles(record, [], currentPrice);
+    return null;
   }
 }
 
@@ -358,7 +405,16 @@ export class OpportunityJournal {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
 
     return {
-      id: `${result.asset}-${result.timestamp || new Date().toISOString()}-${result.decisionState || result.action}`,
+      id: result.candidateId || `${result.asset}-${result.timestamp || new Date().toISOString()}-${result.decisionState || result.action}`,
+      candidateId: result.candidateId,
+      family: result.family,
+      configHash: result.configHash,
+      featureCutoffMs: result.featureCutoffMs,
+      mode: result.mode,
+      vetoCode: result.vetoCode,
+      instrumentVersion: result.instrumentVersion,
+      featureStartMs: result.featureStartMs,
+      fundingIntervalMinutes:result.fundingIntervalMinutes, halfSpreadBps:result.halfSpreadBps, regime:result.regime,
       asset: result.asset,
       timestamp: result.timestamp || new Date().toISOString(),
       direction: inferDirection(result),
@@ -386,49 +442,74 @@ export class OpportunityJournal {
     if (records.length === 0) return;
 
     const redis = getRedis();
+    const token=randomUUID();
+    if (!await redis.set(QUEUE_LOCK,token,{nx:true,ex:900})) return;
+    try {
+    const pending=(await redis.lrange(PENDING_KEY,0,-1)).map(parseRecord).filter(Boolean) as OpportunityRecord[];
+    const admitted:OpportunityRecord[]=[];
+    let rejectedNew=0;
     for (const record of records) {
-      const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}`;
+      const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}:${record.family || "baseline"}`;
+      if (record.candidateId && await redis.get(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`)) continue;
       const previous = await redis.get<{ fingerprint: string; entryPrice: number }>(dedupeKey).catch(() => null);
       const fingerprint = observationFingerprint(record);
       const priceMovePercent = previous?.entryPrice
         ? Math.abs(record.entryPrice - previous.entryPrice) / previous.entryPrice * 100
         : Infinity;
-      if (previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
-
-      await redis.set(dedupeKey, { fingerprint, entryPrice: record.entryPrice }, { ex: DEDUPE_SECONDS });
+      if (!record.candidateId && previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
+      if (pending.some(row=>row.id===record.id || (record.candidateId && row.candidateId===record.candidateId))) continue;
+      if (record.direction!=='NEUTRAL' && pending.length>=MAX_PENDING) {rejectedNew++;continue;}
       await redis.lpush(HISTORY_KEY, JSON.stringify(record));
-      if (record.direction !== "NEUTRAL") await redis.lpush(PENDING_KEY, JSON.stringify(record));
+      admitted.push(record);
+      if (record.direction !== "NEUTRAL") pending.unshift(record);
+    }
+    if (!await redis.replaceList(PENDING_KEY,pending.map(row=>JSON.stringify(row)),QUEUE_LOCK,token))
+      throw new Error('Research queue lease expired; unfinished labels preserved');
+    for (const record of admitted) {
+      await redis.set(`${DEDUPE_KEY_PREFIX}${record.asset}:${record.family||'baseline'}`,
+        {fingerprint:observationFingerprint(record),entryPrice:record.entryPrice},{ex:DEDUPE_SECONDS});
+      if (record.candidateId) await redis.set(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`,true,{ex:86400*2});
     }
     await redis.ltrim(HISTORY_KEY, 0, MAX_HISTORY - 1);
-    await redis.ltrim(PENDING_KEY, 0, MAX_HISTORY - 1);
+    await redis.set(OPPORTUNITY_QUEUE_STATUS_KEY,{pending:pending.length,capacity:MAX_PENDING,rejectedNew,
+      status:rejectedNew?'CAPACITY_LIMIT':'COLLECTING',observedAt:new Date().toISOString()});
+    } finally {await redis.compareAndDelete(QUEUE_LOCK,token);}
   }
 
   static async evaluateDue() {
     const redis = getRedis();
-    const pendingRaw = await redis.lrange(PENDING_KEY, 0, MAX_HISTORY - 1);
-    const pending = pendingRaw.map(parseRecord).filter(Boolean) as OpportunityRecord[];
+    const token=randomUUID();
+    if (!await redis.set(QUEUE_LOCK,token,{nx:true,ex:900}))
+      return {evaluated:0,pending:(await redis.lrange(PENDING_KEY,0,-1)).length,busy:true};
+    try {
+    const deadline=Date.now()+45000;
+    const pendingRaw = await redis.lrange(PENDING_KEY, 0, -1);
+    const pending = (pendingRaw.map(parseRecord).filter(Boolean) as OpportunityRecord[])
+      .sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
     const keep: OpportunityRecord[] = [];
     const evaluations: OpportunityEvaluation[] = [];
 
     for (const record of pending) {
+      if (evaluations.length>=12 || Date.now()>=deadline) {keep.push(record);continue;}
       const due = dueHorizons(record);
       if (due.length === 0) {
         keep.push(record);
         continue;
       }
 
-      let currentPrice = 0;
-      try {
-        currentPrice = await MarketService.getCurrentPrice(record.asset);
-      } catch {
-        keep.push(record);
-        continue;
-      }
+      // A matured historical label uses its closed path, without a live quote dependency.
+      const currentPrice = record.entryPrice;
 
+      if (evaluations.length >= 12) {keep.push(record);continue;}
       for (const horizon of due) {
         const path = await evaluatePath(record, horizon, currentPrice);
-        const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice }, currentPrice);
+        if (!path) continue;
+        const labelPrice='currentPrice' in path ? Number(path.currentPrice) : currentPrice;
+        const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice:labelPrice }, labelPrice);
         evaluations.push({
+          candidateId: record.candidateId, family: record.family, configHash: record.configHash,
+          featureStartMs: record.featureStartMs, featureCutoffMs: record.featureCutoffMs,
+          instrumentVersion: record.instrumentVersion,
           id: `${record.id}-${horizon}`,
           opportunityId: record.id,
           asset: record.asset,
@@ -437,7 +518,7 @@ export class OpportunityJournal {
           entryPrice: record.entryPrice,
           stopLoss: record.stopLoss,
           takeProfit: record.takeProfit,
-          currentPrice,
+          currentPrice:labelPrice,
           movePercent: path.movePercent,
           maxFavorableExcursion: path.maxFavorableExcursion,
           maxAdverseExcursion: path.maxAdverseExcursion,
@@ -462,7 +543,7 @@ export class OpportunityJournal {
         record.evaluatedHorizons.push(horizon);
       }
 
-      if (record.evaluatedHorizons.length < 4) keep.push(record);
+      if (record.candidateId ? !record.evaluatedHorizons.includes('24h') : record.evaluatedHorizons.length < 4) keep.push(record);
     }
 
     if (evaluations.length > 0) {
@@ -473,13 +554,14 @@ export class OpportunityJournal {
       await this.rebuildSummary();
     }
 
-    await redis.del(PENDING_KEY);
-    for (let i = keep.length - 1; i >= 0; i--) {
-      await redis.lpush(PENDING_KEY, JSON.stringify(keep[i]));
-    }
-    await redis.ltrim(PENDING_KEY, 0, MAX_HISTORY - 1);
+    if (!await redis.replaceList(PENDING_KEY,keep.map(row=>JSON.stringify(row)),QUEUE_LOCK,token))
+      throw new Error('Research queue lease expired; unfinished labels preserved');
+    const previous=await redis.get<Record<string,unknown>>(OPPORTUNITY_QUEUE_STATUS_KEY);
+    await redis.set(OPPORTUNITY_QUEUE_STATUS_KEY,{...previous,pending:keep.length,capacity:MAX_PENDING,
+      oldestPendingAt:keep[0]?.timestamp??null,observedAt:new Date().toISOString()});
 
     return { evaluated: evaluations.length, pending: keep.length };
+    } finally {await redis.compareAndDelete(QUEUE_LOCK,token);}
   }
 
   static async getRecent(limit = 20) {
@@ -586,13 +668,6 @@ export class OpportunityJournal {
   }
 }
 
-const LEARNING_HORIZON_PRIORITY: Record<EvaluationHorizon, number> = {
-  "4h": 4,
-  "1h": 3,
-  "24h": 2,
-  "15m": 1,
-};
-
 /**
  * Select one strategy-relevant outcome per opportunity for learning. Horizon
  * rows remain stored for diagnostics, but they are dependent observations and
@@ -604,12 +679,27 @@ export function selectIndependentOpportunityEvaluations(
   const selected = new Map<string, OpportunityEvaluation>();
 
   for (const evaluation of evaluations) {
+    if (evaluation.horizon !== "24h") continue;
     const key = evaluation.opportunityId || evaluation.id;
-    const current = selected.get(key);
-    if (!current || LEARNING_HORIZON_PRIORITY[evaluation.horizon] > LEARNING_HORIZON_PRIORITY[current.horizon]) {
-      selected.set(key, evaluation);
-    }
+    if (!selected.has(key)) selected.set(key, evaluation);
   }
 
   return Array.from(selected.values());
+}
+
+export function selectIndependentSetups(input: { opportunities: OpportunityRecord[]; horizonMs: number }): OpportunityRecord[] {
+  if (!(input.horizonMs > 0)) return [];
+  const lastEnd = new Map<string, number>();
+  const selected: OpportunityRecord[] = [];
+  const sorted = [...input.opportunities].sort((a, b) => (a.featureCutoffMs ?? Date.parse(a.timestamp)) - (b.featureCutoffMs ?? Date.parse(b.timestamp)));
+  const ids = new Set<string>();
+  for (const opportunity of sorted) {
+    const id = opportunity.candidateId ?? opportunity.id;
+    const cutoff = opportunity.featureCutoffMs ?? Date.parse(opportunity.timestamp);
+    const start = opportunity.featureStartMs ?? cutoff;
+    const key = [opportunity.instrumentVersion ?? opportunity.asset, opportunity.family ?? "UNKNOWN", opportunity.configHash ?? "unversioned"].join(":");
+    if (ids.has(key + id) || !Number.isFinite(cutoff) || !Number.isFinite(start) || start > cutoff || start < (lastEnd.get(key) ?? -Infinity)) continue;
+    ids.add(key + id); selected.push(opportunity); lastEnd.set(key, cutoff + input.horizonMs);
+  }
+  return selected;
 }

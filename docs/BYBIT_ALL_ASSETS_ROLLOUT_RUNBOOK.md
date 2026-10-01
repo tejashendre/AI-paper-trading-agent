@@ -1,10 +1,19 @@
-# Bybit all-assets rollout runbook (Release A)
+# Bybit all-assets rollout runbook
 
-**Status, 2026-10-01:** Release A is implemented and tested offline on branch
-`claude/bybit-all-assets-release-a`. It is not merged, not pushed and not
-deployed. This runbook is not a release authorization. A push to `main` deploys
-straight to production, so nothing below starts until Tejas authorizes a named
-commit in writing.
+**Status, 2026-10-01:** Release A `191761f` is deployed and verified. Tejas
+authorized its planned XSEC reductions and has now requested completion and
+deployment of the remaining upgrade. Branch `codex/bybit-complete-upgrade`
+passed independent review and its regression/fix pass; CI and VPS preflight
+remain pending. Merge only the reviewed
+head, then verify the actual deployed commit before lifting the entry freeze.
+This operational authorization does not activate unproven range candidates
+or release XSEC's historical drawdown restriction.
+
+The remaining release preserves balances, old position economics, fills and
+ledger records. New strategy and research evidence is version-scoped, and
+new ledger event types are additive. Research uses `data/research` with
+a 1 GiB default limit; archive-full and missing-evidence states are visible.
+The browser stream is display-only; it cannot authorize an entry or exit.
 
 Plan: [2026-10-01-bybit-all-assets-upgrade.md](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md), Task 12.
 Audit: [STRATEGY_COVERAGE_AUDIT_2026-10-01.md](./STRATEGY_COVERAGE_AUDIT_2026-10-01.md).

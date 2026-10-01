@@ -1,14 +1,68 @@
 # Autonomous Paper Trading Agent — Architecture
 
-**Last verified:** 2026-08-26 against the deployed stack at trader.tejashendre.com
+**Last runtime verification:** 2026-10-01, Release A commit `191761f`.
 
-**Release A (Bybit for all nine assets), 2026-10-01:** implemented and tested
-offline on branch `claude/bybit-all-assets-release-a`; not merged and not
-deployed. The sections on data, costs, funding, outcomes and the book's risk
-states describe that branch. Rollout and rollback steps:
+**Remaining complete release, 2026-10-01:** branch `codex/bybit-complete-upgrade`
+adds closed-bar trend/range routing, instrument-scoped learning, preregistered
+research reviews, bounded compressed capture and direct browser quotes.
+Release A is deployed; this branch awaits its final reviewed rollout. Steps:
 [BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md).
 
 ## Operating contract
+
+The remaining release uses trend pullback as the guarded baseline and range
+reversion as SHADOW research. A neutral 4h ADX zone produces no family
+candidate. Every candidate records instrument, family, config, regime and
+closed feature cutoff. Existing baseline admission, costs, leverage and risk
+caps still apply. All nine assets are evaluated; no setup is a valid result.
+
+Learning requires at least 15 independent completed positions with matching
+instrument/data/family/regime/direction/strategy/config/cost/risk identity.
+Rules expire after seven days, use fractional returns and net R, and affect
+conviction by at most four points. They can reduce risk but cannot raise
+leverage or approved capital. Old pooled summaries remain descriptive.
+
+Research preregisters two baseline families per instrument and at most one
+alternate per family/instrument cycle. Reviews require 30/10/10 chronological
+folds with row and time embargoes, nonoverlapping feature/label windows,
+positive lower block-bootstrap net expectancy, full attempted-trial Sharpe
+correction, nonnegative doubled-cost stress, verified fees and at least 15
+independent forward shadow completions over 14 days. PAPER_ACTIVE requires a
+human-authorized release. No automatic tuning or risk promotion occurs.
+The Sharpe null-variance approximation is documented in deflatedSharpe.ts;
+it is a screening statistic, not a probability of future profit.
+
+Unfinished labels have a separate 4,096-row queue, independent of the 500-row
+display history. Full queues pause new intake visibly, preserving unfinished
+labels. Mature labels request their exact historical window and drain oldest
+first. Queue replacement is atomic and lease-fenced. Independent evidence
+retains 256 rows per registered cohort and origin; overlapping observations
+remain in a bounded descriptive cache and cannot evict independent samples.
+Definitions freeze a collection-manifest hash and designated evidence window.
+Outcomes bind to that manifest and window. Consumed evidence or overlapping
+instrument intervals remain consumed under new names. Collection manifests
+describe immutable protocols; captured records have separate content hashes.
+Neither hash establishes execution costs. Runtime windows span five years.
+The conservative 400-hour feature window makes independence much slower than
+the minimum 14-day gate: 15 forward samples take about nine months and complete
+historical-plus-forward review can take several years. Dense observations
+cannot justify faster promotion or risk increases.
+
+The existing daemon captures closed 15m/1h/4h/W bars and periodic quote,
+depth and funding summaries at most once per asset per 15 minutes. gzip
+evidence hashes and cursors prevent repeated bar copies. The configurable
+research budget defaults to 1 GiB; capture stops visibly when full and does
+not delete financial history. `research:capture` and `research:replay` require
+explicit local paths and do not access accounts. Captured bar replay is
+descriptive: it lacks intrabar watchdog, scale-in and baseline reversal
+parity, and does not fabricate unavailable historical costs.
+
+The dashboard uses one public Bybit socket for nine ticker and trade topics,
+latest-state rendering at up to 10 Hz, one-second REST recovery when needed,
+bounded reconnect delay and cleanup for hidden tabs. No browser tick archive
+or model service is added. Quotes, closed-bar quality, research evidence and
+entry permission appear separately. Strategy scans remain one minute and
+exit checks five seconds.
 
 This repository runs a deterministic, explainable, **paper-only** trading
 system. It is not an HFT engine, not a broker integration, and not evidence of

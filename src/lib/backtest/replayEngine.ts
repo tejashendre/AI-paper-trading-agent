@@ -7,6 +7,7 @@ import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 import { estimateCarryCostUsd, estimatePaperFill, fitPaperExecutionPlanToRiskBudget } from "@/lib/trading/executionCostModel";
 import { decideSwingExit, isOppositeEdgeConfirmed } from "@/lib/execution/exitPolicy";
 import { SWING_STOP_ATR_MULTIPLE, SWING_TARGET_R_MULTIPLE } from "@/lib/swingEngine";
+import { getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
 
 type ReplayDirection = "LONG" | "SHORT" | "NEUTRAL";
 type ReplayExitReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "TIME_STOP" | "END_REPLAY";
@@ -353,6 +354,7 @@ function buildSignal(asset: string, series: ReplaySeries, index: number): SwingS
   const livePrice = last.close;
 
   return evaluateSwingSignal({
+    dataMode: "REPLAY",
     assetKey: asset,
     assetMode: SUPPORTED_ASSETS[asset]?.category === "crypto" ? "REALTIME_FAST" : "SLOW_SWING",
     candles1mResult: closedTail(series.m1, time, series.m1 === series.base ? 900 : 60, 80),
@@ -367,8 +369,8 @@ function buildSignal(asset: string, series: ReplaySeries, index: number): SwingS
       source: "HTTP",
       transport: "REST",
       venue: "REPLAY",
-      instrument: asset,
-      instrumentVersion: "REPLAY",
+      instrument: getConfiguredInstrument(asset).symbol,
+      instrumentVersion: getConfiguredInstrument(asset).instrumentVersion,
       updatedAt: new Date(time * 1000).toISOString(),
       eventTimeMs: time * 1000,
       receivedAtMs: time * 1000,

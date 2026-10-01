@@ -363,8 +363,10 @@ export function buildWalkForwardResearchReport(input: {
     readiness: {
       preliminarySampleReady: samples.length >= 30,
       strongerSampleReady: samples.length >= 100,
-      passed,
-      messages: messages.length > 0 ? messages : ["Walk-forward probation gates passed for this cohort."],
+      passed:false,
+      messages:[...messages, passed ? 'Descriptive historical checks passed; this does not authorize promotion.' :
+        'Descriptive historical checks remain insufficient.',
+        'Only preregistered candidate reviews include full trial counts, time purging, block intervals, cost stress and forward shadow evidence.'],
     },
   };
 }

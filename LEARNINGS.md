@@ -1,5 +1,12 @@
 # Project learnings
 
+- Browser display can consume Bybit's public stream independently of daemon scan cadence. Rendering each message is unnecessary; latest-state rendering at up to 10 Hz is sufficient and carries no tick archive.
+- Increasing uncertainty pushes a below-benchmark Sharpe probability toward 0.5. The audit's fat-tail comparison must use a Sharpe above its full-trial benchmark to assert lower confidence; changing the trial count exposed the old fixture's wrong-tail assumption.
+
+- Trial count means attempted configurations, including variants under the same display version. A discount without measured covariance overstates evidence.
+- A hypothetical result must use closed prices inside its label window. Delayed evaluation cannot substitute the current live price.
+- Shadow bar replay is descriptive when funding, fee or execution evidence is incomplete. Raw candidate counts are not independent completed trades.
+
 Audit findings will be recorded after verification. Existing technical decisions are in docs/ARCHITECTURE.md and dated research documents.
 ## 2026-10-01 verified findings
 - Feed health is distinct from entry capability: a category-based legacy gate can reject correctly routed instrument snapshots.
@@ -31,3 +38,9 @@ Audit findings will be recorded after verification. Existing technical decisions
 A release entry freeze must preserve real evaluations and scan advancement or the deployment verifier deadlocks. Missing funding is pending evidence, regardless of age. Changing economics requires a new strategy cohort before old learned rules are reused. Ledger maintenance must verify a fixed hash prefix because live writers can append during compression. Remove dependencies only after proving their execution paths have no callers; keep historical readers. Exclude build cache before copying the builder layer into the production image.
 
 Production restart verification requires a scan from the deployed commit, not merely a Redis key. Preserve scan IDs across restarts and allow the prior five-minute lease to expire safely. Do not delete active write locks to make a deployment check pass.
+
+A degraded candle-quality badge does not mean a disconnected quote feed. Report connection state, quote receipt age, last-trade age and candle quality separately. Bybit derivative ticker cadence is 100 ms, while the shipped pipeline batches Redis and polls the browser at 1000 ms each. Quiet markets and clock offsets prevent interpreting a timestamp as a guaranteed end-to-end latency.
+
+Positive confidence learning can silently increase leverage even when a separate risk multiplier is capped. Strip the positive adjustment from sizing inputs, then verify leverage, margin and stop risk against the unboosted admission result. Complete-position provenance must flow from the opening fill through partial/final exits; setup text is not a strategy configuration identity.
+
+Dense quarter-hour observations cannot share retention with unfinished 24-hour labels or independent research samples. Preserve unfinished labels atomically and bound new intake visibly. Bind consumed evidence to immutable manifests and instrument/time intervals, rather than mutable holdout names. Conservative 400-hour feature purging makes 15 independent forward labels take about nine months; minimum elapsed-day gates never promise that collection speed.

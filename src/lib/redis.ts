@@ -97,6 +97,15 @@ export class LocalRedisProxy {
     return this.client.lrange(key, start, end);
   }
 
+  /** Replace a bounded list atomically, fenced by the caller's live lease. */
+  async replaceList(key: string, rows: string[], lockKey: string, token: string): Promise<boolean> {
+    return Number(await this.client.eval(
+      "if redis.call('get', KEYS[2]) ~= ARGV[1] then return 0 end " +
+      "redis.call('del', KEYS[1]); for i=2,#ARGV do redis.call('rpush', KEYS[1], ARGV[i]) end; return 1",
+      2, key, lockKey, token, ...rows
+    )) === 1;
+  }
+
   async publish(channel: string, message: string): Promise<number> {
     return this.client.publish(channel, message);
   }
@@ -145,7 +154,7 @@ let client: LocalRedisProxy | null = null;
 /** The public surface every caller uses; an in-memory stand-in implements the same. */
 export type RedisClient = Pick<
   LocalRedisProxy,
-  "get" | "getdel" | "set" | "del" | "compareAndDelete" | "lpush" | "ltrim" | "lrange" | "publish" | "scanKeys" | "ttl" | "memoryUsage" | "quit"
+  "get" | "getdel" | "set" | "del" | "compareAndDelete" | "lpush" | "ltrim" | "lrange" | "replaceList" | "publish" | "scanKeys" | "ttl" | "memoryUsage" | "quit"
 >;
 
 /**

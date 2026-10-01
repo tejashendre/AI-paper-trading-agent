@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { SwingEngine } from "../lib/swingEngine";
+import { SwingEngine, STRATEGY_DATA_SCHEMA_VERSION } from "../lib/swingEngine";
 import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
 import { evaluateEntryEligibility, missingClosedBars } from "../lib/trading/entryEligibility";
 import { DailyFunnel, recordFunnelDecision, VetoCode } from "../lib/trading/coverageStatus";
@@ -33,6 +33,7 @@ import {
 } from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
+import { ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -48,6 +49,7 @@ const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
 const EQUITY_SAMPLE_INTERVAL_MS = 30 * 60 * 1000;
 let lastEquitySampleAt = 0;
 let lastRealizedEquity: number | null = null;
+let lastResearchReviewAt = 0;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
 /** Set by an operator to stop new swing entries; exits are unaffected. */
@@ -513,6 +515,7 @@ async function runEntryScan() {
 
   try {
     await bootstrapLocalLearningRules();
+    await ensureResearchBaselines().catch(error=>Logger.error('Research registration deferred: '+String(error)));
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
@@ -544,6 +547,35 @@ async function runEntryScan() {
 
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
+      const swingSignal = await SwingEngine.analyze(asset);
+      // Collect valid shadow hypotheses before portfolio and calendar entry vetoes.
+      try {
+        const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
+        const previousCapture=await redis.get<{lastCapturedAt?:string}>(`research:archive:${asset}`);
+        await getRedis().set(`research:archive:${asset}`, { ...swingSignal.researchCapture,
+          lastCapturedAt:swingSignal.researchCapture?.status==='CAPTURED'?timestamp:previousCapture?.lastCapturedAt,
+          observedAt:timestamp, familyRegime:swingSignal.familyRegime, candidates:swingSignal.strategyCandidates?.length??0 });
+        // Research continues during entry freezes and while the live book is flat.
+        // This journal is hypothetical evidence, never a portfolio order.
+        await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
+          ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
+          instrumentVersion: candidate.instrument.instrumentVersion,
+          featureStartMs: candidate.featureCutoffMs - 100 * 4 * 3600000,
+          fundingIntervalMinutes:researchMetadata?.fundingIntervalMinutes,
+          halfSpreadBps:swingSignal.marketDataBid && swingSignal.marketDataAsk ?
+            (swingSignal.marketDataAsk-swingSignal.marketDataBid)/swingSignal.livePrice*5000:undefined,
+          price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
+          timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
+          dataQuality: swingSignal.dataQuality, direction: candidate.direction,
+          mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
+          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
+        })));
+
+      } catch (error) {
+        const previous=await redis.get<Record<string,unknown>>(`research:archive:${asset}`);
+        await redis.set(`research:archive:${asset}`,{...previous,status:'CAPTURE_ERROR',observedAt:timestamp});
+        await Logger.warn('Research collection deferred for '+asset+': '+String(error));
+      }
 
       const activePosition = portfolio.openPositions?.[asset];
       if (activePosition) {
@@ -637,8 +669,9 @@ async function runEntryScan() {
       }
 
       try {
-        const swingSignal = await SwingEngine.analyze(asset);
-
+        const strategyProvenance = { strategyFamily: swingSignal.family, strategyConfigHash: swingSignal.configHash,
+          strategyDataSchemaVersion: STRATEGY_DATA_SCHEMA_VERSION, strategyRegime: swingSignal.familyRegime,
+          candidateId: swingSignal.candidateId, featureCutoffMs: swingSignal.featureCutoffMs };
         if (freeze) {
           results.push({
             asset, action: "BLOCKED", vetoCode: "OPERATOR_FREEZE",
@@ -724,6 +757,7 @@ async function runEntryScan() {
             riskMode: swingSignal.riskMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -785,6 +819,7 @@ async function runEntryScan() {
           dataQuality: swingSignal.dataQuality,
           finalConviction: swingSignal.finalConviction,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           learningRules,
         });
 
@@ -819,6 +854,7 @@ async function runEntryScan() {
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -869,6 +905,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           learningAdjustment: swingSignal.learningAdjustment,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           assetMode: swingSignal.assetMode,
           dataQuality: swingSignal.dataQuality,
           entryMode: effectiveEntryMode,
@@ -909,6 +946,7 @@ async function runEntryScan() {
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -1065,6 +1103,7 @@ async function runEntryScan() {
             entryMode: effectiveEntryMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             entryGate: swingSignal.entryGate,
@@ -1118,6 +1157,7 @@ async function runEntryScan() {
             entryMode: effectiveEntryMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             entryGate: swingSignal.entryGate,
@@ -1215,6 +1255,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           decisionState: swingSignal.decisionState,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
@@ -1299,6 +1340,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           decisionState: swingSignal.decisionState,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
@@ -1388,6 +1430,7 @@ async function runEntryScan() {
           riskMode: swingSignal.riskMode,
           assetMode: swingSignal.assetMode,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           directionBias: swingSignal.directionBias,
           learningAdjustment: swingSignal.learningAdjustment,
           learningRules: swingSignal.learningRules,
@@ -1415,6 +1458,13 @@ async function runEntryScan() {
       }
     }
 
+    if (!lastResearchReviewAt || Date.now()<lastResearchReviewAt || Date.now()-lastResearchReviewAt>=3600000) {
+      try {
+        await ensureResearchBaselines();
+        await reviewRegisteredCandidates();
+        lastResearchReviewAt=Date.now();
+      } catch (error) { await Logger.error('Research review deferred: '+String(error)); }
+    }
     await OpportunityJournal.recordMany(results);
     const opportunitySweep = await OpportunityJournal.evaluateDue();
     if ((opportunitySweep?.evaluated || 0) > 0) {
