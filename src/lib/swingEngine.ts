@@ -1247,7 +1247,9 @@ export class SwingEngine {
         MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
         MarketService.getCurrentPriceSnapshot(assetKey),
         assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
-        assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null),
+        // Funding and open interest exist for every perpetual and are recorded
+        // whatever the strategy speed; only the fast tier scores them.
+        MarketService.getDeepSensors(assetKey).catch(() => null),
         LocalLearningMemory.getRules().catch(() => [] as LocalLearningRule[]),
       ]);
 

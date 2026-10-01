@@ -664,8 +664,10 @@ async function runEntryScan() {
           ? swingSignal.marketDataVenue === CRYPTO_EXECUTION_PROVIDER &&
             swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].bybitLinearSymbol &&
             Number.isFinite(marketDataAgeMs) && marketDataAgeMs >= 0 && marketDataAgeMs <= 10_000
-          : swingSignal.marketDataVenue === "YAHOO" &&
-            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].yahooTicker;
+          // Interim until the shared instrument eligibility gate (plan Task 4):
+          // non-crypto entries stay blocked rather than accept a provenance
+          // rule written for the retired Yahoo route.
+          : false;
         if (!marketIdentityValid) {
           const reason = `Selected execution instrument provenance is invalid or stale (${swingSignal.marketDataProvider}/${swingSignal.marketDataInstrument}).`;
           results.push({

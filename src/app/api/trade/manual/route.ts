@@ -12,7 +12,7 @@ import {
   positionInstrument,
   positionLegIdentity,
 } from '@/lib/trading/assetSpecs';
-import { legacyInstrument } from '@/lib/trading/instrumentRegistry';
+import { getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 import { getMarketSessionState } from '@/lib/trading/marketSession';
 
 export const dynamic = 'force-dynamic';
@@ -74,8 +74,8 @@ export async function POST(request: Request) {
         initialStopLoss: currentPrice * 0.95,
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual BUY order', entryFeePaid: entryFee,
         direction: 'LONG',
-        // Manual sizing above uses the legacy paper formulas; label it so.
-        positionId: crypto.randomUUID(), instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'), economicsModel: 'LEGACY_PAPER_V1'
+        // Sized above on the asset's Bybit contract, so it carries that model.
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
         initialStopLoss: currentPrice * 1.05,
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual SHORT order', entryFeePaid: entryFee,
         direction: 'SHORT',
-        positionId: crypto.randomUUID(), instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'), economicsModel: 'LEGACY_PAPER_V1'
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;

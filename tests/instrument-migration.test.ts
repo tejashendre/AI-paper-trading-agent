@@ -185,14 +185,11 @@ test("new_autonomous_positions_carry_complete_identity", () => {
   });
 });
 
-test("new_entries_freeze_the_instrument_of_todays_route", () => {
-  for (const asset of ["BTC", "ETH", "SOL", "GOLD", "OIL", "SILVER"]) {
+test("new_entries_freeze_the_bybit_instrument_they_trade", () => {
+  // Every asset now routes to its Bybit perpetual, so every new entry freezes
+  // the linear model; legacy models remain only on pre-upgrade positions.
+  for (const asset of ["BTC", "ETH", "SOL", "EURUSD", "GBPUSD", "USDJPY", "GOLD", "OIL", "SILVER"]) {
     assert.deepEqual(entryInstrumentFor(asset), getConfiguredInstrument(asset), asset);
-  }
-  // FX is still priced off Kraken/Yahoo until the market-path task; its
-  // entries must not claim a Bybit contract they do not trade.
-  for (const asset of ["EURUSD", "GBPUSD", "USDJPY"]) {
-    assert.deepEqual(entryInstrumentFor(asset), legacyInstrument(asset, "LEGACY_SYNTHETIC_V1"), asset);
   }
   assert.throws(() => entryInstrumentFor("XRP"), /XRP/);
 });

@@ -50,15 +50,12 @@ import {
   UniverseCandidate,
 } from "../src/lib/strategy/crossSectionalMomentum";
 import {
-  CRYPTO_EXECUTION_PROVIDER,
-  CRYPTO_EXECUTION_SOURCE,
-  marketImbalanceKey,
-  marketLiveMetaKey,
-  marketLivePriceKey,
-  marketPriceCacheKey,
+  liveQuoteKey,
   primaryMarketDataProvider,
   SUPPORTED_ASSETS,
 } from "../src/lib/market";
+import { mergeBybitTicker } from "../src/lib/data/bybitPublic";
+import { getConfiguredInstrument } from "../src/lib/trading/instrumentRegistry";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -257,69 +254,31 @@ function auditAssetSpecs(): AuditResult[] {
   // must fail here rather than reaching a live book.
   const EXPECTED_BYBIT_SYMBOL: Record<string, string> = {
     BTC: "BTCUSDT", ETH: "ETHUSDT", SOL: "SOLUSDT",
+    EURUSD: "EURUSDUSDT", GBPUSD: "GBPUSDUSDT", USDJPY: "USDJPYUSDT",
     GOLD: "XAUUSDT", SILVER: "XAGUSDT", OIL: "CLUSDT",
   };
-  // FX pairs Kraken quotes deeply enough to trade. USDJPY is absent on purpose:
-  // Kraken lists it on a ~100bps half-spread, so it stays on Yahoo.
-  const EXPECTED_KRAKEN_PAIR: Record<string, string> = {
-    EURUSD: "ZEURZUSD", GBPUSD: "ZGBPZUSD",
-  };
-  const misaligned = REQUIRED_ASSETS.filter((asset) => {
-    const config = SUPPORTED_ASSETS[asset];
-    const expectedBybit = EXPECTED_BYBIT_SYMBOL[asset];
-    if (expectedBybit) {
-      return primaryMarketDataProvider(asset) !== "BYBIT_LINEAR" || config.bybitLinearSymbol !== expectedBybit;
-    }
-    const expectedKraken = EXPECTED_KRAKEN_PAIR[asset];
-    if (expectedKraken) {
-      // Must reach Kraken, name the right pair, and carry no Bybit symbol that
-      // would silently take precedence in the routing order.
-      return (
-        primaryMarketDataProvider(asset) !== "KRAKEN" ||
-        config.krakenPair !== expectedKraken ||
-        config.bybitLinearSymbol.length > 0
-      );
-    }
-    // Nothing better mapped: must fall to Yahoo with a real ticker, and carry
-    // neither a perpetual nor a Kraken pair that would divert it.
-    return (
-      primaryMarketDataProvider(asset) !== "YAHOO" ||
-      config.yahooTicker.length === 0 ||
-      config.bybitLinearSymbol.length > 0 ||
-      config.krakenPair.length > 0
-    );
-  });
+  const misaligned = REQUIRED_ASSETS.filter((asset) => (
+    primaryMarketDataProvider(asset) !== "BYBIT_LINEAR" ||
+    SUPPORTED_ASSETS[asset].bybitLinearSymbol !== EXPECTED_BYBIT_SYMBOL[asset] ||
+    getConfiguredInstrument(asset).symbol !== EXPECTED_BYBIT_SYMBOL[asset]
+  ));
   checks.push(result(
     misaligned.length === 0 ? "PASS" : "FAIL",
     "instrument-aligned market providers",
     misaligned.length === 0
-      ? "Crypto and commodity execution are bound to their named Bybit perpetuals (OIL=CLUSDT, WTI not Brent); EURUSD and GBPUSD to their Kraken pairs; USDJPY remains on Yahoo."
+      ? "All nine assets are bound to their named Bybit USDT perpetuals (OIL=CLUSDT, WTI not Brent; FX on EURUSDUSDT, GBPUSDUSDT, USDJPYUSDT)."
       : `${misaligned.join(", ")} resolve through an instrument that does not match the execution model.`
   ));
 
-  const providerScopedCaches = REQUIRED_ASSETS.every((asset) => (
-    marketPriceCacheKey(asset).includes(`:${primaryMarketDataProvider(asset)}:${asset}`)
-  ));
+  const quoteKeys = REQUIRED_ASSETS.map((asset) => liveQuoteKey(asset));
+  const versionedKeys = new Set(quoteKeys).size === REQUIRED_ASSETS.length &&
+    REQUIRED_ASSETS.every((asset, index) => quoteKeys[index].includes(getConfiguredInstrument(asset).instrumentVersion));
   checks.push(result(
-    providerScopedCaches ? "PASS" : "FAIL",
-    "provider-scoped execution price caches",
-    providerScopedCaches
-      ? "Execution price caches encode the provider policy so mixed-source values cannot survive a release."
-      : "At least one execution price cache does not encode its provider identity."
-  ));
-
-  const selectedSourceKeys = ["BTC", "ETH", "SOL"].every((asset) => (
-    marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:live:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
-    marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:liveMeta:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
-    marketImbalanceKey(CRYPTO_EXECUTION_SOURCE, asset) === `market:imbalance:${CRYPTO_EXECUTION_SOURCE}:${asset}` &&
-    primaryMarketDataProvider(asset) === CRYPTO_EXECUTION_PROVIDER
-  ));
-  checks.push(result(
-    selectedSourceKeys ? "PASS" : "FAIL",
-    "source-scoped crypto execution keys",
-    selectedSourceKeys
-      ? "Bybit linear price, metadata, and imbalance keys are source-scoped for every crypto execution instrument."
-      : "A crypto execution key can collide with a comparison venue."
+    versionedKeys ? "PASS" : "FAIL",
+    "instrument-versioned quote keys",
+    versionedKeys
+      ? "Each asset's streamed quote is stored under its own instrument version, so a retired route's quote can never be read as current."
+      : "Quote keys are shared or missing the instrument version."
   ));
 
   return checks;
@@ -1357,15 +1316,14 @@ function auditProductionRegressions(): AuditResult[] {
   const opportunityVersioned = opportunitySource.includes('opportunity:${TRADING_STRATEGY_VERSION}:v3') &&
     opportunitySource.includes("DEDUPE_SECONDS");
   const reviewVersioned = tradeReviewSource.includes('tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing');
-  const feedEnforced = feedSource.includes("KRAKEN_SPOT_WS") &&
-    feedSource.includes("BYBIT_LINEAR_WS") &&
-    feedSource.includes("BINANCE_SPOT_WS") &&
-    feedSource.includes("freshWebsocketSources >= MIN_REDUNDANT_WEBSOCKET_SOURCES") &&
-    websocketSource.includes('channel: "trade"') &&
+  const feedEnforced = feedSource.includes("independentVenues: 1") &&
+    feedSource.includes("freshWebsocketSources >= 1") &&
+    !feedSource.includes("KRAKEN_SPOT_WS") &&
+    !feedSource.includes("BINANCE_SPOT_WS") &&
     websocketSource.includes("publicTrade.") &&
-    websocketSource.includes("data-stream.binance.vision") &&
-    websocketSource.includes('parsed?.e !== "trade"') &&
-    websocketSource.includes("SOURCE_PERSIST_INTERVAL_MS = 1_000") &&
+    websocketSource.includes("this.book.reset()") &&
+    websocketSource.includes("FLUSH_INTERVAL_MS = 1_000") &&
+    !/kraken|binance/i.test(websocketSource) &&
     daemonSource.includes("safeForSwingExecution");
   const singleWriterExecution = tradeSource.includes("requestSwingScan") &&
     !tradeSource.includes("TradeAdmissionController") &&
@@ -1409,20 +1367,24 @@ function auditProductionRegressions(): AuditResult[] {
     dashboardSource.includes("payload.asset !== activeAsset") &&
     dashboardSource.includes("setChartData(null)");
   const selectedVenueRouting = marketSource.includes('CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR"') &&
-    marketSource.includes("fetchBybitLinearCandles") &&
+    marketSource.includes("fetchCandles(instrument.symbol") &&
     marketSource.includes("getCurrentPriceSnapshot") &&
-    websocketSource.includes("marketLivePriceKey(source, symbol)") &&
-    websocketSource.includes("marketImbalanceKey(source, symbol)") &&
-    !websocketSource.includes("REDIS_KEY_PREFIX") &&
-    sourceAgreementSource.includes("Selected Bybit linear price is unavailable") &&
+    !/kraken|yahoo|coingecko|binance/i.test(marketSource.replace(/\/\/.*$/gm, "")) &&
+    websocketSource.includes("liveQuoteKey(asset)") &&
+    sourceAgreementSource.includes("SINGLE_VENUE_TRANSPORT_CONSISTENCY") &&
     daemonSource.includes("marketDataVenue === CRYPTO_EXECUTION_PROVIDER") &&
     daemonSource.includes("entryMode: effectiveEntryMode") &&
     admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
     admissionSource.includes('return "PROBE"');
-  const bybitDeltaSafe = websocketSource.includes("bybitMarketState") &&
-    websocketSource.includes("Bybit ticker frames are deltas") &&
-    websocketSource.includes("trade?.p, previous.price") &&
-    websocketSource.includes("parsed.data.bid1Price : undefined, previous.bid");
+  // Behavioral, not textual: a delta needs this session's snapshot, and a
+  // funding-only update never refreshes the last-price time.
+  const snapshotFrame = { topic: "tickers.BTCUSDT", type: "snapshot", ts: 1_000, data: { lastPrice: "100", bid1Price: "99", ask1Price: "101" } };
+  const seeded = mergeBybitTicker(null, snapshotFrame, 1_000);
+  const fundingOnly = seeded && mergeBybitTicker(seeded, { topic: "tickers.BTCUSDT", type: "delta", ts: 5_000, data: { fundingRate: "0.0001" } }, 5_000);
+  const bybitDeltaSafe = Boolean(seeded) &&
+    mergeBybitTicker(null, { ...snapshotFrame, type: "delta" }, 1_000) === null &&
+    fundingOnly?.lastPriceEventMs === 1_000 &&
+    fundingOnly?.bidAskEventMs === 1_000;
 
   return [
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
@@ -1431,9 +1393,9 @@ function auditProductionRegressions(): AuditResult[] {
     result(learningVersioned && opportunityVersioned && reviewVersioned ? "PASS" : "FAIL", "strategy-isolated learning state", learningVersioned && opportunityVersioned && reviewVersioned
       ? "Setup performance, opportunity observations, local rules, and trade reviews are isolated by strategy version."
       : "Derived learning state may reuse polluted production aggregates."),
-    result(feedEnforced ? "PASS" : "FAIL", "redundant WebSocket admission gate", feedEnforced
-      ? "Kraken, Bybit, and Binance feed independent prices while fast admission requires at least two fresh sources."
-      : "Autonomous entry can proceed without verified realtime feed health."),
+    result(feedEnforced ? "PASS" : "FAIL", "single-venue stream admission policy", feedEnforced
+      ? "Bybit is the only venue; its stream and REST are two transports. Fast admission needs a fresh stream quote, swing admission may use a fresh REST quote."
+      : "Feed policy still assumes independent venues, or the stream session handling is missing."),
     result(singleWriterExecution ? "PASS" : "FAIL", "single-writer autonomous execution", singleWriterExecution
       ? "Admin scan requests are handed to the daemon and cannot bypass its execution model, ledger, or portfolio circuit breakers."
       : "An API route can still mutate the AI portfolio outside the audited daemon path."),
@@ -2165,22 +2127,23 @@ function auditFeedHealthScoring(): AuditResult[] {
 
   const base = {
     timeframe: "1h" as const,
-    primarySource: "YAHOO" as const,
+    primarySource: "BYBIT_LINEAR" as const,
     fallbackUsed: false,
     cacheAgeSeconds: 5,
     sourceAgreementScore: 1,
     apiFailureStreak: 0,
   };
 
-  // Forex: no volume ever reported, and weekends absent. Both are correct
-  // behaviour for the instrument and must not be scored as defects.
-  const fx = scoreFeedHealth({
-    ...base, asset: "EURUSD",
-    candles: series(240, 0, (t) => { const d = new Date(t * 1000).getUTCDay(); return d === 6 || d === 0; }),
-  });
-  out.push(fx.score >= 80 && fx.status === "GOOD"
-    ? result("PASS", "forex is not penalised for being forex", `EURUSD scores ${fx.score} (${fx.status}) with no volume and weekends absent`)
-    : result("FAIL", "forex is not penalised for being forex", `EURUSD scored ${fx.score} (${fx.status}); warnings: ${fx.warnings.join("; ")}`));
+  // Forex is now a Bybit perpetual whose 1h and 4h series run contiguously
+  // through weekends (verified 2026-10-01), so a weekend hole is real data
+  // loss, as it is for crypto. A source that never reports volume is still
+  // not scored as a defect for that alone.
+  const weekend = (t: number) => { const d = new Date(t * 1000).getUTCDay(); return d === 6 || d === 0; };
+  const fxNoVolume = scoreFeedHealth({ ...base, asset: "EURUSD", candles: series(240, 0) });
+  const fxWeekendHole = scoreFeedHealth({ ...base, asset: "EURUSD", candles: series(240, 10, weekend) });
+  out.push(fxNoVolume.score >= 80 && fxNoVolume.status === "GOOD" && fxWeekendHole.warnings.some((w) => w.includes("missing candle"))
+    ? result("PASS", "FX perpetual feed health follows the contract", `no-volume series scores ${fxNoVolume.score}; a weekend hole is flagged (score ${fxWeekendHole.score})`)
+    : result("FAIL", "FX perpetual feed health follows the contract", `no-volume=${fxNoVolume.score} (${fxNoVolume.warnings.join("; ")}); weekend hole warnings: ${fxWeekendHole.warnings.join("; ")}`));
 
   // The genuine anomaly must survive: a venue that reports volume and then
   // drops it on some bars is still broken.
@@ -2227,24 +2190,21 @@ function auditFeedHealthScoring(): AuditResult[] {
 }
 
 /**
- * Commodities were moved from Yahoo futures to Bybit perpetuals on 2026-09-07,
- * because Yahoo's intraday CME candles ran about ten hours behind while its
- * quote stayed current, leaving GOLD, OIL and SILVER failing closed.
- *
- * The move is only correct if data routing, session hours and staleness
- * tolerance all follow the *instrument* rather than the asset's category. These
- * pin that, and pin that forex was not dragged along with it.
+ * Every asset moved to its Bybit USDT perpetual on 2026-10-01 (commodities
+ * first on 2026-09-07). Routing, contract hours and staleness tolerance follow
+ * the instrument; liquidity windows still follow the TradFi underlying.
  */
 function auditCommodityInstrumentRouting(): AuditResult[] {
   const out: AuditResult[] = [];
   const commodities = ["GOLD", "OIL", "SILVER"];
   const forex = ["EURUSD", "GBPUSD", "USDJPY"];
   const crypto = ["BTC", "ETH", "SOL"];
+  const all = [...crypto, ...forex, ...commodities];
 
-  const routed = commodities.filter((a) => routeProvider(a) === "BYBIT_LINEAR" && tradesContinuously(a));
-  out.push(routed.length === commodities.length
-    ? result("PASS", "commodities price from Bybit perpetuals", `${routed.join(", ")} route to BYBIT_LINEAR`)
-    : result("FAIL", "commodities price from Bybit perpetuals", `only ${routed.join(", ") || "none"} routed to Bybit`));
+  const routed = all.filter((a) => routeProvider(a) === "BYBIT_LINEAR" && tradesContinuously(a));
+  out.push(routed.length === all.length
+    ? result("PASS", "every asset prices from its Bybit perpetual", `${routed.length} assets route to BYBIT_LINEAR`)
+    : result("FAIL", "every asset prices from its Bybit perpetual", `only ${routed.join(", ") || "none"} routed to Bybit`));
 
   // OIL must be WTI. Bybit lists Brent as BZUSDT at a third of the turnover,
   // and this system has always meant WTI by OIL.
@@ -2252,39 +2212,24 @@ function auditCommodityInstrumentRouting(): AuditResult[] {
     ? result("PASS", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}, with BZUSDT deliberately unused`)
     : result("FAIL", "OIL is WTI, not Brent", `mapped to ${SUPPORTED_ASSETS.OIL.bybitLinearSymbol}`));
 
-  // Bybit lists no FX at all, so a forex pair holding a perpetual symbol would
-  // mean a mismapping. None of them may trade continuously either: FX closes.
-  const fxOffBybit = forex.every((a) => routeProvider(a) !== "BYBIT_LINEAR" && !tradesContinuously(a));
-  out.push(fxOffBybit
-    ? result("PASS", "forex is never routed to a venue without FX", "no forex pair reaches Bybit or is treated as 24/7")
-    : result("FAIL", "forex is never routed to a venue without FX", "a forex pair was routed to Bybit or marked continuous"));
+  const fxSymbols = forex.map((a) => SUPPORTED_ASSETS[a].bybitLinearSymbol).join(",");
+  out.push(fxSymbols === "EURUSDUSDT,GBPUSDUSDT,USDJPYUSDT"
+    ? result("PASS", "forex uses Bybit FX perpetuals", "EURUSDUSDT, GBPUSDUSDT and USDJPYUSDT; not MT5 CFDs or spot FX")
+    : result("FAIL", "forex uses Bybit FX perpetuals", `mapped to ${fxSymbols}`));
 
-  // EURUSD and GBPUSD moved to Kraken on measured evidence; USDJPY did not,
-  // because Kraken quotes it at a ~100bps half-spread on a thin book. That
-  // exclusion is the whole point and must not quietly regress.
-  out.push(routeProvider("EURUSD") === "KRAKEN" && routeProvider("GBPUSD") === "KRAKEN"
-    ? result("PASS", "deep FX pairs use Kraken", "EURUSD and GBPUSD read from Kraken, which carries real volume and a native 4h series")
-    : result("FAIL", "deep FX pairs use Kraken", `EURUSD=${routeProvider("EURUSD")} GBPUSD=${routeProvider("GBPUSD")}`));
-
-  out.push(routeProvider("USDJPY") === "YAHOO" && !SUPPORTED_ASSETS.USDJPY.krakenPair
-    ? result("PASS", "USDJPY is kept off Kraken's thin book", "stays on Yahoo; Kraken quotes it ~100bps wide on 19k daily volume")
-    : result("FAIL", "USDJPY is kept off Kraken's thin book", `routed to ${routeProvider("USDJPY")} with krakenPair="${SUPPORTED_ASSETS.USDJPY.krakenPair}"`));
-
-  // FX still closes at weekends whichever venue serves it.
-  out.push(!sessionState("EURUSD", new Date(Date.UTC(2026, 8, 5, 12))).isOpen
-    ? result("PASS", "Kraken FX still respects market hours", "EURUSD remains closed on Saturday despite the venue change")
-    : result("FAIL", "Kraken FX still respects market hours", "EURUSD reported open on a Saturday"));
-
-  // A perpetual trades through the weekend; the metal's futures pit does not.
+  // A perpetual trades through the weekend; the underlying market does not,
+  // so TradFi liquidity is thin and flagged while crypto stays at peak.
   const saturday = new Date(Date.UTC(2026, 8, 5, 12));
-  const commodityOpen = commodities.every((a) => sessionState(a, saturday).isOpen);
-  const forexClosed = forex.every((a) => !sessionState(a, saturday).isOpen);
-  out.push(commodityOpen && forexClosed
-    ? result("PASS", "weekend hours follow the contract, not the underlying", "commodity perps open on Saturday; forex correctly closed")
-    : result("FAIL", "weekend hours follow the contract, not the underlying", `commodityOpen=${commodityOpen} forexClosed=${forexClosed}`));
+  const contractsOpen = all.every((a) => sessionState(a, saturday).isOpen);
+  const tradfiThin = [...forex, ...commodities].every((a) => {
+    const state = sessionState(a, saturday);
+    return !state.isPeakLiquidity && state.warnings.length > 0 && !/crypto/i.test(state.reason);
+  });
+  out.push(contractsOpen && tradfiThin
+    ? result("PASS", "weekend hours follow the contract, liquidity follows the underlying", "all perps open on Saturday; FX and commodities flagged as thin, never labeled crypto")
+    : result("FAIL", "weekend hours follow the contract, liquidity follows the underlying", `contractsOpen=${contractsOpen} tradfiThin=${tradfiThin}`));
 
-  // Staleness tolerance must tighten to the continuous standard. A perp has no
-  // excuse for an hour-old bar; a closed market does.
+  // Staleness follows the continuous standard for every perpetual.
   const HOUR = 3600;
   const now = Math.floor(Date.now() / 1000);
   const agedBars = (hoursOld: number) => Array.from({ length: 60 }, (_, i) => ({
@@ -2292,15 +2237,14 @@ function auditCommodityInstrumentRouting(): AuditResult[] {
   }));
   const base = { timeframe: "1h" as const, primarySource: "BYBIT_LINEAR" as const, fallbackUsed: false, cacheAgeSeconds: 5, sourceAgreementScore: 1, apiFailureStreak: 0 };
   const goldStale = scoreFeedHealth({ ...base, asset: "GOLD", candles: agedBars(4) });
-  const fxTolerant = scoreFeedHealth({ ...base, asset: "EURUSD", primarySource: "YAHOO", candles: agedBars(4) });
-  out.push(goldStale.stale && !fxTolerant.stale
-    ? result("PASS", "commodity staleness tightened to the continuous standard", "a 4h-old 1h bar is stale for a gold perp but tolerated for closed-market forex")
-    : result("FAIL", "commodity staleness tightened to the continuous standard", `gold stale=${goldStale.stale}, forex stale=${fxTolerant.stale}`));
+  const fxStale = scoreFeedHealth({ ...base, asset: "EURUSD", candles: agedBars(4) });
+  out.push(goldStale.stale && fxStale.stale
+    ? result("PASS", "perpetual staleness uses the continuous standard", "a 4h-old 1h bar is stale for gold and FX perpetuals alike")
+    : result("FAIL", "perpetual staleness uses the continuous standard", `gold stale=${goldStale.stale}, fx stale=${fxStale.stale}`));
 
-  // Crypto must be untouched by any of this.
-  out.push(crypto.every((a) => routeProvider(a) === "BYBIT_LINEAR" && tradesContinuously(a) && sessionState(a, saturday).isOpen)
-    ? result("PASS", "crypto routing is unchanged", "BTC, ETH, SOL still Bybit and still 24/7")
-    : result("FAIL", "crypto routing is unchanged", "the commodity move disturbed crypto routing"));
+  out.push(crypto.every((a) => sessionState(a, saturday).isPeakLiquidity)
+    ? result("PASS", "crypto liquidity is unchanged", "BTC, ETH, SOL remain 24/7 at peak liquidity")
+    : result("FAIL", "crypto liquidity is unchanged", "a crypto perpetual lost its 24/7 peak status"));
 
   return out;
 }
@@ -2319,21 +2263,18 @@ function auditWebsocketCoverage(): AuditResult[] {
   const out: AuditResult[] = [];
 
   const streamed = Object.entries(SUPPORTED_ASSETS).filter(([, c]) => c.bybitLinearSymbol);
-  const commodities = streamed.filter(([, c]) => c.category === "commodity").map(([a]) => a);
-  out.push(commodities.length === 3
-    ? result("PASS", "commodities are on the websocket mesh", `${commodities.join(", ")} stream from Bybit`)
-    : result("FAIL", "commodities are on the websocket mesh", `only ${commodities.join(", ") || "none"} carry a streamable symbol`));
+  out.push(streamed.length === Object.keys(SUPPORTED_ASSETS).length
+    ? result("PASS", "every asset is on the websocket mesh", `${streamed.length} assets stream from Bybit`)
+    : result("FAIL", "every asset is on the websocket mesh", `only ${streamed.map(([a]) => a).join(", ") || "none"} carry a streamable symbol`));
 
   // Round-trip every streamed symbol back to its asset key. This is the check
-  // that a naive "USDT" strip would fail on gold, crude and silver.
+  // that a naive "USDT" strip would fail on gold, crude, silver and FX.
   const roundTrip = streamed.filter(([asset, config]) => {
-    const stripped = config.bybitLinearSymbol.replace("USDT", "");
     const mapped = Object.entries(SUPPORTED_ASSETS).find(([, c]) => c.bybitLinearSymbol === config.bybitLinearSymbol)?.[0];
-    // The mapping must resolve to the asset, whether or not stripping happens to work.
-    return mapped === asset && (stripped === asset || config.category !== "crypto");
+    return mapped === asset;
   });
   out.push(roundTrip.length === streamed.length
-    ? result("PASS", "every streamed symbol maps back to its asset", `${streamed.length} symbols resolve, including XAUUSDT to GOLD and CLUSDT to OIL`)
+    ? result("PASS", "every streamed symbol maps back to its asset", `${streamed.length} symbols resolve, including XAUUSDT to GOLD and EURUSDUSDT to EURUSD`)
     : result("FAIL", "every streamed symbol maps back to its asset", "a streamed symbol does not resolve to the asset it belongs to"));
 
   // Symbols must be unique, or two assets would overwrite each other's ticks.
@@ -2341,13 +2282,6 @@ function auditWebsocketCoverage(): AuditResult[] {
   out.push(new Set(symbols).size === symbols.length
     ? result("PASS", "no two assets share a venue symbol", `${symbols.length} distinct symbols`)
     : result("FAIL", "no two assets share a venue symbol", "two assets map to the same Bybit symbol and would overwrite each other"));
-
-  // Forex has no perpetual and must not be subscribed anywhere, or the mesh
-  // would open topics that never publish and look permanently stale.
-  const fxStreamed = Object.entries(SUPPORTED_ASSETS).filter(([, c]) => c.category === "forex" && c.bybitLinearSymbol);
-  out.push(fxStreamed.length === 0
-    ? result("PASS", "forex is not subscribed to a venue that lacks it", "no forex pair carries a Bybit symbol")
-    : result("FAIL", "forex is not subscribed to a venue that lacks it", `${fxStreamed.map(([a]) => a).join(", ")} would open dead topics`));
 
   return out;
 }
