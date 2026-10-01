@@ -1,0 +1,357 @@
+{
+  "auditDate": "2026-10-01",
+  "reportedDeployment": {
+    "commit": "1242b2c850f975010f67639aea5ccfaba4747de7",
+    "deployedAt": "2026-09-08T07:17:54Z",
+    "strategyVersion": "swing-v4.2.0-2026-08-04",
+    "executionCostModelVersion": "paper-cost-v2-2026-07-19",
+    "portfolioRiskPolicyVersion": "portfolio-budget-v2-2026-08-04",
+    "paperMarginPolicyVersion": "strong-margin-v2-2026-08-04",
+    "researchHarnessVersion": "walk-forward-v1-2026-07-19",
+    "capitalMode": "PAPER_ONLY"
+  },
+  "swing": {
+    "completedAt": "2026-10-01T06:19:32.024Z",
+    "scanId": 33060,
+    "scanSummary": {
+      "HOLD": 9,
+      "BLOCKED": 0,
+      "ENTRY": 0,
+      "SKIPPED": 0,
+      "ERROR": 0
+    },
+    "blockerSummary": [
+      {
+        "reason": "market structure and liquidity are not aligned with the trade direction",
+        "count": 7
+      },
+      {
+        "reason": "net reward/risk is too weak after estimated fees",
+        "count": 1
+      },
+      {
+        "reason": "local learning has this pattern in watch-only mode",
+        "count": 1
+      }
+    ],
+    "closedExitRecordStats": {
+      "source": "closed_trade_history",
+      "totalTrades": 48,
+      "winningTrades": 25,
+      "losingTrades": 23,
+      "winRate": 0.5208333333333334,
+      "grossProfit": 385.1016027486163,
+      "grossLoss": 316.66892245828836,
+      "profitFactor": 1.2161016615052962,
+      "totalPnl": 68.43268029032794,
+      "averageWin": 15.404064109944652,
+      "averageLoss": 13.768214019925582,
+      "expectancy": 1.425680839381832,
+      "maxDrawdown": 163.16451204289297,
+      "maxDrawdownPercent": 1.608689535988557,
+      "latestClosedAt": "2026-09-28T04:02:36.262Z"
+    },
+    "equityUsd": 10068.432680290322,
+    "openPositionCount": 0,
+    "learningDigest": {
+      "headline": "Learning is currently making the bot more selective.",
+      "totalEvaluated": 684,
+      "favorableRate": 0.25877192982456143,
+      "activeRules": 16,
+      "boostCount": 2,
+      "cautionCount": 14,
+      "watchOnlyCount": 0,
+      "bestSetup": {
+        "key": "VWAP_RECLAIM",
+        "label": "VWAP RECLAIM",
+        "tradeCount": 19,
+        "opportunityCount": 198,
+        "favorableRate": 0.5,
+        "confidenceAdjustment": 0,
+        "outOfSampleTradeCount": 10,
+        "outOfSampleWinRate": 0.4,
+        "outOfSampleProfitFactor": 1.8001661669987026,
+        "promotionEligible": false
+      },
+      "plainFindings": [
+        "VWAP RECLAIM is the best observed setup so far, but has not earned a size boost.",
+        "MOMENTUM CONTINUATION still needs caution.",
+        "ETH has recently produced positive net expectancy after estimated fees. The bot may slightly trust this pattern more.",
+        "BTC is underperforming based on closed trades; the bot should be more selective here."
+      ],
+      "lastUpdated": "2026-10-01T06:19:31.965Z"
+    },
+    "assetSetupBuckets": [
+      {
+        "key": "OIL",
+        "tradeCount": 0,
+        "opportunityCount": 32,
+        "realizedPnl": 0,
+        "confidenceAdjustment": 0,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "BTC",
+        "tradeCount": 10,
+        "opportunityCount": 101,
+        "realizedPnl": 63.13186735231706,
+        "confidenceAdjustment": -4,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "USDJPY",
+        "tradeCount": 0,
+        "opportunityCount": 38,
+        "realizedPnl": 0,
+        "confidenceAdjustment": -4,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "EURUSD",
+        "tradeCount": 0,
+        "opportunityCount": 107,
+        "realizedPnl": 0,
+        "confidenceAdjustment": -4,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "GBPUSD",
+        "tradeCount": 0,
+        "opportunityCount": 117,
+        "realizedPnl": 0,
+        "confidenceAdjustment": -4,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "SILVER",
+        "tradeCount": 0,
+        "opportunityCount": 17,
+        "realizedPnl": 0,
+        "confidenceAdjustment": 0,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "GOLD",
+        "tradeCount": 2,
+        "opportunityCount": 67,
+        "realizedPnl": -5.388423599449673,
+        "confidenceAdjustment": -4,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "ETH",
+        "tradeCount": 11,
+        "opportunityCount": 122,
+        "realizedPnl": -114.08539851868613,
+        "confidenceAdjustment": 0,
+        "promotionEligible": false,
+        "quarantined": false
+      },
+      {
+        "key": "SOL",
+        "tradeCount": 12,
+        "opportunityCount": 83,
+        "realizedPnl": -24.533909081601905,
+        "confidenceAdjustment": -12,
+        "promotionEligible": false,
+        "quarantined": false
+      }
+    ]
+  },
+  "book": {
+    "generatedAt": "2026-10-01T06:20:26.126Z",
+    "strategy": {
+      "name": "Cross-Sectional Momentum",
+      "version": "xsec-momentum-v1-2026-08-25",
+      "lookbackHours": 72,
+      "holdHours": 12,
+      "bookSize": 12,
+      "rankBuffer": 2,
+      "universeCap": 60,
+      "minTurnover24hUsd": 10000000
+    },
+    "performance": {
+      "equityUsd": 8363.594618652052,
+      "cashUsd": 8635.990082359773,
+      "initialCapitalUsd": 10000,
+      "totalReturnUsd": -1636.4053813479477,
+      "totalReturnPercent": -16.364053813479476,
+      "realizedPnlUsd": -1466.6690329710677,
+      "unrealizedPnlUsd": -272.3954637077196,
+      "feesPaidUsd": 114.42044828655848,
+      "fundingPaidUsd": -217.07956361743504,
+      "executionCostsUsd": 557.4635283039754,
+      "maxDrawdownPercent": 28.15214287274697,
+      "peakEquityUsd": 11460.585191682614,
+      "totalRebalances": 60,
+      "totalFills": 1739
+    },
+    "exposure": {
+      "openPositions": 24,
+      "longs": 12,
+      "shorts": 12,
+      "grossNotionalUsd": 8565.54342534827,
+      "netNotionalUsd": -315.80970134045555,
+      "grossExposure": 1.024146173494091,
+      "netExposure": -0.03776004406480357
+    },
+    "edgeCheck": {
+      "at": "2026-09-24T18:32:00.933Z",
+      "verdict": "NO_ESTABLISHED_EDGE",
+      "explanation": "Over the 26 periods before the current window the mean edge is -26.6bps with t = -0.85, short of the 2.0 needed to call it distinguishable from zero. Window averages range from -39.5bps to 2.5bps, which is the spread noise alone would produce. Nothing has decayed; there is no established edge yet for the recent window to have preserved. Returns are heavily tailed (kurtosis 18.7), so window averages rest on comparatively few periods.",
+      "baselineMeanBps": -26.620592866869295,
+      "recentMeanBps": -6.354486818685631,
+      "retentionRatio": null,
+      "trendBpsPerWindow": 9.239403735786256,
+      "windowPeriods": 30,
+      "windowsAnalysed": 5,
+      "periodsRecorded": 57,
+      "shouldHalt": false
+    },
+    "costModel": {
+      "at": "2026-09-24T18:33:32.902Z",
+      "sampleSize": 500,
+      "spreadRatio": 0.2808195061191282,
+      "slippageRatio": 1.905510884460516,
+      "modelTotalBps": 11.886002457468173,
+      "observedTotalBps": 13.194640725385561,
+      "totalRatio": 1.1100991079717595,
+      "verdict": "MODEL_HONEST",
+      "message": "Observed cost 13.2bps against 11.9bps modelled (1.11x). The cost model is behaving honestly, so backtest figures can be trusted at face value."
+    }
+  },
+  "feedReadiness": {
+    "generatedAt": "2026-10-01T06:20:26.843Z",
+    "tradeableNow": 9,
+    "totalAssets": 9,
+    "feeds": [
+      {
+        "asset": "BTC",
+        "category": "crypto",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "BTCUSDT",
+        "streamsLive": true
+      },
+      {
+        "asset": "ETH",
+        "category": "crypto",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "ETHUSDT",
+        "streamsLive": true
+      },
+      {
+        "asset": "SOL",
+        "category": "crypto",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "SOLUSDT",
+        "streamsLive": true
+      },
+      {
+        "asset": "EURUSD",
+        "category": "forex",
+        "provider": "KRAKEN",
+        "upstream": "Kraken spot",
+        "instrument": "ZEURZUSD",
+        "streamsLive": true
+      },
+      {
+        "asset": "GBPUSD",
+        "category": "forex",
+        "provider": "KRAKEN",
+        "upstream": "Kraken spot",
+        "instrument": "ZGBPZUSD",
+        "streamsLive": true
+      },
+      {
+        "asset": "USDJPY",
+        "category": "forex",
+        "provider": "YAHOO",
+        "upstream": "Yahoo Finance",
+        "instrument": "USDJPY=X",
+        "streamsLive": false
+      },
+      {
+        "asset": "GOLD",
+        "category": "commodity",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "XAUUSDT",
+        "streamsLive": true
+      },
+      {
+        "asset": "OIL",
+        "category": "commodity",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "CLUSDT",
+        "streamsLive": true
+      },
+      {
+        "asset": "SILVER",
+        "category": "commodity",
+        "provider": "BYBIT_LINEAR",
+        "upstream": "Bybit linear perpetuals",
+        "instrument": "XAGUSDT",
+        "streamsLive": true
+      }
+    ]
+  },
+  "liveWarnings": [
+    {
+      "timestamp": "2026-10-01T06:17:34.258Z",
+      "level": "WARN",
+      "message": "[XSEC] drawdown 28.2% has reached the 25% circuit breaker; holding the book without adding risk."
+    },
+    {
+      "timestamp": "2026-10-01T06:12:34.238Z",
+      "level": "WARN",
+      "message": "[XSEC] drawdown 28.2% has reached the 25% circuit breaker; holding the book without adding risk."
+    },
+    {
+      "timestamp": "2026-10-01T06:07:34.217Z",
+      "level": "WARN",
+      "message": "[XSEC] drawdown 28.2% has reached the 25% circuit breaker; holding the book without adding risk."
+    },
+    {
+      "timestamp": "2026-10-01T06:06:33.637Z",
+      "level": "WARN",
+      "message": "[SWING BLOCK] OIL market provenance rejected: Selected execution instrument provenance is invalid or stale (BYBIT_LINEAR_WS/CLUSDT)."
+    },
+    {
+      "timestamp": "2026-10-01T06:05:31.602Z",
+      "level": "WARN",
+      "message": "[SWING BLOCK] OIL market provenance rejected: Selected execution instrument provenance is invalid or stale (BYBIT_LINEAR_WS/CLUSDT)."
+    },
+    {
+      "timestamp": "2026-10-01T06:04:32.366Z",
+      "level": "WARN",
+      "message": "[SWING BLOCK] OIL market provenance rejected: Selected execution instrument provenance is invalid or stale (BYBIT_LINEAR_WS/CLUSDT)."
+    },
+    {
+      "timestamp": "2026-10-01T06:03:33.2Z",
+      "level": "WARN",
+      "message": "[SWING BLOCK] OIL market provenance rejected: Selected execution instrument provenance is invalid or stale (BYBIT_LINEAR_WS/CLUSDT)."
+    },
+    {
+      "timestamp": "2026-10-01T06:02:34.177Z",
+      "level": "WARN",
+      "message": "[XSEC] drawdown 28.2% has reached the 25% circuit breaker; holding the book without adding risk."
+    }
+  ],
+  "verification": {
+    "existingAudit": "179 passed, 1 warning, 0 failed",
+    "typecheck": "npx tsc --noEmit --incremental false passed",
+    "vpsContainerManifestChecked": false,
+    "tradingBehaviorChanged": false
+  }
+}

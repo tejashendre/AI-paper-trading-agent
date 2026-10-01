@@ -5,7 +5,7 @@ import zlib from "zlib";
 import { getRedis } from "@/lib/redis";
 import { EXECUTION_COST_MODEL_VERSION } from "./executionCostModel";
 
-export const TRADING_STRATEGY_VERSION = "swing-v4.2.0-2026-08-04";
+export const TRADING_STRATEGY_VERSION = "swing-v4.3.0-2026-10-01";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =
@@ -325,7 +325,7 @@ export class ExecutionLedger {
       .some((file) => readDayFile(directory, file).includes(needle));
   }
 
-  static verify(directory = ledgerDirectory()): ExecutionLedgerVerification {
+  static verify(directory = ledgerDirectory(), throughHash?: string): ExecutionLedgerVerification {
     if (!fs.existsSync(directory)) {
       return { valid: true, files: 0, events: 0, headHash: null, errors: [] };
     }
@@ -350,12 +350,18 @@ export class ExecutionLedger {
             errors.push(`${file}:${index + 1} event hash mismatch`);
           }
           previousHash = hash;
+          // Maintenance can verify the same immutable prefix even if the
+          // running daemons append new records during compression.
+          if (throughHash && hash === throughHash) {
+            return { valid: errors.length === 0, files: files.indexOf(file) + 1, events, headHash: hash, errors };
+          }
         } catch (error) {
           errors.push(`${file}:${index + 1} invalid JSON (${error instanceof Error ? error.message : String(error)})`);
         }
       }
     }
 
+    if (throughHash) errors.push("Requested ledger head was not found");
     return {
       valid: errors.length === 0,
       files: files.length,

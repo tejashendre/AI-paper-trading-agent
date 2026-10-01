@@ -13,13 +13,13 @@ Safe VPS maintenance for AI Quant Trader.
 Usage:
   scripts/vps-maintenance.sh [--dry-run] [--apply] [--restart] [--project-dir PATH]
 
-Default mode is --dry-run. The script never prunes Docker volumes and never
-deletes project data. It only targets unused Docker build cache, dangling/unused
-images, and stopped containers when --apply is explicitly provided.
+Default mode is --dry-run. Apply compresses ledger days older than seven days
+and prunes unused Docker build cache, images, and stopped containers.
+Trading records, account state, recovery backups and Docker volumes are retained.
 
 Options:
   --dry-run          Show what would be checked and cleaned. Default.
-  --apply            Actually run safe Docker cleanup commands.
+  --apply            Compress historical ledger and reclaim Docker artifacts.
   --restart          After cleanup, restart the current Docker Compose stack.
   --project-dir PATH Project directory on the VPS. Default: /home/ubuntu/version-6.
   --help             Show this help.
@@ -127,11 +127,18 @@ echo "Will NOT run docker volume prune."
 echo "Will NOT delete Redis data."
 echo "Will NOT delete $PROJECT_DIR/data."
 
+section "Ledger Compression"
+if [ "$DRY_RUN" -eq 1 ]; then
+  run docker exec quant-dashboard npm run ledger:archive -- --dry-run
+else
+  run docker exec quant-dashboard npm run ledger:archive
+fi
+
 run docker container prune -f
 run docker image prune -af
 # PRUNE_UNTIL=all drops every unused build layer. The next deploy then rebuilds
 # from scratch, which costs a few minutes once and is the only way to reclaim
-# cache created by today's own deploys — the usual case after a busy session.
+# cache created by today's own deploys, the usual case after a busy session.
 if [ "$PRUNE_UNTIL" = "all" ]; then
   run docker builder prune -af
 else

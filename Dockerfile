@@ -12,7 +12,7 @@ COPY . .
 # Build the Next.js app and typecheck the daemons, which ship as TypeScript
 # and are executed by tsx at runtime. A type error here must fail the image
 # rather than surface as a crash loop on the box.
-RUN npm run build
+RUN npm run build && rm -rf .next/cache
 RUN npm exec tsc -- --noEmit
 
 # ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.revision=$APP_COMMIT_SHA
 # Install production dependencies directly rather than copying the builder's
 # node_modules and pruning afterwards. A prune deletes files from a layer that
 # has already been committed, so the dev dependencies stay in the image history
-# and keep costing disk — which matters on a free-tier box.
+# and keep costing disk, which matters on a free-tier box.
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev \
  && npm install -g tsx@4.19.1 \
