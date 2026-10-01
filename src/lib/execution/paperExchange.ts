@@ -2,6 +2,7 @@ import { AutonomousDecision, Portfolio, Trade, OpenPosition, MarketWorldModel } 
 import { FillSimulator } from './fillSimulator';
 import { LiveExchange } from './liveExchange';
 import { getEnv } from '@/lib/env';
+import { legacyInstrument } from '@/lib/trading/instrumentRegistry';
 
 export class PaperExchange {
   /**
@@ -103,7 +104,11 @@ export class PaperExchange {
         signalScore: decision.confidence,
         reasoning: decision.thesis,
         direction: 'LONG',
-        entryFeePaid: feeIncurredUsd
+        entryFeePaid: feeIncurredUsd,
+        // Sized by notional / price in the paper simulator: the legacy paper model.
+        positionId: crypto.randomUUID(),
+        instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'),
+        economicsModel: 'LEGACY_PAPER_V1'
       };
 
       if (!portfolio.openPositions) portfolio.openPositions = {};
@@ -184,7 +189,11 @@ export class PaperExchange {
         signalScore: decision.confidence,
         reasoning: decision.thesis,
         direction: 'SHORT',
-        entryFeePaid: feeIncurredUsd
+        entryFeePaid: feeIncurredUsd,
+        // Sized by notional / price in the paper simulator: the legacy paper model.
+        positionId: crypto.randomUUID(),
+        instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'),
+        economicsModel: 'LEGACY_PAPER_V1'
       };
 
       if (!portfolio.openPositions) portfolio.openPositions = {};

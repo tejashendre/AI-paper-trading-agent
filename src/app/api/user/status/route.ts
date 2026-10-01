@@ -4,7 +4,7 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
+import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from "@/lib/trading/assetSpecs";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -21,8 +21,11 @@ import { RESEARCH_HARNESS_VERSION } from "@/lib/research/walkForward";
 export const dynamic = "force-dynamic";
 
 function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
+    // Marked under the model frozen on the position, not today's routing.
+    const instrument = positionInstrument({ ...pos, asset });
     const exit = estimatePaperFill({
         asset,
+        instrument,
         action: pos.direction === "SHORT" ? "COVER" : "SELL",
         requestedPrice: currentPrice,
         amount: pos.amount,
@@ -35,11 +38,13 @@ function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
             orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
         },
     });
-    const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
-    const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+    const grossPnl = calculateInstrumentPnl({
+        instrument, entryPrice: pos.entryPrice, exitPrice: exit.fillPrice, quantity: pos.amount, direction: pos.direction,
+    });
+    const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
     const carryCost = estimateCarryCostUsd({
         asset,
-        notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+        notionalUsd: pos.notionalUsd ?? instrumentNotional(instrument, pos.amount, pos.entryPrice),
         openedAt: pos.entryTime,
         fundingRate: pos.fundingRate,
     });

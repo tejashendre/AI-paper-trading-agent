@@ -1,6 +1,13 @@
 import { Candle, Timeframe } from "@/lib/types";
 import { getRedis } from "@/lib/redis";
-import { CONFIGURED_ASSETS, CONFIGURED_INSTRUMENTS, ConfiguredAsset } from "@/lib/trading/instrumentRegistry";
+import {
+  CONFIGURED_ASSETS,
+  CONFIGURED_INSTRUMENTS,
+  ConfiguredAsset,
+  getConfiguredInstrument,
+  InstrumentRef,
+  legacyInstrument,
+} from "@/lib/trading/instrumentRegistry";
 
 interface AssetConfig {
   name: string;
@@ -66,6 +73,20 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = Object.fromEntries(
     { name: CONFIGURED_INSTRUMENTS[asset].name, category: CONFIGURED_INSTRUMENTS[asset].riskClass, ...DATA_ROUTES[asset] },
   ])
 );
+
+/**
+ * The instrument a new autonomous entry in this asset trades on today's data
+ * route, frozen onto the position at entry. A Bybit-routed asset opens the
+ * linear USDT contract; an asset still priced from another venue opens under
+ * the legacy synthetic model until its route moves to Bybit.
+ */
+export function entryInstrumentFor(assetKey: string): InstrumentRef {
+  const config = SUPPORTED_ASSETS[assetKey];
+  if (!config) throw new Error(`"${assetKey}" is not a configured asset`);
+  return config.bybitLinearSymbol
+    ? getConfiguredInstrument(assetKey)
+    : legacyInstrument(assetKey, "LEGACY_SYNTHETIC_V1");
+}
 
 export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
 export const CRYPTO_EXECUTION_SOURCE = "BYBIT_LINEAR_WS" as const;

@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
-import { CRYPTO_EXECUTION_PROVIDER, SUPPORTED_ASSETS } from "../lib/market";
+import { CRYPTO_EXECUTION_PROVIDER, entryInstrumentFor, SUPPORTED_ASSETS } from "../lib/market";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
@@ -17,7 +17,7 @@ import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
 import { fitPaperExecutionPlanToRiskBudget } from "../lib/trading/executionCostModel";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
-import { getAssetSpec } from "../lib/trading/assetSpecs";
+import { autonomousPositionIdentity, getAssetSpec, migrationEntryBlock, positionLegIdentity } from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
 
@@ -532,6 +532,12 @@ async function runEntryScan() {
         continue;
       }
 
+      const migrationBlock = migrationEntryBlock(portfolio, asset);
+      if (migrationBlock) {
+        results.push({ asset, action: "SKIPPED", reason: migrationBlock, timestamp });
+        continue;
+      }
+
       const session = getMarketSessionState(asset);
       if (!session.isOpen) {
         results.push({
@@ -946,6 +952,26 @@ async function runEntryScan() {
           continue;
         }
 
+        // Frozen identity and economics for the life of the position. Built
+        // before any cash moves, so an invalid risk basis skips the entry
+        // instead of leaving a half-written position.
+        let identity: ReturnType<typeof autonomousPositionIdentity>;
+        try {
+          identity = autonomousPositionIdentity({
+            instrument: entryInstrumentFor(asset),
+            initialRiskUsdt: executionPlan.netLossUsd,
+            costModelVersion: executionPlan.modelVersion,
+          });
+        } catch (error) {
+          results.push({
+            asset,
+            action: "SKIPPED",
+            reason: `Position identity unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            timestamp,
+          });
+          continue;
+        }
+
         const entryTradeId = crypto.randomUUID();
         await ExecutionLedger.record({
           type: "ENTRY_APPROVED",
@@ -953,6 +979,7 @@ async function runEntryScan() {
           asset,
           decisionId: entryTradeId,
           tradeId: entryTradeId,
+          positionId: identity.positionId,
           payload: {
             marketData: {
               signalPrice: swingSignal.signalPrice,
@@ -1050,6 +1077,7 @@ async function runEntryScan() {
           expectedNetRewardUsd: executionPlan.netRewardUsd,
           expectedNetLossUsd: executionPlan.netLossUsd,
           carryCostPaid: 0,
+          ...identity,
         };
 
         portfolio.openPositions[asset] = newPos;
@@ -1058,6 +1086,7 @@ async function runEntryScan() {
           id: entryTradeId,
           timestamp: new Date().toISOString(),
           asset,
+          ...positionLegIdentity(newPos),
           action: isShort ? "SHORT" : "BUY",
           direction: isShort ? "SHORT" : "LONG",
           amount: executionPlan.entry.amount,
@@ -1125,6 +1154,7 @@ async function runEntryScan() {
           asset,
           decisionId: entryTradeId,
           tradeId: entryTradeId,
+          positionId: identity.positionId,
           payload: { trade: entryTrade, position: newPos, portfolioBudget, executionPlan },
         });
 
