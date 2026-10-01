@@ -9,9 +9,10 @@ import { createHash } from "node:crypto";
 import { ATR, BollingerBands, EMA } from "./indicators";
 import { ConfiguredAsset, CONFIGURED_INSTRUMENTS, getConfiguredInstrument, InstrumentRef } from "./trading/instrumentRegistry";
 import { REQUIRED_CLOSED_BARS, validateExitQuote } from "./trading/entryEligibility";
-import { calculateInstrumentPnl } from "./trading/assetSpecs";
+import { calculateInstrumentPnl, RISK_POLICY_VERSION } from "./trading/assetSpecs";
 import { estimatePaperFill, getExecutionCostProfile } from "./trading/executionCostModel";
 import { getMarketSessionState } from "./trading/marketSession";
+import { TRADING_STRATEGY_VERSION } from "./trading/executionLedger";
 
 export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION";
 export interface StrategyCandidate {
@@ -1059,7 +1060,17 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
     const liquidity = scoreMarketStructureLiquidity(bestDirection, livePrice, candles15m, candles1h);
     const microstructure = scoreCryptoMicrostructure(bestDirection, assetMode, orderbookResult, deepSensors);
     const setupTags = [...details, ...trigger.tags, ...liquidity.tags, ...microstructure.tags];
-    const learning = calculateLearningAdjustment(input.learningRules, assetKey, setupTags);
+    const instrument = getConfiguredInstrument(assetKey);
+    const adxForLearning = strategyAdx(closedCandles(candles4h, "4h", referenceMs));
+    const learning = calculateLearningAdjustment(input.learningRules, assetKey, setupTags,
+      bestDirection === "NEUTRAL" ? undefined : { nowMs: referenceMs, cohort: {
+        instrumentVersion: instrument.instrumentVersion, dataSchemaVersion: STRATEGY_DATA_SCHEMA_VERSION,
+        assetClass: CONFIGURED_INSTRUMENTS[instrument.asset].riskClass, family: "TREND_PULLBACK",
+        regime: adxForLearning >= 25 ? "TREND" : adxForLearning < 20 ? "RANGE" : "NEUTRAL",
+        direction: bestDirection, strategyVersion: TRADING_STRATEGY_VERSION,
+        configHash: strategyFamilyConfigHash("TREND_PULLBACK", instrument.asset),
+        costModelVersion: EXECUTION_COST_MODEL_VERSION, riskPolicyVersion: RISK_POLICY_VERSION,
+      } });
     const triggerScore = trigger.score;
     const thresholds = entryThresholds(assetMode);
 

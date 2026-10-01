@@ -31,6 +31,8 @@ export interface OpportunityRecord {
   featureCutoffMs?: number;
   mode?: string;
   vetoCode?: string;
+  instrumentVersion?: string;
+  featureStartMs?: number;
   id: string;
   asset: string;
   timestamp: string;
@@ -54,6 +56,12 @@ export interface OpportunityRecord {
 }
 
 export interface OpportunityEvaluation {
+  candidateId?: string;
+  family?: string;
+  configHash?: string;
+  featureStartMs?: number;
+  featureCutoffMs?: number;
+  instrumentVersion?: string;
   id: string;
   opportunityId: string;
   asset: string;
@@ -371,6 +379,8 @@ export class OpportunityJournal {
       featureCutoffMs: result.featureCutoffMs,
       mode: result.mode,
       vetoCode: result.vetoCode,
+      instrumentVersion: result.instrumentVersion,
+      featureStartMs: result.featureStartMs,
       asset: result.asset,
       timestamp: result.timestamp || new Date().toISOString(),
       direction: inferDirection(result),
@@ -443,6 +453,9 @@ export class OpportunityJournal {
         const path = await evaluatePath(record, horizon, currentPrice);
         const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice }, currentPrice);
         evaluations.push({
+          candidateId: record.candidateId, family: record.family, configHash: record.configHash,
+          featureStartMs: record.featureStartMs, featureCutoffMs: record.featureCutoffMs,
+          instrumentVersion: record.instrumentVersion,
           id: `${record.id}-${horizon}`,
           opportunityId: record.id,
           asset: record.asset,
@@ -600,13 +613,6 @@ export class OpportunityJournal {
   }
 }
 
-const LEARNING_HORIZON_PRIORITY: Record<EvaluationHorizon, number> = {
-  "4h": 4,
-  "1h": 3,
-  "24h": 2,
-  "15m": 1,
-};
-
 /**
  * Select one strategy-relevant outcome per opportunity for learning. Horizon
  * rows remain stored for diagnostics, but they are dependent observations and
@@ -618,12 +624,27 @@ export function selectIndependentOpportunityEvaluations(
   const selected = new Map<string, OpportunityEvaluation>();
 
   for (const evaluation of evaluations) {
+    if (evaluation.horizon !== "24h") continue;
     const key = evaluation.opportunityId || evaluation.id;
-    const current = selected.get(key);
-    if (!current || LEARNING_HORIZON_PRIORITY[evaluation.horizon] > LEARNING_HORIZON_PRIORITY[current.horizon]) {
-      selected.set(key, evaluation);
-    }
+    if (!selected.has(key)) selected.set(key, evaluation);
   }
 
   return Array.from(selected.values());
+}
+
+export function selectIndependentSetups(input: { opportunities: OpportunityRecord[]; horizonMs: number }): OpportunityRecord[] {
+  if (!(input.horizonMs > 0)) return [];
+  const lastEnd = new Map<string, number>();
+  const selected: OpportunityRecord[] = [];
+  const sorted = [...input.opportunities].sort((a, b) => (a.featureCutoffMs ?? Date.parse(a.timestamp)) - (b.featureCutoffMs ?? Date.parse(b.timestamp)));
+  const ids = new Set<string>();
+  for (const opportunity of sorted) {
+    const id = opportunity.candidateId ?? opportunity.id;
+    const cutoff = opportunity.featureCutoffMs ?? Date.parse(opportunity.timestamp);
+    const start = opportunity.featureStartMs ?? cutoff;
+    const key = [opportunity.instrumentVersion ?? opportunity.asset, opportunity.family ?? "UNKNOWN", opportunity.configHash ?? "unversioned"].join(":");
+    if (ids.has(key + id) || !Number.isFinite(cutoff) || !Number.isFinite(start) || start > cutoff || start < (lastEnd.get(key) ?? -Infinity)) continue;
+    ids.add(key + id); selected.push(opportunity); lastEnd.set(key, cutoff + input.horizonMs);
+  }
+  return selected;
 }

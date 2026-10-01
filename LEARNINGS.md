@@ -33,3 +33,5 @@ A release entry freeze must preserve real evaluations and scan advancement or th
 Production restart verification requires a scan from the deployed commit, not merely a Redis key. Preserve scan IDs across restarts and allow the prior five-minute lease to expire safely. Do not delete active write locks to make a deployment check pass.
 
 A degraded candle-quality badge does not mean a disconnected quote feed. Report connection state, quote receipt age, last-trade age and candle quality separately. Bybit derivative ticker cadence is 100 ms, while the shipped pipeline batches Redis and polls the browser at 1000 ms each. Quiet markets and clock offsets prevent interpreting a timestamp as a guaranteed end-to-end latency.
+
+Positive confidence learning can silently increase leverage even when a separate risk multiplier is capped. Strip the positive adjustment from sizing inputs, then verify leverage, margin and stop risk against the unboosted admission result. Complete-position provenance must flow from the opening fill through partial/final exits; setup text is not a strategy configuration identity.

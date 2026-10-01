@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { SwingEngine } from "../lib/swingEngine";
+import { SwingEngine, STRATEGY_DATA_SCHEMA_VERSION } from "../lib/swingEngine";
 import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
 import { evaluateEntryEligibility, missingClosedBars } from "../lib/trading/entryEligibility";
 import { DailyFunnel, recordFunnelDecision, VetoCode } from "../lib/trading/coverageStatus";
@@ -638,10 +638,15 @@ async function runEntryScan() {
 
       try {
         const swingSignal = await SwingEngine.analyze(asset);
+        const strategyProvenance = { strategyFamily: swingSignal.family, strategyConfigHash: swingSignal.configHash,
+          strategyDataSchemaVersion: STRATEGY_DATA_SCHEMA_VERSION, strategyRegime: swingSignal.familyRegime,
+          candidateId: swingSignal.candidateId, featureCutoffMs: swingSignal.featureCutoffMs };
         // Research continues during entry freezes and while the live book is flat.
         // This journal is hypothetical evidence, never a portfolio order.
         await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
           ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
+          instrumentVersion: candidate.instrument.instrumentVersion,
+          featureStartMs: candidate.featureCutoffMs - 100 * 4 * 3600000,
           price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
           timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
           dataQuality: swingSignal.dataQuality, direction: candidate.direction,
@@ -734,6 +739,7 @@ async function runEntryScan() {
             riskMode: swingSignal.riskMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -795,6 +801,7 @@ async function runEntryScan() {
           dataQuality: swingSignal.dataQuality,
           finalConviction: swingSignal.finalConviction,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           learningRules,
         });
 
@@ -829,6 +836,7 @@ async function runEntryScan() {
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -879,6 +887,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           learningAdjustment: swingSignal.learningAdjustment,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           assetMode: swingSignal.assetMode,
           dataQuality: swingSignal.dataQuality,
           entryMode: effectiveEntryMode,
@@ -919,6 +928,7 @@ async function runEntryScan() {
             riskMode: "Protected",
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             learningRules: swingSignal.learningRules,
@@ -1075,6 +1085,7 @@ async function runEntryScan() {
             entryMode: effectiveEntryMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             entryGate: swingSignal.entryGate,
@@ -1128,6 +1139,7 @@ async function runEntryScan() {
             entryMode: effectiveEntryMode,
             assetMode: swingSignal.assetMode,
             setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
             directionBias: swingSignal.directionBias,
             learningAdjustment: swingSignal.learningAdjustment,
             entryGate: swingSignal.entryGate,
@@ -1225,6 +1237,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           decisionState: swingSignal.decisionState,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
@@ -1309,6 +1322,7 @@ async function runEntryScan() {
           finalConviction: swingSignal.finalConviction,
           decisionState: swingSignal.decisionState,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           dataQuality: swingSignal.dataQuality,
           triggerScore: swingSignal.triggerScore,
           marketStructureScore: swingSignal.marketStructureScore,
@@ -1398,6 +1412,7 @@ async function runEntryScan() {
           riskMode: swingSignal.riskMode,
           assetMode: swingSignal.assetMode,
           setupTags: swingSignal.setupTags,
+            ...strategyProvenance,
           directionBias: swingSignal.directionBias,
           learningAdjustment: swingSignal.learningAdjustment,
           learningRules: swingSignal.learningRules,

@@ -57,6 +57,17 @@ const final = leg({
   usdValue: 130 + 0.3575 - 5, entryFeeUsd: 0.3575, exitFeeUsd: 0.35, grossPnlUsd: -4.29, fundingCashflowUsdt: -0.0025,
   exitTime: iso(9), exitReason: "STOP_LOSS", exitPrice: 99_340,
 });
+test("new entries retain explicit family, config and regime through complete outcomes", () => {
+  const provenance = { strategyFamily: "RANGE_REVERSION", strategyConfigHash: "registered-range",
+    strategyDataSchemaVersion: "bybit-closed-bars-v1", strategyRegime: "RANGE" };
+  const result = buildPositionOutcomes({ trades: [
+    { ...entry, ...provenance }, { ...partial, ...provenance }, { ...final, ...provenance },
+  ], openPositions: [] }).completed[0];
+  assert.equal(result.setupFamily, "RANGE_REVERSION");
+  assert.equal(result.configHash, "registered-range");
+  assert.equal(result.regime, "RANGE");
+  assert.equal(result.dataSchemaVersion, "bybit-closed-bars-v1");
+});
 
 test("partial_profit_then_final_loss_is_one_winning_position", async (t) => {
   const trades = [final, partial, entry];
