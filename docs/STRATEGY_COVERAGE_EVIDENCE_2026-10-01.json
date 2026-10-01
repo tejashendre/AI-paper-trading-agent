@@ -1,0 +1,207 @@
+{
+  "auditLabel": "2026-10-01 strategy coverage and learning audit",
+  "snapshotCompletedAtUtc": "2026-10-01T06:19:32.024Z",
+  "reportedDeployment": {
+    "commit": "1242b2c850f975010f67639aea5ccfaba4747de7",
+    "deployedAt": "2026-09-08T07:17:54Z",
+    "strategyVersion": "swing-v4.2.0-2026-08-04",
+    "executionCostModelVersion": "paper-cost-v2-2026-07-19",
+    "portfolioRiskPolicyVersion": "portfolio-budget-v2-2026-08-04",
+    "paperMarginPolicyVersion": "strong-margin-v2-2026-08-04",
+    "researchHarnessVersion": "walk-forward-v1-2026-07-19",
+    "capitalMode": "PAPER_ONLY"
+  },
+  "coverage": [
+    {
+      "asset": "BTC",
+      "category": "crypto",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "BTCUSDT",
+      "routedInstrumentAcceptedByEntryGate": true,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "ETH",
+      "category": "crypto",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "ETHUSDT",
+      "routedInstrumentAcceptedByEntryGate": true,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "SOL",
+      "category": "crypto",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "SOLUSDT",
+      "routedInstrumentAcceptedByEntryGate": true,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "EURUSD",
+      "category": "forex",
+      "provider": "KRAKEN",
+      "instrument": "ZEURZUSD",
+      "routedInstrumentAcceptedByEntryGate": false,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "GBPUSD",
+      "category": "forex",
+      "provider": "KRAKEN",
+      "instrument": "ZGBPZUSD",
+      "routedInstrumentAcceptedByEntryGate": false,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "USDJPY",
+      "category": "forex",
+      "provider": "YAHOO",
+      "instrument": "USDJPY=X",
+      "routedInstrumentAcceptedByEntryGate": true,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": true
+    },
+    {
+      "asset": "GOLD",
+      "category": "commodity",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "XAUUSDT",
+      "routedInstrumentAcceptedByEntryGate": false,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "OIL",
+      "category": "commodity",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "CLUSDT",
+      "routedInstrumentAcceptedByEntryGate": false,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    },
+    {
+      "asset": "SILVER",
+      "category": "commodity",
+      "provider": "BYBIT_LINEAR",
+      "instrument": "XAGUSDT",
+      "routedInstrumentAcceptedByEntryGate": false,
+      "wrongInstrumentAccepted": false,
+      "sixtySecondOldSnapshotAccepted": false
+    }
+  ],
+  "blockedByRoutingMismatch": [
+    "EURUSD",
+    "GBPUSD",
+    "GOLD",
+    "OIL",
+    "SILVER"
+  ],
+  "exitRecords": 48,
+  "partialExitRecords": 13,
+  "completedPositions": 35,
+  "partialLegsWithoutFinalClose": 0,
+  "realizedPnlUsd": 68.43268029032794,
+  "learningPnlUsd": -80.87586384742065,
+  "learning": [
+    {
+      "asset": "OIL",
+      "completedPositions": 0,
+      "pnlUsedByCurrentLearningUsd": 0,
+      "pnlIncludingPartialExitsUsd": 0,
+      "currentAdjustment": 0,
+      "diagnosticPositionAdjustment": 0,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "BTC",
+      "completedPositions": 10,
+      "pnlUsedByCurrentLearningUsd": 63.13186735231706,
+      "pnlIncludingPartialExitsUsd": 109.72670084732442,
+      "currentAdjustment": -4,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": 10.07185922537875,
+      "diagnosticPositionHoldoutAvgPnl": 13.250904741859738
+    },
+    {
+      "asset": "USDJPY",
+      "completedPositions": 0,
+      "pnlUsedByCurrentLearningUsd": 0,
+      "pnlIncludingPartialExitsUsd": 0,
+      "currentAdjustment": -4,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "EURUSD",
+      "completedPositions": 0,
+      "pnlUsedByCurrentLearningUsd": 0,
+      "pnlIncludingPartialExitsUsd": 0,
+      "currentAdjustment": -4,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "GBPUSD",
+      "completedPositions": 0,
+      "pnlUsedByCurrentLearningUsd": 0,
+      "pnlIncludingPartialExitsUsd": 0,
+      "currentAdjustment": -4,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "SILVER",
+      "completedPositions": 0,
+      "pnlUsedByCurrentLearningUsd": 0,
+      "pnlIncludingPartialExitsUsd": 0,
+      "currentAdjustment": 0,
+      "diagnosticPositionAdjustment": 0,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "GOLD",
+      "completedPositions": 2,
+      "pnlUsedByCurrentLearningUsd": -5.388423599449673,
+      "pnlIncludingPartialExitsUsd": -5.388423599449673,
+      "currentAdjustment": -4,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": 0,
+      "diagnosticPositionHoldoutAvgPnl": 0
+    },
+    {
+      "asset": "ETH",
+      "completedPositions": 11,
+      "pnlUsedByCurrentLearningUsd": -114.08539851868613,
+      "pnlIncludingPartialExitsUsd": -89.37247428423001,
+      "currentAdjustment": 0,
+      "diagnosticPositionAdjustment": 0,
+      "currentHoldoutAvgPnl": -2.9546039597723253,
+      "diagnosticPositionHoldoutAvgPnl": -2.3218624284455185
+    },
+    {
+      "asset": "SOL",
+      "completedPositions": 12,
+      "pnlUsedByCurrentLearningUsd": -24.533909081601905,
+      "pnlIncludingPartialExitsUsd": 53.466877326683225,
+      "currentAdjustment": -12,
+      "diagnosticPositionAdjustment": -4,
+      "currentHoldoutAvgPnl": -2.6327860011478093,
+      "diagnosticPositionHoldoutAvgPnl": -0.9794783232605364
+    }
+  ],
+  "syntheticAccountingFixture": {
+    "actualPositionPnlUsd": 10,
+    "pnlUsedByLearningUsd": -5
+  },
+  "limitation": "Historical grouping uses asset, direction, and entryTime. A production repair should use a stable positionId and validate fees, scaling, and open partial positions. Recomputed adjustments are diagnostics, not an authorized strategy change."
+}

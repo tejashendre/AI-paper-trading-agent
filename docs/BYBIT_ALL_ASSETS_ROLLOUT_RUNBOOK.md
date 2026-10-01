@@ -40,7 +40,7 @@ accepted it, or held the release.
 
 All of these, on the exact commit to be released:
 
-1. Written release authorization from Tejas naming the commit SHA.
+1. Written release authorization from Tejas. The deployment must record the exact verified commit SHA.
 2. Owner acceptance of the XSEC unwind above.
 3. Local offline checks pass (section 8 lists the last recorded run):
    `npm run test:upgrade`, `npm run audit:strategy`,
@@ -240,3 +240,20 @@ nothing, and an exit waits for fresh data.
   fetches, and the stream under real reconnects.
 - **Not done:** rendered browser review of the new dashboard cards (needs live
   data and an authenticated session); a Node 20 local run.
+
+## 2026-10-01 reviewed release checkpoint
+
+Tejas authorized push and deployment of the verified result and explicitly approved planned XSEC risk reductions. The manual BTC position retains its legacy accounting and exit rules. Historical fills and accounts are not reset or relabeled. Release A is implemented; strategy-family expansion and full cohort/research promotion in plan Tasks 8-10 remain future Release B work.
+
+Independent review fixes:
+- Missing funding boundaries remain pending until settlement evidence arrives, including boundaries older than one day.
+- New data and cost economics use swing-v4.3.0-2026-10-01, preserving previous Redis learning, journal and review cohorts.
+- Operator freeze allows actual nine-asset evaluations and advancing scan snapshots while refusing entries.
+- Automated daily maintenance compresses ledger days older than seven days with byte-identical round-trip checks. Prefix verification tolerates concurrent live appends.
+- One shared production image serves all three application containers. Build cache is excluded; unused Docker artifacts are removed after a verified deployment and during scheduled maintenance. Redis volumes, account state, learning evidence, trade history and recovery backups are retained.
+- Removed unused PaperExchange/LiveExchange and Supabase writer paths plus ccxt and @supabase/supabase-js dependencies. Source searches found no execution callers. TradeLedger retains its historical Redis reader.
+- Compatible dependency updates resolve the npm advisory findings: Next 15.5.27, sharp 0.35.5 and PostCSS 8.5.28; npm audit reports zero vulnerabilities.
+
+Fresh local checks: Node 20 upgrade suite 197/197; TypeScript clean; lint clean; offline strategy audit 155 pass, one insufficient-research warning, zero failures; ledger fixture valid with eight events; full-position research fixture two positions and 22 USDT, insufficient for promotion. YAML parsed and shell syntax checked. The production build and cloud preflight results are recorded in the deployment checkpoint when complete.
+
+A spectator snapshot migration preview leaves the manual BTC position under LEGACY_PAPER_V1. Three ambiguous historical AI scale-in groups are flagged and left unchanged; no currently open swing position is blocked. The pull-request preflight exports raw Redis privately on the VPS and checks open-position compatibility without applying a migration. It also exercises all nine public Bybit metadata, closed-bar, quote, depth and funding paths plus two independent WebSocket sessions from the actual VPS.

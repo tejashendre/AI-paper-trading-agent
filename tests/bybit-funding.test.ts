@@ -111,6 +111,24 @@ test("funding_is_signed_boundary_based_and_once_only", async (t) => {
     assert.deepEqual(noMark.events, []);
     assert.ok(noMark.pendingTimes.includes(DAY0 + 4 * H));
   });
+
+  await t.test("an older missing boundary stays pending until evidence arrives", () => {
+    const input = {
+      positionId: "late-history", symbol: "XAUUSDT",
+      positionAt: () => ({ direction: "LONG" as const, quantity: 10 }),
+      settledTimes: [], fromMs: DAY0 + H, toMs: DAY0 + 9 * H,
+      intervalMinutes: 240, nowMs: DAY0 + 48 * H, fetchSucceeded: true,
+    };
+    const missing = planFundingCashflows({ ...input, settlements: [] });
+    assert.deepEqual(missing.pendingTimes, [DAY0 + 4 * H, DAY0 + 8 * H]);
+    assert.deepEqual(missing.absentTimes, [], "an empty page is not proof of zero funding");
+    const recovered = planFundingCashflows({
+      ...input,
+      settlements: [settlement(DAY0 + 4 * H), settlement(DAY0 + 8 * H)],
+    });
+    assert.equal(recovered.events.length, 2);
+    assert.deepEqual(recovered.pendingTimes, []);
+  });
 });
 
 function portfolioWith(positions: Record<string, OpenPosition>): Portfolio {

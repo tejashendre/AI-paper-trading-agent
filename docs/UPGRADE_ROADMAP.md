@@ -1,5 +1,7 @@
 # Upgrade Roadmap
 
+**Current implementation handoff, 2026-10-01:** [Bybit all-asset trading and learning upgrade](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md). This new plan implements the user's Bybit choice for all nine configured assets and the [verified October audit](./STRATEGY_COVERAGE_AUDIT_2026-10-01.md). The August findings below remain historical evidence. The new plan is proposed, not deployed.
+
 **Written:** 2026-08-26
 **Updated:** 2026-08-27, after building Phase 1 and testing Phase 2's premise.
 **Question it answers:** what would take this from a 7/10 system to a 10/10 one, in what order, and what should deliberately never be built.

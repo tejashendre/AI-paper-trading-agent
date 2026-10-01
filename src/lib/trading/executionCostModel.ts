@@ -442,8 +442,9 @@ export function planFundingCashflows(input: {
     const record = byTime.get(at);
     const usable = record && Number.isFinite(record.rate) && Number.isFinite(record.markPrice) && record.markPrice > 0;
     if (!usable) {
-      if (input.fetchSucceeded && !record && input.nowMs - at > 24 * 3_600_000) absentTimes.push(at);
-      else pendingTimes.push(at);
+      // A successful but incomplete history page is not proof that a due
+      // settlement cost zero. Keep old gaps pending for later reconciliation.
+      pendingTimes.push(at);
       continue;
     }
     events.push({

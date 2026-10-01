@@ -13,6 +13,7 @@ import { feeScheduleFor } from "@/lib/trading/assetSpecs";
 
 /** The first check that stopped a scan decision. Text follows as "CODE: explanation". */
 export type VetoCode =
+  | "OPERATOR_FREEZE"
   | "ACTIVE_POSITION"
   | "COOLDOWN"
   | "MIGRATION_CONFLICT"
@@ -40,6 +41,7 @@ export type FunnelStage = (typeof FUNNEL_STAGES)[number];
 
 const THROUGH_PROVENANCE: FunnelStage[] = ["closedBars", "evaluations", "candidates", "provenancePass"];
 const STAGES_BY_VETO: Record<VetoCode, FunnelStage[]> = {
+  OPERATOR_FREEZE: ["closedBars", "evaluations"],
   ACTIVE_POSITION: [],
   COOLDOWN: [],
   MIGRATION_CONFLICT: [],
@@ -64,7 +66,7 @@ const STAGES_BY_VETO: Record<VetoCode, FunnelStage[]> = {
 };
 const DATA_VETOES = new Set<VetoCode>(["DATA_NOT_ELIGIBLE", "WARMING_UP", "SIGNAL_UNAVAILABLE", "FEED_UNHEALTHY"]);
 const COST_VETOES = new Set<VetoCode>(["LIQUIDITY", "VENUE_SIZE", "EXECUTION_COST"]);
-const RISK_VETOES = new Set<VetoCode>(["PORTFOLIO_GUARD", "INVALID_STOP", "ADMISSION", "LEARNING", "IDENTITY", "PORTFOLIO_RISK_BUDGET", "MIGRATION_CONFLICT"]);
+const RISK_VETOES = new Set<VetoCode>(["OPERATOR_FREEZE", "PORTFOLIO_GUARD", "INVALID_STOP", "ADMISSION", "LEARNING", "IDENTITY", "PORTFOLIO_RISK_BUDGET", "MIGRATION_CONFLICT"]);
 
 /** One asset's outcome in one scan; recorded once per decision id. */
 export interface ScanDecision {

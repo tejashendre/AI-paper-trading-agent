@@ -478,9 +478,7 @@ async function runEntryScan() {
   // The exit watchdog runs on its own timer and keeps managing positions.
   const freeze = await getRedis().get<{ reason?: string; setBy?: string }>(ENTRY_FREEZE_KEY).catch(() => null);
   if (freeze) {
-    isEntryScanning = false;
-    await Logger.warn(`[SWING SCAN] New entries are frozen${freeze.reason ? `: ${freeze.reason}` : ""}. Exits keep running.`);
-    return;
+    await Logger.warn(`[SWING SCAN] New entries are frozen${freeze.reason ? `: ${freeze.reason}` : ""}. Evaluations and exits keep running.`);
   }
   scanSequence += 1;
 
@@ -637,6 +635,22 @@ async function runEntryScan() {
 
       try {
         const swingSignal = await SwingEngine.analyze(asset);
+
+        if (freeze) {
+          results.push({
+            asset, action: "BLOCKED", vetoCode: "OPERATOR_FREEZE",
+            reason: `OPERATOR_FREEZE: ${freeze.reason || "new entries are paused"}`,
+            simpleStatus: "New entries temporarily paused",
+            simpleReason: "The bot continues evaluating this market and managing existing positions during release verification.",
+            nextStep: "New entries resume when the verified rollout clears the operator pause.",
+            decisionState: swingSignal.decisionState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            price: swingSignal.livePrice,
+            timestamp,
+          });
+          continue;
+        }
 
         const requiredOffPeakConviction = swingSignal.entryMode === "CONTROLLED_PROBE" ? 68 : 72;
         if (
