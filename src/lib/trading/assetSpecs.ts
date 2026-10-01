@@ -1,5 +1,5 @@
-import { OpenPosition, Portfolio } from "@/lib/types";
-import { InstrumentRef, legacyInstrument } from "@/lib/trading/instrumentRegistry";
+import { OpenPosition, Portfolio, Trade } from "@/lib/types";
+import { getConfiguredInstrument, InstrumentRef, legacyInstrument } from "@/lib/trading/instrumentRegistry";
 
 export type AssetClass = "crypto" | "forex" | "commodity";
 
@@ -147,34 +147,43 @@ export function getAssetSpec(asset: string): AssetContractSpec {
   return spec;
 }
 
-export function getUsdMovePerUnit(asset: string, fromPrice: number, toPrice: number): number {
+// Legacy synthetic formulas. Their quantity unit is USD exposure for a
+// JPY-quoted pair, so they are reachable only through a LEGACY_* instrument,
+// never for a new trade.
+function legacyMovePerUnit(asset: string, fromPrice: number, toPrice: number): number {
   const priceMove = Math.abs(toPrice - fromPrice);
   if (!Number.isFinite(priceMove) || priceMove <= 0) return 0;
+  return getAssetSpec(asset).quoteCurrency === "JPY" ? priceMove / Math.max(toPrice, 1e-9) : priceMove;
+}
 
-  const spec = getAssetSpec(asset);
-  if (spec.quoteCurrency === "JPY") {
-    return priceMove / Math.max(toPrice, 1e-9);
-  }
+function legacyNotional(asset: string, amount: number, price: number): number {
+  return getAssetSpec(asset).quoteCurrency === "JPY" ? amount : amount * price;
+}
 
-  return priceMove;
+function legacyAmountFromNotional(asset: string, notional: number, price: number): number {
+  return getAssetSpec(asset).quoteCurrency === "JPY" ? notional : notional / price;
+}
+
+function legacyPnl(asset: string, entryPrice: number, exitPrice: number, amount: number, direction: OpenPosition["direction"]): number {
+  const signedMove = direction === "SHORT" ? entryPrice - exitPrice : exitPrice - entryPrice;
+  return getAssetSpec(asset).quoteCurrency === "JPY"
+    ? (signedMove * amount) / Math.max(exitPrice, 1e-9)
+    : signedMove * amount;
+}
+
+// Asset-keyed helpers price a NEW trade in the asset, which always means its
+// configured Bybit linear contract. Existing positions use their own frozen
+// instrument through the position functions below.
+export function getUsdMovePerUnit(asset: string, fromPrice: number, toPrice: number): number {
+  return instrumentMovePerUnit(getConfiguredInstrument(asset), fromPrice, toPrice);
 }
 
 export function estimateNotionalUsd(asset: string, amount: number, price: number): number {
-  const spec = getAssetSpec(asset);
-  if (spec.quoteCurrency === "JPY") {
-    return amount;
-  }
-
-  return amount * price;
+  return instrumentNotional(getConfiguredInstrument(asset), amount, price);
 }
 
 export function amountFromNotionalUsd(asset: string, notionalUsd: number, price: number): number {
-  const spec = getAssetSpec(asset);
-  if (spec.quoteCurrency === "JPY") {
-    return notionalUsd;
-  }
-
-  return notionalUsd / price;
+  return instrumentQuantityFromNotional(getConfiguredInstrument(asset), notionalUsd, price);
 }
 
 export function calculatePnlUsd(
@@ -184,15 +193,7 @@ export function calculatePnlUsd(
   amount: number,
   direction: OpenPosition["direction"]
 ): number {
-  const isShort = direction === "SHORT";
-  const signedMove = isShort ? entryPrice - exitPrice : exitPrice - entryPrice;
-  const spec = getAssetSpec(asset);
-
-  if (spec.quoteCurrency === "JPY") {
-    return (signedMove * amount) / Math.max(exitPrice, 1e-9);
-  }
-
-  return signedMove * amount;
+  return calculateInstrumentPnl({ instrument: getConfiguredInstrument(asset), entryPrice, exitPrice, quantity: amount, direction });
 }
 
 export function estimateFeeUsd(
@@ -201,15 +202,12 @@ export function estimateFeeUsd(
   price: number,
   liquidity: "maker" | "taker" = "taker"
 ): number {
-  const spec = getAssetSpec(asset);
-  const feeRate = liquidity === "maker" ? spec.makerFeeRate : spec.takerFeeRate;
-  return estimateNotionalUsd(asset, amount, price) * feeRate;
+  return instrumentFee(getConfiguredInstrument(asset), amount, price, liquidity);
 }
 
 // ---------------------------------------------------------------------------
 // Position economics. Every calculation on an existing position goes through
 // the model frozen on that position, never through today's asset routing.
-// The asset-keyed functions above are the legacy formulas.
 // ---------------------------------------------------------------------------
 
 /** The instrument a position was opened on; pre-upgrade records read as legacy. */
@@ -232,18 +230,30 @@ export function calculateInstrumentPnl(input: {
   direction: OpenPosition["direction"];
 }): number {
   if (!isLinear(input.instrument)) {
-    return calculatePnlUsd(input.instrument.asset, input.entryPrice, input.exitPrice, input.quantity, input.direction);
+    return legacyPnl(input.instrument.asset, input.entryPrice, input.exitPrice, input.quantity, input.direction);
   }
   const signedMove = input.direction === "SHORT" ? input.entryPrice - input.exitPrice : input.exitPrice - input.entryPrice;
   return signedMove * input.quantity;
 }
 
 export function instrumentNotional(instrument: InstrumentRef, quantity: number, price: number): number {
-  return isLinear(instrument) ? quantity * price : estimateNotionalUsd(instrument.asset, quantity, price);
+  return isLinear(instrument) ? quantity * price : legacyNotional(instrument.asset, quantity, price);
 }
 
 export function instrumentQuantityFromNotional(instrument: InstrumentRef, notional: number, price: number): number {
-  return isLinear(instrument) ? notional / price : amountFromNotionalUsd(instrument.asset, notional, price);
+  return isLinear(instrument) ? notional / price : legacyAmountFromNotional(instrument.asset, notional, price);
+}
+
+/** Settlement-currency P&L per unit of quantity for a move between two prices. */
+export function instrumentMovePerUnit(instrument: InstrumentRef, fromPrice: number, toPrice: number): number {
+  if (!isLinear(instrument)) return legacyMovePerUnit(instrument.asset, fromPrice, toPrice);
+  const priceMove = Math.abs(toPrice - fromPrice);
+  return Number.isFinite(priceMove) && priceMove > 0 ? priceMove : 0;
+}
+
+/** The instrument a trade leg was written under; rows without one predate the upgrade. */
+export function tradeInstrument(trade: Pick<Trade, "asset" | "instrument">): InstrumentRef {
+  return trade.instrument ?? legacyInstrument(trade.asset, "LEGACY_SYNTHETIC_V1");
 }
 
 export function instrumentFee(

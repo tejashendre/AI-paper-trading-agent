@@ -214,6 +214,7 @@ function dataHealthBadgeClass(status?: string, isDark?: boolean) {
 function liveSourceText(snapshot: any) {
   if (!snapshot) return "Waiting for live price";
   if (snapshot.source === "WEBSOCKET" && snapshot.fresh) return "Live WebSocket";
+  if (snapshot.source === "REST" && snapshot.fresh) return "Bybit REST quote";
   if (snapshot.source === "RECENT_CACHE") return snapshot.mode === "SLOW_SWING" ? "Slow swing feed" : "Recent fallback";
   return "No recent price";
 }
@@ -222,7 +223,7 @@ function liveSourceClass(snapshot: any, isDark: boolean) {
   if (snapshot?.source === "WEBSOCKET" && snapshot?.fresh) {
     return isDark ? "text-emerald-300 border-emerald-900/50 bg-emerald-950/25" : "text-emerald-700 border-emerald-200 bg-emerald-50";
   }
-  if (snapshot?.source === "RECENT_CACHE") {
+  if (snapshot?.source === "RECENT_CACHE" || (snapshot?.source === "REST" && snapshot?.fresh)) {
     return isDark ? "text-amber-300 border-amber-900/50 bg-amber-950/25" : "text-amber-700 border-amber-200 bg-amber-50";
   }
   return isDark ? "text-red-300 border-red-900/50 bg-red-950/25" : "text-red-700 border-red-200 bg-red-50";

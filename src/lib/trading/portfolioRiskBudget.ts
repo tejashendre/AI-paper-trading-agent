@@ -1,5 +1,5 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { estimateFeeUsd } from "./assetSpecs";
+import { instrumentFee, tradeInstrument } from "./assetSpecs";
 
 export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v2-2026-08-04";
 
@@ -97,7 +97,8 @@ function eventExecutionCostUsd(trade: Trade): number {
   if (Number.isFinite(explicit) && explicit >= 0) return explicit;
   if (!Number.isFinite(Number(trade.amount)) || !Number.isFinite(Number(trade.price))) return 0;
   try {
-    return estimateFeeUsd(trade.asset, Number(trade.amount), Number(trade.price));
+    // Each row is costed under the model it was written with.
+    return instrumentFee(tradeInstrument(trade), Number(trade.amount), Number(trade.price));
   } catch {
     return 0;
   }

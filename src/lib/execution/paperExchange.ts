@@ -2,7 +2,7 @@ import { AutonomousDecision, Portfolio, Trade, OpenPosition, MarketWorldModel } 
 import { FillSimulator } from './fillSimulator';
 import { LiveExchange } from './liveExchange';
 import { getEnv } from '@/lib/env';
-import { legacyInstrument } from '@/lib/trading/instrumentRegistry';
+import { getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 
 export class PaperExchange {
   /**
@@ -105,10 +105,10 @@ export class PaperExchange {
         reasoning: decision.thesis,
         direction: 'LONG',
         entryFeePaid: feeIncurredUsd,
-        // Sized by notional / price in the paper simulator: the legacy paper model.
+        // Sized as notional / price, which is the linear contract's quantity.
         positionId: crypto.randomUUID(),
-        instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'),
-        economicsModel: 'LEGACY_PAPER_V1'
+        instrument: getConfiguredInstrument(asset),
+        economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
 
       if (!portfolio.openPositions) portfolio.openPositions = {};
@@ -190,10 +190,10 @@ export class PaperExchange {
         reasoning: decision.thesis,
         direction: 'SHORT',
         entryFeePaid: feeIncurredUsd,
-        // Sized by notional / price in the paper simulator: the legacy paper model.
+        // Sized as notional / price, which is the linear contract's quantity.
         positionId: crypto.randomUUID(),
-        instrument: legacyInstrument(asset, 'LEGACY_PAPER_V1'),
-        economicsModel: 'LEGACY_PAPER_V1'
+        instrument: getConfiguredInstrument(asset),
+        economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
 
       if (!portfolio.openPositions) portfolio.openPositions = {};
