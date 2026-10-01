@@ -15,10 +15,14 @@ export interface CandidateDefinition {
   registeredAtMs: number;
   labelHorizonMs: number;
   holdoutId: string;
+  evidenceManifestHash: string;
+  holdoutStartMs: number;
+  holdoutEndMs: number;
   mode: "SHADOW" | "REVIEW_ELIGIBLE" | "PAPER_ACTIVE" | "REJECTED";
   holdoutConsumed?: boolean;
 }
 export interface ResearchOutcome extends CompletedPositionOutcome {
+  evidenceManifestHash?: string;
   featureStartMs?: number;
   labelEndMs?: number;
   researchOrigin?: "PAPER" | "REPLAY" | "SHADOW";
@@ -31,21 +35,31 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 export function candidateDefinitionHash(definition: CandidateDefinition): string {
   return hash([definition.family, definition.configHash, definition.strategyVersion,
     [...definition.instrumentVersions].sort(), definition.costModelVersion, definition.riskPolicyVersion,
-    definition.labelHorizonMs, definition.holdoutId]);
+    definition.labelHorizonMs, definition.holdoutId, definition.evidenceManifestHash,
+    definition.holdoutStartMs, definition.holdoutEndMs, definition.registeredAtMs]);
+}
+function sameEvidence(a:CandidateDefinition,b:CandidateDefinition) {
+  return Boolean(a.evidenceManifestHash && a.evidenceManifestHash===b.evidenceManifestHash) ||
+    (a.instrumentVersions.some(v=>b.instrumentVersions.includes(v)) &&
+      a.holdoutStartMs<b.holdoutEndMs && b.holdoutStartMs<a.holdoutEndMs);
 }
 export async function getCandidateRegistry(): Promise<CandidateDefinition[]> {
   const definitions = await getRedis().lrange(REGISTRY, 0, -1);
   const consumed = await getRedis().get<string[]>(REGISTRY + ":consumed") ?? [];
+  const consumedEvidence=await getRedis().get<CandidateDefinition[]>(REGISTRY+':consumedEvidence')??[];
   return Promise.all(definitions.map(raw => typeof raw === "string" ? JSON.parse(raw) : raw)
     .map(async (definition: CandidateDefinition) => {
       const review = await getRedis().get<{mode:CandidateDefinition['mode']}>(REGISTRY + ':review:' + definition.candidateId);
-      return { ...definition, mode:review?.mode ?? definition.mode, holdoutConsumed: consumed.includes(definition.holdoutId) };
+      return { ...definition, mode:review?.mode ?? definition.mode,
+        holdoutConsumed: consumed.includes(definition.holdoutId) || consumedEvidence.some(d=>sameEvidence(d,definition)) };
     }));
 }
 export async function registerCandidate(definition: CandidateDefinition): Promise<void> {
   if (definition.mode !== "SHADOW") throw new Error("Registration starts in SHADOW; activation needs a reviewed release");
   if (!definition.candidateId || !definition.configHash || !definition.holdoutId || !definition.instrumentVersions.length ||
-    !Number.isFinite(definition.registeredAtMs) || definition.registeredAtMs > Date.now() || definition.labelHorizonMs < 86400000)
+    !Number.isFinite(definition.registeredAtMs) || definition.registeredAtMs > Date.now() || definition.labelHorizonMs < 86400000 ||
+    !/^[a-f0-9]{64}$/.test(definition.evidenceManifestHash??'') || !Number.isFinite(definition.holdoutStartMs) ||
+    !Number.isFinite(definition.holdoutEndMs) || definition.holdoutEndMs-definition.holdoutStartMs<definition.labelHorizonMs)
     throw new Error("Invalid preregistered candidate definition");
   const redis = getRedis(), token = randomUUID(), lock = REGISTRY + ":lock";
   if (!await redis.set(lock, token, { nx: true, ex: 30 })) throw new Error("Research registry is busy");
@@ -67,6 +81,8 @@ export async function registerCandidate(definition: CandidateDefinition): Promis
       if (reused) {
         const consumed = await redis.get<string[]>(REGISTRY + ":consumed") ?? [];
         await redis.set(REGISTRY + ":consumed", Array.from(new Set([...consumed, definition.holdoutId])));
+        const evidence=await redis.get<CandidateDefinition[]>(REGISTRY+':consumedEvidence')??[];
+        await redis.set(REGISTRY+':consumedEvidence',[...evidence,definition]);
       }
       await redis.lpush(REGISTRY, JSON.stringify(definition));
     }
@@ -129,11 +145,16 @@ export function evaluatePromotion(input: {
   const registered = input.trials.some(trial => trial.candidateId === definition.candidateId &&
     candidateDefinitionHash(trial) === candidateDefinitionHash(definition));
   if (!registered) reasons.push("NOT_PREREGISTERED");
+  if (!/^[a-f0-9]{64}$/.test(definition.evidenceManifestHash??'') ||
+    !Number.isFinite(definition.holdoutStartMs) || !Number.isFinite(definition.holdoutEndMs))
+    reasons.push('UNBOUND_EVIDENCE_MANIFEST');
   const trials = new Set(input.trials.map(candidateDefinitionHash)).size;
   const compatible = input.outcomes.filter(o =>
     definition.instrumentVersions.includes(o.instrument.instrumentVersion) && o.configHash === definition.configHash &&
     o.setupFamily === definition.family && o.strategyVersion === definition.strategyVersion &&
     o.costModelVersion === definition.costModelVersion && o.riskPolicyVersion === definition.riskPolicyVersion &&
+    o.evidenceManifestHash === definition.evidenceManifestHash &&
+    o.openedAtMs>=definition.holdoutStartMs && (o.labelEndMs??o.closedAtMs)<=definition.holdoutEndMs &&
     Number.isFinite(o.returnOnInitialMargin) && Number.isFinite(o.netPnlUsdt) &&
     o.initialRiskUsdt !== null && o.initialRiskUsdt > 0 && Number.isFinite(o.netR) &&
     Math.abs(o.netR! - o.netPnlUsdt / o.initialRiskUsdt) < 1e-8 && o.closedAtMs > o.openedAtMs &&
@@ -160,7 +181,8 @@ export function evaluatePromotion(input: {
   if (!compatible.length || compatible.some(o => o.historicalCostsAvailable !== true)) reasons.push("MISSING_CRITICAL_COST_EVIDENCE");
   if (compatible.some(o => o.riskLimitBreached !== false)) reasons.push("RISK_LIMIT_EVIDENCE_FAILED");
   if (!input.feesVerified) reasons.push("UNVERIFIED_FEES");
-  if (input.holdoutConsumed || definition.holdoutConsumed || input.trials.some(t => t.holdoutId === definition.holdoutId && t.holdoutConsumed))
+  if (input.holdoutConsumed || definition.holdoutConsumed || input.trials.some(t => t.holdoutConsumed &&
+    (t.holdoutId===definition.holdoutId || sameEvidence(t,definition))))
     reasons.push("HOLDOUT_CONSUMED");
   const metrics = { trialCount: trials, compatiblePositions: compatible.length, historicalPositions: historical.length,
     folds: folds.length, testPositions: testSamples.length, netExpectancy95: interval,

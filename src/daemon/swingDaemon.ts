@@ -547,6 +547,35 @@ async function runEntryScan() {
 
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
+      const swingSignal = await SwingEngine.analyze(asset);
+      // Collect valid shadow hypotheses before portfolio and calendar entry vetoes.
+      try {
+        const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
+        const previousCapture=await redis.get<{lastCapturedAt?:string}>(`research:archive:${asset}`);
+        await getRedis().set(`research:archive:${asset}`, { ...swingSignal.researchCapture,
+          lastCapturedAt:swingSignal.researchCapture?.status==='CAPTURED'?timestamp:previousCapture?.lastCapturedAt,
+          observedAt:timestamp, familyRegime:swingSignal.familyRegime, candidates:swingSignal.strategyCandidates?.length??0 });
+        // Research continues during entry freezes and while the live book is flat.
+        // This journal is hypothetical evidence, never a portfolio order.
+        await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
+          ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
+          instrumentVersion: candidate.instrument.instrumentVersion,
+          featureStartMs: candidate.featureCutoffMs - 100 * 4 * 3600000,
+          fundingIntervalMinutes:researchMetadata?.fundingIntervalMinutes,
+          halfSpreadBps:swingSignal.marketDataBid && swingSignal.marketDataAsk ?
+            (swingSignal.marketDataAsk-swingSignal.marketDataBid)/swingSignal.livePrice*5000:undefined,
+          price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
+          timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
+          dataQuality: swingSignal.dataQuality, direction: candidate.direction,
+          mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
+          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
+        })));
+
+      } catch (error) {
+        const previous=await redis.get<Record<string,unknown>>(`research:archive:${asset}`);
+        await redis.set(`research:archive:${asset}`,{...previous,status:'CAPTURE_ERROR',observedAt:timestamp});
+        await Logger.warn('Research collection deferred for '+asset+': '+String(error));
+      }
 
       const activePosition = portfolio.openPositions?.[asset];
       if (activePosition) {
@@ -640,29 +669,9 @@ async function runEntryScan() {
       }
 
       try {
-        const swingSignal = await SwingEngine.analyze(asset);
         const strategyProvenance = { strategyFamily: swingSignal.family, strategyConfigHash: swingSignal.configHash,
           strategyDataSchemaVersion: STRATEGY_DATA_SCHEMA_VERSION, strategyRegime: swingSignal.familyRegime,
           candidateId: swingSignal.candidateId, featureCutoffMs: swingSignal.featureCutoffMs };
-        const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
-        await getRedis().set(`research:archive:${asset}`, { ...swingSignal.researchCapture,
-          observedAt:timestamp, familyRegime:swingSignal.familyRegime, candidates:swingSignal.strategyCandidates?.length??0 });
-        // Research continues during entry freezes and while the live book is flat.
-        // This journal is hypothetical evidence, never a portfolio order.
-        await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
-          ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
-          instrumentVersion: candidate.instrument.instrumentVersion,
-          featureStartMs: candidate.featureCutoffMs - 100 * 4 * 3600000,
-          fundingIntervalMinutes:researchMetadata?.fundingIntervalMinutes,
-          halfSpreadBps:swingSignal.marketDataBid && swingSignal.marketDataAsk ?
-            (swingSignal.marketDataAsk-swingSignal.marketDataBid)/swingSignal.livePrice*5000:undefined,
-          price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
-          timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
-          dataQuality: swingSignal.dataQuality, direction: candidate.direction,
-          mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
-          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
-        })));
-
         if (freeze) {
           results.push({
             asset, action: "BLOCKED", vetoCode: "OPERATOR_FREEZE",

@@ -4,7 +4,8 @@
 
 | Document | What it covers |
 |---|---|
-| [Bybit all-asset implementation plan](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md) | Current implementation handoff: all nine Bybit contracts, state migration, costs/funding, coverage gates, learning, research, tests, and rollout. Proposed changes, not deployed behavior. |
+| [Bybit all-asset implementation plan](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md) | Full specification; Release A is deployed, remaining tasks are implemented and awaiting cloud verification. |
+| [Complete upgrade verification](./BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md) | Review fixes, 238-test validation, evidence limits and exact-artifact deployment proof. |
 | [Strategy coverage audit, 1 October 2026](./STRATEGY_COVERAGE_AUDIT_2026-10-01.md) | Verified routing, full-position accounting, risk-state, and learning defects with linked evidence. |
 | [Bybit all-assets rollout runbook](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md) | Release A state changes, entry freeze, read-only snapshot and migration preview, in-container checks, rollback hazards, recorded offline results, and evidence limits. Not a release authorization. |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Operating contract, topology, and what the system deliberately is not. |

@@ -32,6 +32,22 @@ human-authorized release. No automatic tuning or risk promotion occurs.
 The Sharpe null-variance approximation is documented in deflatedSharpe.ts;
 it is a screening statistic, not a probability of future profit.
 
+Unfinished labels have a separate 4,096-row queue, independent of the 500-row
+display history. Full queues pause new intake visibly, preserving unfinished
+labels. Mature labels request their exact historical window and drain oldest
+first. Queue replacement is atomic and lease-fenced. Independent evidence
+retains 256 rows per registered cohort and origin; overlapping observations
+remain in a bounded descriptive cache and cannot evict independent samples.
+Definitions freeze a collection-manifest hash and designated evidence window.
+Outcomes bind to that manifest and window. Consumed evidence or overlapping
+instrument intervals remain consumed under new names. Collection manifests
+describe immutable protocols; captured records have separate content hashes.
+Neither hash establishes execution costs. Runtime windows span five years.
+The conservative 400-hour feature window makes independence much slower than
+the minimum 14-day gate: 15 forward samples take about nine months and complete
+historical-plus-forward review can take several years. Dense observations
+cannot justify faster promotion or risk increases.
+
 The existing daemon captures closed 15m/1h/4h/W bars and periodic quote,
 depth and funding summaries at most once per asset per 15 minutes. gzip
 evidence hashes and cursors prevent repeated bar copies. The configurable
