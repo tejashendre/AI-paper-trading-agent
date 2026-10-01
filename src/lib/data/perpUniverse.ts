@@ -1,6 +1,6 @@
 import { getRedis } from "@/lib/redis";
 import { Logger } from "@/lib/logger";
-import { bybitPublicGet } from "@/lib/data/bybitPublic";
+import { bybitPublicGet, listBybitLinearInstruments } from "@/lib/data/bybitPublic";
 import {
   DEFAULT_UNIVERSE,
   screenUniverseDetailed,
@@ -22,6 +22,28 @@ const TICKER_KEY = "perp:tickers:v1";
 const TICKER_TTL_SECONDS = 20;
 const CLOSES_TTL_SECONDS = 15 * 60;
 const UNIVERSE_KEY = "perp:universe:v1";
+const SYMBOL_TYPES_KEY = "perp:symbolTypes:v1";
+const SYMBOL_TYPES_TTL_SECONDS = 6 * 3600;
+
+/**
+ * Venue symbol type by symbol ("" for crypto, "forex"/"commodity" for TradFi),
+ * from every page of the instrument list. Empty when unavailable, in which
+ * case the hand-maintained deny-list is the only non-crypto screen.
+ */
+async function fetchSymbolTypes(warnings: string[]): Promise<Record<string, string>> {
+  const redis = getRedis();
+  const cached = await redis.get<Record<string, string>>(SYMBOL_TYPES_KEY).catch(() => null);
+  if (cached && Object.keys(cached).length > 0) return cached;
+  try {
+    const instruments = await listBybitLinearInstruments();
+    const types = Object.fromEntries(instruments.map((row) => [row.symbol, row.symbolType]));
+    await redis.set(SYMBOL_TYPES_KEY, types, { ex: SYMBOL_TYPES_TTL_SECONDS }).catch(() => undefined);
+    return types;
+  } catch (error) {
+    warnings.push(`symbol types unavailable, deny-list only: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  }
+}
 
 export interface PerpTicker {
   symbol: string;
@@ -139,6 +161,7 @@ export async function buildMomentumSnapshot(input: {
   const universeConfig = input.universeConfig ?? DEFAULT_UNIVERSE;
   const warnings: string[] = [];
   const prices = await fetchTickers();
+  const symbolTypes = await fetchSymbolTypes(warnings);
 
   // Screen on turnover first so history is only probed for plausible names.
   const shortlist = [...prices.values()]
@@ -161,6 +184,7 @@ export async function buildMomentumSnapshot(input: {
         closesBySymbol.set(ticker.symbol, series.closes);
         candidates.push({
           symbol: ticker.symbol,
+          symbolType: symbolTypes[ticker.symbol],
           turnover24h: ticker.turnover24h,
           historyHours: series.closes.length,
           barCoverage: series.coverage,

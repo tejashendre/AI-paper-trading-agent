@@ -26,6 +26,8 @@ export const CROSS_SECTIONAL_STRATEGY_VERSION = "xsec-momentum-v1-2026-08-25";
 
 export interface UniverseCandidate {
   symbol: string;
+  /** Venue symbol type when known ("" for crypto, "forex"/"commodity" for TradFi). */
+  symbolType?: string;
   /** Rolling 24h quote-currency turnover, used for liquidity screening. */
   turnover24h: number;
   /** Hours of price history available. A short history cannot be ranked. */
@@ -99,7 +101,25 @@ export const NON_CRYPTO_BASE_COINS: readonly string[] = [
   "XAUT",     // Tether Gold, 4396
   "XAG",      // silver, 66
   "CL",       // WTI crude, 92
+  "BZ",       // Brent crude
+  // FX perpetuals (Bybit lists EURUSD, GBPUSD and USDJPY against USDT, verified
+  // 2026-10-01). Kept here as a fallback for when the venue's symbolType, the
+  // primary signal, is unavailable.
+  "EURUSD",
+  "GBPUSD",
+  "USDJPY",
+  "AUDUSD",
+  "USDCAD",
+  "USDCHF",
+  "NZDUSD",
 ];
+
+/**
+ * Venue symbol types that are not crypto. Bybit marks TradFi perpetuals with
+ * a non-empty symbolType ("forex", "commodity" in the 2026-10-01 evidence);
+ * equity-style groups are listed so a new one is refused rather than ranked.
+ */
+export const NON_CRYPTO_SYMBOL_TYPES: readonly string[] = ["forex", "commodity", "stock", "stocks", "xstocks", "index", "etf"];
 
 export interface UniverseConfig {
   /** Minimum 24h turnover for a symbol to be rankable. */
@@ -242,8 +262,10 @@ export function baseCoinOf(symbol: string): string {
 
 export function isNonCryptoSymbol(
   symbol: string,
-  config: UniverseConfig = DEFAULT_UNIVERSE
+  config: UniverseConfig = DEFAULT_UNIVERSE,
+  symbolType?: string
 ): boolean {
+  if (symbolType && NON_CRYPTO_SYMBOL_TYPES.includes(symbolType.toLowerCase())) return true;
   const denied = new Set(config.excludedBaseCoins ?? []);
   return denied.has(baseCoinOf(symbol));
 }
@@ -273,7 +295,7 @@ export function screenUniverseDetailed(
   const eligible = candidates
     .filter((c) => {
       if (excluded.has(c.symbol)) return false;
-      if (isNonCryptoSymbol(c.symbol, config)) {
+      if (isNonCryptoSymbol(c.symbol, config, c.symbolType)) {
         // Only report names that would otherwise have been tradeable, so the
         // list is short enough to actually read.
         if (c.turnover24h >= config.minTurnover24hUsd) rejectedNonCrypto.push(c.symbol);

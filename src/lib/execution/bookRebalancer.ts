@@ -23,6 +23,7 @@ import {
   StrategyConfig,
 } from "@/lib/strategy/crossSectionalMomentum";
 import { PerpTicker } from "@/lib/data/perpUniverse";
+import type { BookRiskState } from "@/lib/execution/bookRiskPolicy";
 import { recordFillForReconciliation } from "@/lib/execution/costModelReconciliation";
 
 /**
@@ -118,6 +119,18 @@ export interface BookPortfolio {
   fundingTail?: BookFundingTail[];
   /** The latest funding cashflows, kept for audit. */
   recentFundingEvents?: FundingCashflowEvent[];
+  /** Recorded before any action each cycle; survives restarts. */
+  riskState?: {
+    state: BookRiskState;
+    reasons: string[];
+    allowEntries: boolean;
+    allowReductions: boolean;
+    policyVersion: string;
+    updatedAt: string;
+    /** Lifetime drawdown reviewed in an authorized release, if any. */
+    breachAcknowledgedAtPercent?: number;
+    lastUnwind?: { at: string; executed: number; detail: string };
+  };
 }
 
 export function emptyBookPortfolio(initialCapitalUsd = 10_000): BookPortfolio {
@@ -222,6 +235,8 @@ export function applyBookPlan(input: {
   plan: BookPlan;
   prices: Map<string, PerpTicker>;
   config?: StrategyConfig;
+  /** Refuse any order that would open, grow or flip a position. */
+  reduceOnly?: boolean;
 }): RebalanceResult {
   const { portfolio, plan, prices } = input;
   const equityBefore = bookEquityUsd(portfolio, prices);
@@ -256,6 +271,13 @@ export function applyBookPlan(input: {
     }
 
     const isReducing = existingQty !== 0 && Math.abs(targetQty) < Math.abs(existingQty);
+    if (input.reduceOnly) {
+      const flips = targetQty !== 0 && Math.sign(targetQty) !== Math.sign(existingQty);
+      if (existingQty === 0 || Math.abs(targetQty) > Math.abs(existingQty) * (1 + 1e-9) || flips) {
+        skipped++;
+        continue;
+      }
+    }
     const fill = fillFor(order.symbol, ticker, deltaQty, isReducing);
     const fillPrice = fill.fillPrice;
     reconciliation.push({
@@ -477,14 +499,18 @@ export async function settleBookFunding(
 
 // ── persistence ──────────────────────────────────────────────────────────────
 
-export async function loadBookPortfolio(initialCapitalUsd = 10_000): Promise<BookPortfolio> {
-  const stored = await getRedis().get<BookPortfolio>(BOOK_PORTFOLIO_KEY).catch(() => null);
+/** The capital-free book that keeps forward evidence while the live book is halted. */
+export const SHADOW_BOOK_PORTFOLIO_KEY = "xsec:shadow:portfolio";
+export const SHADOW_BOOK_EQUITY_CURVE_KEY = "xsec:shadow:equityCurve";
+
+export async function loadBookPortfolio(initialCapitalUsd = 10_000, key = BOOK_PORTFOLIO_KEY): Promise<BookPortfolio> {
+  const stored = await getRedis().get<BookPortfolio>(key).catch(() => null);
   if (!stored || !Number.isFinite(stored.cashUsd)) return emptyBookPortfolio(initialCapitalUsd);
   return { ...emptyBookPortfolio(initialCapitalUsd), ...stored, positions: stored.positions || {} };
 }
 
-export async function saveBookPortfolio(portfolio: BookPortfolio): Promise<void> {
-  await getRedis().set(BOOK_PORTFOLIO_KEY, portfolio);
+export async function saveBookPortfolio(portfolio: BookPortfolio, key = BOOK_PORTFOLIO_KEY): Promise<void> {
+  await getRedis().set(key, portfolio);
 }
 
 /** Hand the rebalance's fills to the cost-model reconciler. */
@@ -499,8 +525,8 @@ export async function recordBookTrades(trades: BookTrade[]): Promise<void> {
   await redis.ltrim(BOOK_TRADES_KEY, 0, 999);
 }
 
-export async function recordEquityPoint(portfolio: BookPortfolio, equityUsd: number): Promise<void> {
-  await recordCurvePoint(SHARED_BOOK_KEY, {
+export async function recordEquityPoint(portfolio: BookPortfolio, equityUsd: number, key = SHARED_BOOK_KEY): Promise<void> {
+  await recordCurvePoint(key, {
     equityUsd,
     // Closed-trade equity, so the sleeve comparison is measuring realised
     // outcomes on both sides rather than one sleeve's marking schedule.
