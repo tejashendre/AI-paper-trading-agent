@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   evaluateEntryEligibility,
+  missingClosedBars,
   REQUIRED_CLOSED_BARS,
   validateExitQuote,
   WEEKLY_FEATURE_MIN_BARS,
@@ -157,4 +158,13 @@ test("admission_refuses_a_blocked_data_eligibility", () => {
   });
   assert.equal(result.approved, false);
   assert.match(result.reason, /QUOTE_MISSING/);
+});
+
+test("missing_history_is_named_the_same_way_before_and_after_a_signal", () => {
+  // A HOLD caused by short history must be reported as warm-up, not as "no setup".
+  assert.deepEqual(missingClosedBars({ m15: REQUIRED_CLOSED_BARS, h1: REQUIRED_CLOSED_BARS, h4: REQUIRED_CLOSED_BARS, w1: 0 }), []);
+  assert.deepEqual(missingClosedBars({ m15: 60, h1: REQUIRED_CLOSED_BARS, h4: 59, w1: 20 }), [
+    `WARMING_UP_M15: 60 of ${REQUIRED_CLOSED_BARS} completed m15 bars`,
+    `WARMING_UP_H4: 59 of ${REQUIRED_CLOSED_BARS} completed h4 bars`,
+  ]);
 });

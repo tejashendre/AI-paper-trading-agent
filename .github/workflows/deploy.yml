@@ -30,6 +30,10 @@ jobs:
       - name: Run Type Check
         run: npx tsc --noEmit
 
+      # Offline: fake Bybit behind fetch, in-memory Redis, temp ledger. No secrets.
+      - name: Run Bybit Upgrade Tests
+        run: npm run test:upgrade
+
       - name: Run Strategy Audit
         run: npm run audit:strategy
 

@@ -142,6 +142,20 @@ export class LocalRedisProxy {
 
 let client: LocalRedisProxy | null = null;
 
+/** The public surface every caller uses; an in-memory stand-in implements the same. */
+export type RedisClient = Pick<
+  LocalRedisProxy,
+  "get" | "getdel" | "set" | "del" | "compareAndDelete" | "lpush" | "ltrim" | "lrange" | "publish" | "scanKeys" | "ttl" | "memoryUsage" | "quit"
+>;
+
+/**
+ * Replace the shared client, e.g. with an in-memory store for an offline
+ * integration test. Pass null to return to the real connection.
+ */
+export function setRedisClient(replacement: RedisClient | null): void {
+  client = replacement as LocalRedisProxy | null;
+}
+
 export function getRedis(): LocalRedisProxy {
   if (!client) {
     client = new LocalRedisProxy();
