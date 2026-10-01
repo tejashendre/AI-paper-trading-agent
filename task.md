@@ -63,3 +63,12 @@ Prior planning-only and Claude no-deploy boundaries above are historical checkpo
 - [x] Reclaim 1782.2 MB by lossless ledger compression plus unused Docker artifacts; verify about 37 GB free and scheduled maintenance.
 - [x] Complete rendered desktop/mobile coverage checks and save docs/BYBIT_RELEASE_VERIFICATION_2026-10-01.md.
 Next optional slice: implement the documented subsecond quote display with separate connection/quote/candle-quality indicators. Release B strategy learning remains pending. The current release is deployed and operational.
+
+## Complete remaining upgrade (authorized 2026-10-01)
+- [x] Task 8: class-aware trend and shadow range strategy families evaluated across all nine (212/212 suite, TypeScript clean).
+- [ ] Task 9: independent, instrument-scoped learning with bounded adjustments and explicit units.
+- [ ] Task 10: reproducible candidate registry, cost stress, untouched evaluation and forward promotion gates.
+- [ ] Extend real-daemon integration, coverage funnels and research visibility for the complete path.
+- [ ] Subsecond browser quotes with reconnect/fallback and separate transport/candle-quality indicators.
+- [ ] Whole-branch review, full validation, state-preserving cloud release and runtime/UI verification.
+Authorization continues the existing end-to-end deployment request. New family activation and XSEC risk release remain separately evidence-gated. Profit is an evaluation result, not a feature promise.

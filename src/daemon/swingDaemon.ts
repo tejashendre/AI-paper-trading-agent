@@ -638,6 +638,16 @@ async function runEntryScan() {
 
       try {
         const swingSignal = await SwingEngine.analyze(asset);
+        // Research continues during entry freezes and while the live book is flat.
+        // This journal is hypothetical evidence, never a portfolio order.
+        await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
+          ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
+          price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
+          timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
+          dataQuality: swingSignal.dataQuality, direction: candidate.direction,
+          mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
+          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
+        })));
 
         if (freeze) {
           results.push({

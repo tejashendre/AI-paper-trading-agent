@@ -5,6 +5,147 @@ import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
 import { calculateLearningAdjustment, LocalLearningMemory, LocalLearningRule } from "./trading/localLearning";
 import { buildPaperExecutionPlan, EXECUTION_COST_MODEL_VERSION } from "./trading/executionCostModel";
+import { createHash } from "node:crypto";
+import { ATR, BollingerBands, EMA } from "./indicators";
+import { ConfiguredAsset, CONFIGURED_INSTRUMENTS, getConfiguredInstrument, InstrumentRef } from "./trading/instrumentRegistry";
+import { REQUIRED_CLOSED_BARS, validateExitQuote } from "./trading/entryEligibility";
+import { calculateInstrumentPnl } from "./trading/assetSpecs";
+import { estimatePaperFill, getExecutionCostProfile } from "./trading/executionCostModel";
+import { getMarketSessionState } from "./trading/marketSession";
+
+export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION";
+export interface StrategyCandidate {
+  candidateId: string;
+  asset: ConfiguredAsset;
+  instrument: InstrumentRef;
+  family: StrategyFamily;
+  regime: "TREND" | "RANGE";
+  direction: "LONG" | "SHORT";
+  entryPrice: number;
+  stopPrice: number;
+  targetPrice: number;
+  /** Risk for one base unit; portfolio sizing remains in trade admission. */
+  initialRiskUsdt: number;
+  featureCutoffMs: number;
+  configHash: string;
+  mode: "BASELINE" | "SHADOW";
+  netRewardRisk: number;
+  reasons: string[];
+}
+export interface StrategyFamilyInput {
+  dataMode?: "LIVE" | "REPLAY";
+  instrument: InstrumentRef;
+  candles15m: Candle[];
+  candles1h: Candle[];
+  candles4h: Candle[];
+  weeklyCandles: Candle[];
+  quote: MarketPriceSnapshot;
+  nowMs: number;
+}
+export const STRATEGY_DATA_SCHEMA_VERSION = "bybit-closed-bars-v1";
+
+/** Wilder ADX(14). No directional movement yields zero, not a fake trend. */
+export function strategyAdx(candles: Candle[], period = 14): number {
+  if (candles.length < period * 2) return NaN;
+  let tr = 0, plus = 0, minus = 0;
+  const dx: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const bar = candles[i], previous = candles[i - 1];
+    const up = bar.high - previous.high, down = previous.low - bar.low;
+    const nextTr = Math.max(bar.high - bar.low, Math.abs(bar.high - previous.close), Math.abs(bar.low - previous.close));
+    const nextPlus = up > down && up > 0 ? up : 0;
+    const nextMinus = down > up && down > 0 ? down : 0;
+    if (i <= period) { tr += nextTr; plus += nextPlus; minus += nextMinus; }
+    else { tr = tr - tr / period + nextTr; plus = plus - plus / period + nextPlus; minus = minus - minus / period + nextMinus; }
+    if (i >= period) dx.push(tr > 0 && plus + minus > 0 ? 100 * Math.abs(plus - minus) / (plus + minus) : 0);
+  }
+  if (dx.length < period) return NaN;
+  let adx = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (const value of dx.slice(period)) adx = (adx * (period - 1) + value) / period;
+  return adx;
+}
+
+export function strategyFamilyConfigHash(family: StrategyFamily, asset: ConfiguredAsset): string {
+  return createHash("sha256").update(JSON.stringify({
+    family, riskClass: CONFIGURED_INSTRUMENTS[asset].riskClass,
+    data: STRATEGY_DATA_SCHEMA_VERSION, cost: EXECUTION_COST_MODEL_VERSION,
+    adxPeriod: 14, trendMin: 25, rangeMax: 20, bbPeriod: 20, bbWidth: 2,
+    rangeStopAtr: 0.5, trendStopAtr: SWING_STOP_ATR_MULTIPLE, trendTargetR: SWING_TARGET_R_MULTIPLE,
+    minimumNetR: 1.35,
+  })).digest("hex");
+}
+
+/** Pure candidates. Range is research-only; the baseline still passes every live guard. */
+export function evaluateStrategyFamilies(input: StrategyFamilyInput): StrategyCandidate[] {
+  const quoteForValidation = input.dataMode === "REPLAY" && input.quote.provider === "REPLAY" && input.quote.venue === "REPLAY"
+    ? { ...input.quote, provider: "BYBIT_LINEAR_HTTP", venue: "BYBIT_LINEAR", source: "HTTP" as const, transport: "REST" as const }
+    : input.quote;
+  if (!validateExitQuote({ instrument: input.instrument, quote: quoteForValidation, nowMs: input.nowMs }).valid) return [];
+  const m15 = closedCandles(input.candles15m, "15m", input.nowMs);
+  const h1 = closedCandles(input.candles1h, "1h", input.nowMs);
+  const h4 = closedCandles(input.candles4h, "4h", input.nowMs);
+  if ([m15, h1, h4].some(bars => bars.length < REQUIRED_CLOSED_BARS ||
+    bars.some(c => ![c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0)))) return [];
+  const adx = strategyAdx(h4);
+  const atr = ATR(h1).at(-1)!;
+  if (!Number.isFinite(adx) || !(atr > 0)) return [];
+  const entry = input.quote.price;
+  const bar = m15.at(-1)!;
+  let family: StrategyFamily, direction: "LONG" | "SHORT", stop: number, target: number;
+  if (adx >= 25) {
+    const ema1 = EMA(h1.map(c => c.close), 20).at(-1)!;
+    const ema4 = EMA(h4.map(c => c.close), 20).at(-1)!;
+    const long = h1.at(-1)!.close > ema1 && h4.at(-1)!.close > ema4 && bar.close > bar.open;
+    const short = h1.at(-1)!.close < ema1 && h4.at(-1)!.close < ema4 && bar.close < bar.open;
+    if (!long && !short) return [];
+    family = "TREND_PULLBACK"; direction = long ? "LONG" : "SHORT";
+    const sign = long ? 1 : -1;
+    stop = entry - sign * atr * SWING_STOP_ATR_MULTIPLE;
+    target = entry + sign * atr * SWING_STOP_ATR_MULTIPLE * SWING_TARGET_R_MULTIPLE;
+  } else if (adx < 20) {
+    const bands = BollingerBands(h1.map(c => c.close)).at(-1)!;
+    const setup = h1.at(-1)!;
+    const long = setup.low <= bands.lower && bar.close > bands.lower && bar.close < bands.middle;
+    const short = setup.high >= bands.upper && bar.close < bands.upper && bar.close > bands.middle;
+    if (!long && !short) return [];
+    family = "RANGE_REVERSION"; direction = long ? "LONG" : "SHORT";
+    stop = long ? Math.min(setup.low, bar.low) - 0.5 * atr : Math.max(setup.high, bar.high) + 0.5 * atr;
+    target = bands.middle;
+  } else return [];
+  const sign = direction === "LONG" ? 1 : -1;
+  if (!(stop > 0) || sign * (entry - stop) <= 0 || sign * (target - entry) <= 0) return [];
+  const mode = getAssetMode(input.instrument.asset);
+  const context = { assetMode: mode, dataQuality: 100 };
+  const baseProfile = getExecutionCostProfile(input.instrument.asset);
+  const observedHalfSpread = input.quote.bid && input.quote.ask
+    ? (input.quote.ask - input.quote.bid) / entry * 5000 : baseProfile.halfSpreadBps;
+  const profile = { ...baseProfile, halfSpreadBps: Math.max(baseProfile.halfSpreadBps, observedHalfSpread) };
+  const fill = estimatePaperFill({ asset: input.instrument.asset, instrument: input.instrument,
+    action: direction === "LONG" ? "BUY" : "SHORT", requestedPrice: entry, amount: 1,
+    context: { ...context, reason: "ENTRY" }, profile });
+  const exit = (price: number, reason: "TAKE_PROFIT" | "STOP_LOSS") => estimatePaperFill({
+    asset: input.instrument.asset, instrument: input.instrument, action: direction === "LONG" ? "SELL" : "COVER",
+    requestedPrice: price, amount: 1, context: { ...context, reason }, profile,
+  });
+  const targetFill = exit(target, "TAKE_PROFIT"), stopFill = exit(stop, "STOP_LOSS");
+  const pnl = (price: number) => calculateInstrumentPnl({ instrument: input.instrument, entryPrice: fill.fillPrice,
+    exitPrice: price, quantity: 1, direction });
+  const risk = -pnl(stopFill.fillPrice) + fill.feeUsd + stopFill.feeUsd;
+  const netRewardRisk = (pnl(targetFill.fillPrice) - fill.feeUsd - targetFill.feeUsd) / risk;
+  if (!(risk > 0) || !Number.isFinite(netRewardRisk) || netRewardRisk < 1.35) return [];
+  const configHash = strategyFamilyConfigHash(family, input.instrument.asset);
+  const featureCutoffMs = (bar.time + 900) * 1000;
+  const candidateId = createHash("sha256").update(`${input.instrument.instrumentVersion}:${family}:${direction}:${configHash}:${featureCutoffMs}`).digest("hex");
+  const session = getMarketSessionState(input.instrument.asset, new Date(input.nowMs));
+  return [{ candidateId, asset: input.instrument.asset, instrument: input.instrument, family,
+    regime: family === "TREND_PULLBACK" ? "TREND" : "RANGE", direction, entryPrice: entry,
+    stopPrice: stop, targetPrice: target, initialRiskUsdt: risk, featureCutoffMs, configHash,
+    mode: family === "RANGE_REVERSION" ? "SHADOW" : "BASELINE", netRewardRisk,
+    reasons: [`Closed-bar ADX(14) ${adx.toFixed(1)}; ${family} hypothesis`,
+      `Net reward/risk ${netRewardRisk.toFixed(2)} after modeled execution costs`,
+      "Order flow is unavailable to this pure evaluator; no spot-flow substitute",
+      ...session.warnings] }];
+}
 
 export type SwingDecisionState =
   | "NO_BIAS"
@@ -43,6 +184,12 @@ export type LiquidityState =
   | "SELLER_TRAP_RISK";
 
 export interface SwingSignal {
+  family?: StrategyFamily;
+  configHash?: string;
+  candidateId?: string;
+  featureCutoffMs?: number;
+  strategyCandidates?: StrategyCandidate[];
+  familyRegime?: "TREND" | "RANGE" | "NEUTRAL";
   asset: string;
   action: 'SWING_BUY' | 'SWING_SHORT' | 'HOLD';
   entryPrice: number;
@@ -779,6 +926,7 @@ export function buildEntryGateDiagnostics(input: {
 }
 
 export interface SwingSignalInput {
+  dataMode?: "LIVE" | "REPLAY";
   assetKey: string;
   assetMode: SwingSignal["assetMode"];
   candles1mResult: Candle[];
@@ -802,7 +950,7 @@ export interface SwingSignalInput {
  * the performance of a strategy that was never deployed — and every tuning
  * decision made against it was aimed at the wrong target.
  */
-export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
+function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
   const {
     assetKey, assetMode, candles1mResult, candles5mResult,
     candles15m, candles1h, candles4h, candles1w,
@@ -1246,6 +1394,28 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
       targetReachability,
       netRewardRisk,
     };
+}
+
+export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
+  const nowMs = input.livePriceSnapshot.eventTimeMs;
+  const baseline = evaluateBaselineSwingSignal(input);
+  const instrument = getConfiguredInstrument(input.assetKey);
+  const familyInput: StrategyFamilyInput = { instrument, candles15m: input.candles15m,
+    candles1h: input.candles1h, candles4h: input.candles4h, weeklyCandles: input.candles1w,
+    quote: input.livePriceSnapshot, nowMs, dataMode: input.dataMode };
+  const strategyCandidates = evaluateStrategyFamilies(familyInput);
+  const adx = strategyAdx(closedCandles(input.candles4h, "4h", nowMs));
+  const familyRegime: SwingSignal["familyRegime"] = adx >= 25 ? "TREND" : adx < 20 ? "RANGE" : "NEUTRAL";
+  const configHash = strategyFamilyConfigHash("TREND_PULLBACK", instrument.asset);
+  const featureCutoffMs = (closedCandles(input.candles15m, "15m", nowMs).at(-1)?.time ?? 0) * 1000 + 900000;
+  const trend = strategyCandidates.find(c => c.family === "TREND_PULLBACK");
+  const signal = { ...baseline, family: "TREND_PULLBACK" as const, configHash,
+    candidateId: trend?.candidateId, featureCutoffMs, strategyCandidates, familyRegime };
+  if (baseline.action !== "HOLD" && familyRegime !== "TREND") return { ...signal, action: "HOLD",
+    simpleStatus: "Waiting for a qualified trend",
+    simpleReason: "The trend baseline requires 4h ADX of at least 25. Range candidates collect shadow evidence.",
+    nextStep: "Keep collecting closed-bar setups and independent outcomes.", paperSize: "None" };
+  return signal;
 }
 
 export class SwingEngine {

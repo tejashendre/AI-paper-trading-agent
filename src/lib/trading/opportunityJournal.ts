@@ -25,6 +25,12 @@ type EvaluationHorizon = "15m" | "1h" | "4h" | "24h";
 type HypotheticalOutcome = "TAKE_PROFIT" | "STOP_LOSS" | "FAVORABLE" | "ADVERSE" | "FLAT" | "UNKNOWN";
 
 export interface OpportunityRecord {
+  candidateId?: string;
+  family?: string;
+  configHash?: string;
+  featureCutoffMs?: number;
+  mode?: string;
+  vetoCode?: string;
   id: string;
   asset: string;
   timestamp: string;
@@ -359,6 +365,12 @@ export class OpportunityJournal {
 
     return {
       id: `${result.asset}-${result.timestamp || new Date().toISOString()}-${result.decisionState || result.action}`,
+      candidateId: result.candidateId,
+      family: result.family,
+      configHash: result.configHash,
+      featureCutoffMs: result.featureCutoffMs,
+      mode: result.mode,
+      vetoCode: result.vetoCode,
       asset: result.asset,
       timestamp: result.timestamp || new Date().toISOString(),
       direction: inferDirection(result),
@@ -387,15 +399,17 @@ export class OpportunityJournal {
 
     const redis = getRedis();
     for (const record of records) {
-      const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}`;
+      const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}:${record.family || "baseline"}`;
+      if (record.candidateId && await redis.get(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`)) continue;
       const previous = await redis.get<{ fingerprint: string; entryPrice: number }>(dedupeKey).catch(() => null);
       const fingerprint = observationFingerprint(record);
       const priceMovePercent = previous?.entryPrice
         ? Math.abs(record.entryPrice - previous.entryPrice) / previous.entryPrice * 100
         : Infinity;
-      if (previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
+      if (!record.candidateId && previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
 
       await redis.set(dedupeKey, { fingerprint, entryPrice: record.entryPrice }, { ex: DEDUPE_SECONDS });
+      if (record.candidateId) await redis.set(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`, true, { ex: 86400 * 2 });
       await redis.lpush(HISTORY_KEY, JSON.stringify(record));
       if (record.direction !== "NEUTRAL") await redis.lpush(PENDING_KEY, JSON.stringify(record));
     }
