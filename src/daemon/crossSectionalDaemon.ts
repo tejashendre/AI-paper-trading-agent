@@ -27,8 +27,9 @@ import {
   recordEquityPoint,
   recordReconciliation,
   saveBookPortfolio,
-  settleFunding,
+  settleBookFunding,
 } from "../lib/execution/bookRebalancer";
+import { liveFundingDeps } from "../lib/data/bybitPublic";
 import {
   buildCostVerdict,
   RECONCILIATION_VERDICT_KEY,
@@ -39,7 +40,8 @@ import { summariseRealisedEdge } from "../lib/research/edgeDecay";
 const CONFIG = DEFAULT_STRATEGY;
 const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
 const MARK_INTERVAL_MS = 60_000;
-const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+/** How often to look for newly published settlements; charges follow each symbol's own boundaries. */
+const FUNDING_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
 const EQUITY_KEY = "xsec:equity";
 const LOCK_KEY = "xsec:lock";
@@ -109,6 +111,8 @@ async function runRebalance() {
         return;
       }
 
+      // Settle every boundary up to now before quantities change.
+      await settleBookFunding(portfolio, liveFundingDeps).catch(() => undefined);
       const weights = currentWeights(portfolio, snapshot.prices);
       const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: weights, config: CONFIG });
       const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config: CONFIG });
@@ -223,12 +227,18 @@ async function runMark() {
 async function runFunding() {
   try {
     await withLock(async () => {
-      const prices = await fetchTickers();
       const portfolio = await loadBookPortfolio();
-      if (Object.keys(portfolio.positions).length === 0) return;
-      const paid = settleFunding(portfolio, prices);
-      await saveBookPortfolio(portfolio);
-      await Logger.info(`[XSEC] funding settled: ${paid >= 0 ? "paid" : "received"} $${Math.abs(paid).toFixed(2)}.`);
+      if (Object.keys(portfolio.positions).length === 0 && !(portfolio.fundingTail?.length)) return;
+      const before = portfolio.fundingPaidUsd;
+      const outcome = await settleBookFunding(portfolio, liveFundingDeps);
+      if (outcome.booked > 0) {
+        await saveBookPortfolio(portfolio);
+        const paid = portfolio.fundingPaidUsd - before;
+        await Logger.info(`[XSEC] ${outcome.booked} funding settlement(s): ${paid >= 0 ? "paid" : "received"} $${Math.abs(paid).toFixed(2)}.`);
+      }
+      if (outcome.pending > 0 || outcome.errors.length > 0) {
+        await Logger.warn(`[XSEC] funding pending reconciliation: ${outcome.pending} boundary(ies). ${outcome.errors.join("; ")}`.trim());
+      }
     });
   } catch (error) {
     await Logger.warn(`[XSEC] funding settlement failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -251,7 +261,8 @@ async function main() {
 
   setInterval(() => { void maybeRebalance(); }, 5 * 60 * 1000);
   setInterval(() => { void runMark(); }, MARK_INTERVAL_MS);
-  setInterval(() => { void runFunding(); }, FUNDING_INTERVAL_MS);
+  await runFunding().catch(() => undefined);
+  setInterval(() => { void runFunding(); }, FUNDING_CHECK_INTERVAL_MS);
 }
 
 main().catch(async (error) => {

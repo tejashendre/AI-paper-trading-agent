@@ -42,7 +42,9 @@ function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
         instrument, entryPrice: pos.entryPrice, exitPrice: exit.fillPrice, quantity: pos.amount, direction: pos.direction,
     });
     const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
-    const carryCost = estimateCarryCostUsd({
+    // Linear positions book funding to cash at each settlement; marking it
+    // again here would count it twice.
+    const carryCost = instrument.economicsModel === "BYBIT_LINEAR_USDT_V1" ? 0 : estimateCarryCostUsd({
         asset,
         notionalUsd: pos.notionalUsd ?? instrumentNotional(instrument, pos.amount, pos.entryPrice),
         openedAt: pos.entryTime,

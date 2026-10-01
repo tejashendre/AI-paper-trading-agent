@@ -24,10 +24,16 @@ import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import {
   estimateCarryCostUsd,
   estimatePaperFill,
+  FundingCashflowEvent,
+  FundingDeps,
   PaperExecutionReason,
   PaperFillEstimate,
+  planFundingCashflows,
+  quantityHeldAt,
+  expectedFundingTimes,
 } from "@/lib/trading/executionCostModel";
-import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { liveFundingDeps } from "@/lib/data/bybitPublic";
+import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
 import {
   decideSwingExit,
@@ -81,6 +87,234 @@ function positionNotional(pos: OpenPosition, quantity: number, price: number): n
 
 function positionEntryFee(pos: OpenPosition): number {
   return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice);
+}
+
+const isLinearPosition = (pos: OpenPosition) => positionInstrument(pos).economicsModel === "BYBIT_LINEAR_USDT_V1";
+
+/** Funding events for one quantity history, from entry up to `toMs`. */
+async function planPositionFunding(
+  input: {
+    positionId: string;
+    symbol: string;
+    direction: OpenPosition["direction"];
+    legs: Array<{ atMs: number; quantityDelta: number }>;
+    settledTimes: number[];
+    toMs: number;
+  },
+  deps: FundingDeps
+) {
+  const fromMs = Math.min(...input.legs.map((leg) => leg.atMs));
+  const intervalMinutes = await deps.intervalMinutes(input.symbol);
+  const settled = new Set(input.settledTimes);
+  const due = expectedFundingTimes(fromMs, input.toMs, intervalMinutes)
+    .filter((at) => !settled.has(at) && quantityHeldAt(input.legs, at) > 0);
+  if (due.length === 0) return { events: [], pendingTimes: [], absentTimes: [] };
+  let settlements: Awaited<ReturnType<FundingDeps["settlements"]>> = [];
+  let fetchSucceeded = true;
+  try {
+    settlements = await deps.settlements(input.symbol, Math.min(...due) - 1, input.toMs);
+  } catch {
+    fetchSucceeded = false;
+  }
+  return planFundingCashflows({
+    positionId: input.positionId,
+    symbol: input.symbol,
+    positionAt: (atMs) => ({ direction: input.direction, quantity: quantityHeldAt(input.legs, atMs) }),
+    settlements,
+    settledTimes: input.settledTimes,
+    fromMs,
+    toMs: input.toMs,
+    intervalMinutes,
+    nowMs: deps.nowMs(),
+    fetchSucceeded,
+  });
+}
+
+/**
+ * Book funding for every open Bybit linear position, and for closed ones
+ * still awaiting settlement data. Mutates only the portfolio: cash, each
+ * position's processed boundaries and the pending ledger events change
+ * together, so one portfolio write persists all three. Legacy positions keep
+ * the synthetic carry path and are skipped.
+ */
+export async function settleOpenPositionFunding(
+  portfolio: Portfolio,
+  deps: FundingDeps = liveFundingDeps,
+  options: { onlyAsset?: string; recordLedger?: boolean } = {}
+): Promise<{ booked: number; pending: number; errors: string[] }> {
+  const now = deps.nowMs();
+  const recordLedger = options.recordLedger !== false;
+  let booked = 0;
+  let pending = 0;
+  const errors: string[] = [];
+  const book = (event: FundingCashflowEvent, asset: string) => {
+    portfolio.usd += event.amountUsdt;
+    portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) - event.amountUsdt;
+    if (recordLedger) {
+      (portfolio.pendingLedgerEvents ??= []).push({
+        id: event.id,
+        type: "FUNDING_SETTLED",
+        source: "FUNDING_SETTLEMENT",
+        asset,
+        positionId: event.positionId,
+        timestamp: new Date(now).toISOString(),
+        payload: event,
+      });
+    }
+    booked += 1;
+  };
+
+  for (const [asset, pos] of Object.entries(portfolio.openPositions || {})) {
+    if (options.onlyAsset && asset !== options.onlyAsset) continue;
+    if (!isLinearPosition(pos) || !pos.positionId || !pos.quantityLegs?.length) continue;
+    try {
+      const plan = await planPositionFunding({
+        positionId: pos.positionId,
+        symbol: positionInstrument(pos).symbol,
+        direction: pos.direction,
+        legs: pos.quantityLegs,
+        settledTimes: pos.fundingSettledTimes ?? [],
+        toMs: now,
+      }, deps);
+      for (const event of plan.events) {
+        book(event, asset);
+        pos.fundingBookedUsdt = (pos.fundingBookedUsdt ?? 0) + event.amountUsdt;
+        (pos.fundingSettledTimes ??= []).push(event.settlementTimeMs);
+      }
+      // A boundary the venue confirmably did not settle is processed at zero.
+      if (plan.absentTimes.length > 0) (pos.fundingSettledTimes ??= []).push(...plan.absentTimes);
+      pos.fundingPendingTimes = plan.pendingTimes;
+      pending += plan.pendingTimes.length;
+    } catch (error) {
+      errors.push(`${asset}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  for (const tail of portfolio.fundingTail ?? []) {
+    if (options.onlyAsset && tail.asset !== options.onlyAsset) continue;
+    try {
+      const plan = await planPositionFunding({
+        positionId: tail.positionId,
+        symbol: tail.symbol,
+        direction: tail.direction,
+        legs: tail.quantityLegs,
+        settledTimes: tail.settledTimes,
+        toMs: tail.closedAtMs,
+      }, deps);
+      for (const event of plan.events) {
+        book(event, tail.asset);
+        tail.settledTimes.push(event.settlementTimeMs);
+      }
+      tail.settledTimes.push(...plan.absentTimes);
+      tail.pendingTimes = plan.pendingTimes;
+      pending += plan.pendingTimes.length;
+    } catch (error) {
+      errors.push(`${tail.asset} (closed): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (portfolio.fundingTail) portfolio.fundingTail = portfolio.fundingTail.filter((tail) => tail.pendingTimes.length > 0);
+  return { booked, pending, errors };
+}
+
+/**
+ * Cash and reported result of closing `fraction` of a position. Linear
+ * positions already booked their funding to cash at each settlement, so it is
+ * attributed to the exit leg for reporting and never debited again. Legacy
+ * positions keep the modeled carry charged at exit.
+ */
+export function exitCashSettlement(input: {
+  pos: OpenPosition;
+  fraction: number;
+  grossPnl: number;
+  exitFeeUsd: number;
+  legacyCarryUsd: number;
+}) {
+  const { pos, fraction } = input;
+  const releasedMargin = pos.usdInvested * fraction;
+  const entryFeeShare = positionEntryFee(pos) * fraction;
+  if (isLinearPosition(pos)) {
+    const fundingAllocatedUsdt = ((pos.fundingBookedUsdt ?? 0) - (pos.fundingAllocatedUsdt ?? 0)) * fraction;
+    const netPnl = input.grossPnl - entryFeeShare - input.exitFeeUsd + fundingAllocatedUsdt;
+    return {
+      releasedMargin,
+      entryFeeShare,
+      fundingAllocatedUsdt,
+      carryCostUsd: -fundingAllocatedUsdt,
+      netPnl,
+      cashDelta: releasedMargin + entryFeeShare + netPnl - fundingAllocatedUsdt,
+    };
+  }
+  const netPnl = input.grossPnl - entryFeeShare - input.exitFeeUsd - input.legacyCarryUsd;
+  return {
+    releasedMargin,
+    entryFeeShare,
+    fundingAllocatedUsdt: 0,
+    carryCostUsd: input.legacyCarryUsd,
+    netPnl,
+    cashDelta: releasedMargin + entryFeeShare + netPnl,
+  };
+}
+
+interface LedgerSink {
+  hasEvent(id: string, sinceIso: string): boolean | Promise<boolean>;
+  record(input: ExecutionLedgerEventInput): Promise<unknown>;
+}
+
+const executionLedgerSink: LedgerSink = {
+  hasEvent: (id, sinceIso) => ExecutionLedger.hasEvent(id, sinceIso),
+  record: (input) => ExecutionLedger.record(input),
+};
+
+/**
+ * Append pending events to the hash ledger with their immutable ids, one at
+ * a time, persisting after each. An id the ledger already holds (a crash
+ * between append and persist) is acknowledged without appending again. If
+ * the persist fails, the in-memory list is restored to what was persisted.
+ */
+export async function drainPendingLedgerEvents(
+  portfolio: Portfolio,
+  ledger: LedgerSink = executionLedgerSink,
+  persist: () => Promise<void>
+): Promise<number> {
+  let appended = 0;
+  while ((portfolio.pendingLedgerEvents?.length ?? 0) > 0) {
+    const event = portfolio.pendingLedgerEvents![0];
+    if (!(await ledger.hasEvent(event.id, event.timestamp))) {
+      await ledger.record({
+        id: event.id,
+        type: event.type,
+        source: event.source,
+        asset: event.asset,
+        positionId: event.positionId,
+        payload: event.payload,
+      });
+      appended += 1;
+    }
+    portfolio.pendingLedgerEvents!.shift();
+    try {
+      await persist();
+    } catch (error) {
+      portfolio.pendingLedgerEvents!.unshift(event);
+      throw error;
+    }
+  }
+  return appended;
+}
+
+/** Book due funding, persist, then drain the resulting ledger events. */
+export async function settleAndPersistFunding(portfolio: Portfolio, portfolioType: "ai" | "user", source: string) {
+  const outcome = await settleOpenPositionFunding(portfolio, liveFundingDeps, { recordLedger: portfolioType === "ai" });
+  if (outcome.booked > 0) {
+    await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+    await Logger.info(`[${source}] booked ${outcome.booked} funding settlement(s).`);
+  }
+  if (outcome.pending > 0 || outcome.errors.length > 0) {
+    await Logger.warn(`[${source}] funding pending reconciliation: ${outcome.pending} boundary(ies). ${outcome.errors.join("; ")}`.trim());
+  }
+  if (portfolioType === "ai") {
+    await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType));
+  }
+  return outcome;
 }
 
 /**
@@ -254,7 +488,9 @@ function unrealizedNetPnl(asset: string, pos: OpenPosition, currentPrice: number
   const exit = estimatePositionExit(pos, currentPrice, pos.amount, "MARK");
   const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, pos.amount);
   const entryFee = positionEntryFee(pos);
-  const carryCost = estimateCarryCostUsd({
+  // Linear positions book funding to cash at each settlement; only legacy
+  // positions carry a modeled charge until exit.
+  const carryCost = isLinearPosition(pos) ? 0 : estimateCarryCostUsd({
     asset,
     notionalUsd: pos.notionalUsd ?? positionNotional(pos, pos.amount, pos.entryPrice),
     openedAt: pos.entryTime,
@@ -343,22 +579,51 @@ async function closePosition(
 ) {
   const redis = getRedis();
   const isShort = pos.direction === "SHORT";
+  const linear = isLinearPosition(pos);
+  // Every boundary up to now is booked before the position leaves the book;
+  // a settlement that is not yet published follows it as a funding tail.
+  if (linear) {
+    await settleOpenPositionFunding(portfolio, liveFundingDeps, { onlyAsset: asset, recordLedger: portfolioType === "ai" })
+      .catch((error) => console.warn(`[${source}] funding catch-up failed for ${asset}:`, error));
+  }
   const exit = estimatePositionExit(pos, exitPrice, pos.amount, reason);
   const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, pos.amount);
   const entryFee = positionEntryFee(pos);
-  const carryCost = estimateCarryCostUsd({
-    asset,
-    notionalUsd: pos.notionalUsd ?? positionNotional(pos, pos.amount, pos.entryPrice),
-    openedAt: pos.entryTime,
-    fundingRate: pos.fundingRate,
+  const settlement = exitCashSettlement({
+    pos,
+    fraction: 1,
+    grossPnl,
+    exitFeeUsd: exit.feeUsd,
+    legacyCarryUsd: linear ? 0 : estimateCarryCostUsd({
+      asset,
+      notionalUsd: pos.notionalUsd ?? positionNotional(pos, pos.amount, pos.entryPrice),
+      openedAt: pos.entryTime,
+      fundingRate: pos.fundingRate,
+    }),
   });
-  const netPnl = grossPnl - entryFee - exit.feeUsd - carryCost;
+  const carryCost = settlement.carryCostUsd;
+  const netPnl = settlement.netPnl;
   const pnlPercent = pos.usdInvested > 0 ? (netPnl / pos.usdInvested) * 100 : 0;
 
-  portfolio.usd += pos.usdInvested + entryFee + netPnl;
+  portfolio.usd += settlement.cashDelta;
   portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + exit.feeUsd;
-  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + carryCost;
-  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + exit.totalExecutionCostUsd + carryCost;
+  // Linear funding was counted in the carry totals when it was booked.
+  const exitCarry = linear ? 0 : carryCost;
+  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + exitCarry;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + exit.totalExecutionCostUsd + exitCarry;
+  const closedAtMs = Date.now();
+  if (linear && pos.positionId && pos.quantityLegs?.length && (pos.fundingPendingTimes?.length ?? 0) > 0) {
+    (portfolio.fundingTail ??= []).push({
+      positionId: pos.positionId,
+      asset,
+      symbol: positionInstrument(pos).symbol,
+      direction: pos.direction,
+      quantityLegs: [...pos.quantityLegs, { atMs: closedAtMs, quantityDelta: -pos.amount }],
+      settledTimes: [...(pos.fundingSettledTimes ?? [])],
+      pendingTimes: [...(pos.fundingPendingTimes ?? [])],
+      closedAtMs,
+    });
+  }
 
   if (portfolio.balances && !isShort) {
     portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
@@ -401,9 +666,17 @@ async function closePosition(
     entryFee,
     carryCost
   );
+  if (linear) {
+    closeTrade.fundingCashflowUsdt = settlement.fundingAllocatedUsdt;
+    closeTrade.fundingStatus = (pos.fundingPendingTimes?.length ?? 0) > 0 ? "PENDING_RECONCILIATION" : "SETTLED";
+  }
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(closeTrade, portfolioType);
+  if (portfolioType === "ai") {
+    await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType))
+      .catch((error) => console.warn(`[${source}] funding ledger drain deferred:`, error));
+  }
   if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
     await TradeReviewJournal.recordSwingClose(closeTrade, pos).catch((error) => {
       console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
@@ -573,6 +846,7 @@ async function scaleIntoWinner(
   pos.expectedNetLossUsd = projectedPlan.netLossUsd;
   pos.scaleInCount = (pos.scaleInCount || 0) + 1;
   pos.lastScaleInTime = new Date().toISOString();
+  (pos.quantityLegs ??= []).push({ atMs: Date.parse(pos.lastScaleInTime), quantityDelta: addAmount });
   pos.paperSize = pos.paperSize === "Probe" ? "Normal" : pos.paperSize;
   pos.reasoning = `${pos.reasoning} | Scaled into profitable probe after live follow-through.`;
 
@@ -668,22 +942,39 @@ async function takePartialProfit(
   if (profitMultiple(asset, pos, currentPrice) < 1.2) return false;
   if (pos.amount <= 0 || pos.usdInvested <= 0) return false;
 
-  const exitFraction = 0.35;
-  const exitAmount = pos.amount * exitFraction;
-  const releasedMargin = pos.usdInvested * exitFraction;
-  const entryFeeShare = (pos.entryFeePaid || 0) * exitFraction;
-  const entryExecutionCostShare = (pos.entryExecutionCostUsd || entryFeeShare) * exitFraction;
+  const linear = isLinearPosition(pos);
+  const targetFraction = 0.35;
+  let exitAmount = pos.amount * targetFraction;
+  if (linear) {
+    // A venue reduction is a whole number of lot steps; a step too small to
+    // take simply means no partial exit this time.
+    const metadata = await MarketService.getInstrumentMetadata(asset).catch(() => null);
+    if (!metadata) return false;
+    exitAmount = Number(floorOrderQty(decimalString(exitAmount), metadata));
+    if (!(exitAmount > 0) || exitAmount >= pos.amount) return false;
+    await settleOpenPositionFunding(portfolio, liveFundingDeps, { onlyAsset: asset, recordLedger: true })
+      .catch((error) => console.warn(`[${source}] funding catch-up failed for ${asset}:`, error));
+  }
+  const exitFraction = exitAmount / pos.amount;
+  const entryExecutionCostShare = (pos.entryExecutionCostUsd || (pos.entryFeePaid || 0) * exitFraction) * exitFraction;
   const entryPriceImpactShare = (pos.entryPriceImpactCostUsd || 0) * exitFraction;
   const previousNotional = pos.notionalUsd || positionNotional(pos, pos.amount, pos.entryPrice);
   const partialExit = estimatePositionExit(pos, currentPrice, exitAmount, "PARTIAL_EXIT");
   const grossPnl = positionPnl(pos, pos.entryPrice, partialExit.fillPrice, exitAmount);
-  const carryCost = estimateCarryCostUsd({
-    asset,
-    notionalUsd: previousNotional * exitFraction,
-    openedAt: pos.entryTime,
-    fundingRate: pos.fundingRate,
+  const settlement = exitCashSettlement({
+    pos,
+    fraction: exitFraction,
+    grossPnl,
+    exitFeeUsd: partialExit.feeUsd,
+    legacyCarryUsd: linear ? 0 : estimateCarryCostUsd({
+      asset,
+      notionalUsd: previousNotional * exitFraction,
+      openedAt: pos.entryTime,
+      fundingRate: pos.fundingRate,
+    }),
   });
-  const netPnl = grossPnl - entryFeeShare - partialExit.feeUsd - carryCost;
+  const { releasedMargin, entryFeeShare, netPnl } = settlement;
+  const carryCost = settlement.carryCostUsd;
   const pnlPercent = releasedMargin > 0 ? (netPnl / releasedMargin) * 100 : 0;
 
   pos.amount -= exitAmount;
@@ -699,12 +990,18 @@ async function takePartialProfit(
   pos.partialExitCount = (pos.partialExitCount || 0) + 1;
   pos.lastPartialExitTime = new Date().toISOString();
   pos.isTrailing = true;
+  if (linear) {
+    pos.fundingAllocatedUsdt = (pos.fundingAllocatedUsdt ?? 0) + settlement.fundingAllocatedUsdt;
+    (pos.quantityLegs ??= []).push({ atMs: Date.parse(pos.lastPartialExitTime), quantityDelta: -exitAmount });
+  }
 
-  portfolio.usd += releasedMargin + entryFeeShare + netPnl;
+  portfolio.usd += settlement.cashDelta;
   portfolio.totalPnl += netPnl;
   portfolio.totalFeesPaid = (portfolio.totalFeesPaid || 0) + partialExit.feeUsd;
-  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + carryCost;
-  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + partialExit.totalExecutionCostUsd + carryCost;
+  // Linear funding was counted in the carry totals when it was booked.
+  const exitCarry = linear ? 0 : carryCost;
+  portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + exitCarry;
+  portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + partialExit.totalExecutionCostUsd + exitCarry;
   if (portfolio.returns) portfolio.returns.push(pnlPercent);
   if (portfolio.returns && portfolio.returns.length > 2000) portfolio.returns.shift();
   if (netPnl >= 0) portfolio.grossProfit = (portfolio.grossProfit || 0) + netPnl;
@@ -734,9 +1031,15 @@ async function takePartialProfit(
   );
   partialTrade.reasoning = `Partial profit taken on swing winner. Closed ${(exitFraction * 100).toFixed(0)}% and left runner active. Net PnL: $${netPnl.toFixed(2)}`;
   partialTrade.isPartialExit = true;
+  if (linear) {
+    partialTrade.fundingCashflowUsdt = settlement.fundingAllocatedUsdt;
+    partialTrade.fundingStatus = (pos.fundingPendingTimes?.length ?? 0) > 0 ? "PENDING_RECONCILIATION" : "SETTLED";
+  }
 
   await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await PortfolioManager.logTrade(partialTrade, portfolioType);
+  await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType))
+    .catch((error) => console.warn(`[${source}] funding ledger drain deferred:`, error));
   await ExecutionLedger.recordBestEffort({
     type: "PARTIAL_EXIT_FILLED",
     source,
