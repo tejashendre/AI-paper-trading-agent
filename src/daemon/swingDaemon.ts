@@ -398,6 +398,7 @@ async function saveScanSnapshot(
     SCAN_SNAPSHOT_KEY,
     {
       scanId: scanSequence,
+      runtimeCommit: process.env.APP_COMMIT_SHA || null,
       startedAt,
       completedAt: new Date().toISOString(),
       nextScanAt: new Date(now + ENTRY_SCAN_INTERVAL_MS).toISOString(),
@@ -480,7 +481,9 @@ async function runEntryScan() {
   if (freeze) {
     await Logger.warn(`[SWING SCAN] New entries are frozen${freeze.reason ? `: ${freeze.reason}` : ""}. Evaluations and exits keep running.`);
   }
-  scanSequence += 1;
+  const persistedScan = await getRedis().get<{ scanId?: number }>(SCAN_SNAPSHOT_KEY).catch(() => null);
+  const persistedSequence = Number(persistedScan?.scanId);
+  scanSequence = Math.max(scanSequence, Number.isSafeInteger(persistedSequence) && persistedSequence > 0 ? persistedSequence : 0) + 1;
 
   let portfolioRelease: (() => Promise<void>) | null = null;
   try {
