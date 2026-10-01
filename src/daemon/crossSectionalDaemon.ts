@@ -360,7 +360,9 @@ async function main() {
   setInterval(() => { void runFunding(); }, FUNDING_CHECK_INTERVAL_MS);
 }
 
-main().catch(async (error) => {
+export { decideRiskState, runRebalance, runRiskSweep };
+
+if (require.main === module) main().catch(async (error) => {
   await Logger.error(`[XSEC] fatal: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });

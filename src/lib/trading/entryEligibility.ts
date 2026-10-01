@@ -91,6 +91,17 @@ function quoteProblems(instrument: InstrumentRef, quote: MarketPriceSnapshot | n
 }
 
 /** Risk-reducing exits need a true, current price for the instrument, and nothing more. */
+/**
+ * Required completed history that is still missing, one "CODE: text" per
+ * timeframe. Shared by the entry gate and by the scan's HOLD path, so a
+ * signal that held for lack of history is reported as warm-up.
+ */
+export function missingClosedBars(counts: ClosedBarCounts): string[] {
+  return (["m15", "h1", "h4"] as const)
+    .filter((key) => !(counts[key] >= REQUIRED_CLOSED_BARS))
+    .map((key) => `WARMING_UP_${key.toUpperCase()}: ${counts[key]} of ${REQUIRED_CLOSED_BARS} completed ${key} bars`);
+}
+
 export function validateExitQuote(input: {
   instrument: InstrumentRef;
   quote: MarketPriceSnapshot | null;
@@ -151,12 +162,7 @@ export function evaluateEntryEligibility(input: {
     blockedLiquidity.push("DEPTH_UNAVAILABLE: a fast entry needs observed order book depth");
   }
 
-  for (const key of ["m15", "h1", "h4"] as const) {
-    const count = input.closedBarCounts[key];
-    if (!(count >= REQUIRED_CLOSED_BARS)) {
-      warming.push(`WARMING_UP_${key.toUpperCase()}: ${count} of ${REQUIRED_CLOSED_BARS} completed ${key} bars`);
-    }
-  }
+  warming.push(...missingClosedBars(input.closedBarCounts));
   if (!(input.closedBarCounts.w1 >= WEEKLY_FEATURE_MIN_BARS)) {
     notes.push(`WEEKLY_FEATURE_UNAVAILABLE: ${input.closedBarCounts.w1} of ${WEEKLY_FEATURE_MIN_BARS} completed weeks; the weekly bias contributes nothing`);
   }

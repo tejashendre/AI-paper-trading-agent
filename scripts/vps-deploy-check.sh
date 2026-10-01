@@ -167,6 +167,20 @@ fi
 section "Execution Ledger"
 docker compose exec -T quant-dashboard npm run ledger:verify
 
+section "Bybit Instruments"
+# Read-only and offline: the deployed image maps all nine assets to Bybit
+# linear contracts and names each fee schedule's evidence status. It uses only
+# src/, which the image ships, and opens no network or Redis connection.
+docker compose exec -T swing-daemon tsx -e '
+const { CONFIGURED_ASSETS, getConfiguredInstrument } = require("./src/lib/trading/instrumentRegistry");
+const { feeScheduleFor } = require("./src/lib/trading/assetSpecs");
+for (const asset of CONFIGURED_ASSETS) {
+  const instrument = getConfiguredInstrument(asset);
+  console.log(asset, instrument.instrumentVersion, feeScheduleFor(instrument).status);
+}
+if (CONFIGURED_ASSETS.length !== 9) process.exit(1);
+' || fail "The deployed image does not map the nine assets to Bybit instruments."
+
 if [ -n "$STATUS_URL" ]; then
   if [ -n "$EXPECTED_COMMIT" ]; then
     LIVE_COMMIT="$(read_deployment_commit)"

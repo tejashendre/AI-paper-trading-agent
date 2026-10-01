@@ -678,12 +678,8 @@ async function closePosition(
     await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType))
       .catch((error) => console.warn(`[${source}] funding ledger drain deferred:`, error));
   }
-  const outcome = await completePositionOutcome(portfolio, portfolioType, closeTrade, source);
-  if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
-    await TradeReviewJournal.recordSwingClose(closeTrade, pos, outcome).catch((error) => {
-      console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
-    });
-  }
+  // The fill is recorded before the completion it causes, so a ledger reader
+  // never sees a position completed by an exit that is not yet in the chain.
   if (portfolioType === "ai") {
     await ExecutionLedger.recordBestEffort({
       type: "EXIT_FILLED",
@@ -692,6 +688,12 @@ async function closePosition(
       tradeId: closeTrade.id,
       positionId: pos.positionId,
       payload: { trade: closeTrade, position: pos, requestedExitPrice: exitPrice, exit },
+    });
+  }
+  const outcome = await completePositionOutcome(portfolio, portfolioType, closeTrade, source);
+  if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
+    await TradeReviewJournal.recordSwingClose(closeTrade, pos, outcome).catch((error) => {
+      console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
     });
   }
   await Logger.info(

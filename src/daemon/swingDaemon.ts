@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
 import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
-import { evaluateEntryEligibility } from "../lib/trading/entryEligibility";
+import { evaluateEntryEligibility, missingClosedBars } from "../lib/trading/entryEligibility";
 import { DailyFunnel, recordFunnelDecision, VetoCode } from "../lib/trading/coverageStatus";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
@@ -50,6 +50,8 @@ let lastEquitySampleAt = 0;
 let lastRealizedEquity: number | null = null;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
+/** Set by an operator to stop new swing entries; exits are unaffected. */
+const ENTRY_FREEZE_KEY = "swing:entryFreeze";
 
 type SwingScanAction = "HOLD" | "BLOCKED" | "ENTRY" | "SKIPPED" | "ERROR";
 type SwingDecisionSummaryKey =
@@ -131,7 +133,6 @@ const updateAIPortfolio = (p: any) => PortfolioManager.updatePortfolio(p, "ai");
 const logAITrade = (t: any) => PortfolioManager.logTrade(t, "ai");
 
 const wsMesh = new WebsocketDataMesh();
-wsMesh.start();
 
 let isEntryScanning = false;
 let isExitWatching = false;
@@ -472,6 +473,15 @@ async function runExitWatchdog() {
 async function runEntryScan() {
   if (isEntryScanning) return;
   isEntryScanning = true;
+
+  // An operator freeze (migration or rollback window) stops new entries only.
+  // The exit watchdog runs on its own timer and keeps managing positions.
+  const freeze = await getRedis().get<{ reason?: string; setBy?: string }>(ENTRY_FREEZE_KEY).catch(() => null);
+  if (freeze) {
+    isEntryScanning = false;
+    await Logger.warn(`[SWING SCAN] New entries are frozen${freeze.reason ? `: ${freeze.reason}` : ""}. Exits keep running.`);
+    return;
+  }
   scanSequence += 1;
 
   let portfolioRelease: (() => Promise<void>) | null = null;
@@ -661,13 +671,17 @@ async function runEntryScan() {
         }
 
         if (swingSignal.action === "HOLD") {
+          // Short history explains a HOLD before anything the signal says.
+          const warmUp = missingClosedBars(swingSignal.closedBarCounts ?? { m15: 0, h1: 0, h4: 0, w1: 0 });
           results.push({
             asset,
             action: "HOLD",
-            vetoCode: swingSignal.decisionState === "BLOCKED_DATA"
-              ? "SIGNAL_UNAVAILABLE"
-              : swingSignal.riskMode === "Watch Only" ? "LEARNING" : "NO_SETUP",
-            reason: swingSignal.reasoning,
+            vetoCode: warmUp.length > 0
+              ? "WARMING_UP"
+              : swingSignal.decisionState === "BLOCKED_DATA"
+                ? "SIGNAL_UNAVAILABLE"
+                : swingSignal.riskMode === "Watch Only" ? "LEARNING" : "NO_SETUP",
+            reason: warmUp.length > 0 ? `${warmUp.join("; ")}. ${swingSignal.reasoning}` : swingSignal.reasoning,
             simpleStatus: swingSignal.simpleStatus,
             simpleReason: swingSignal.simpleReason,
             nextStep: swingSignal.nextStep,
@@ -917,6 +931,8 @@ async function runEntryScan() {
           await blockVenue("LIQUIDITY_UNAVAILABLE: no usable order book or turnover observation for this instrument.", "BLOCKED_LIQUIDITY");
           continue;
         }
+        // True when the book, not the risk budget, limits the order size.
+        const capacityBound = capacityCapUsdt / swingSignal.entryPrice < admission.amount;
         const catalogProfile = getExecutionCostProfile(asset);
         const observedHalfSpreadBps = ((liquidity.bestAsk - liquidity.bestBid) / ((liquidity.bestAsk + liquidity.bestBid) / 2)) * 5_000;
         const planInput = {
@@ -951,7 +967,12 @@ async function runEntryScan() {
           maxLossUsdt: admission.riskAmountUsd,
         });
         if (!sizeCheck.allowed) {
-          await blockVenue(sizeCheck.reasons.join("; "), "BLOCKED_VENUE_SIZE");
+          await blockVenue(
+            capacityBound
+              ? `CAPACITY_CAP: observed liquidity allows at most ${capacityCapUsdt.toFixed(2)} USDT; ${sizeCheck.reasons.join("; ")}`
+              : sizeCheck.reasons.join("; "),
+            capacityBound ? "BLOCKED_LIQUIDITY" : "BLOCKED_VENUE_SIZE"
+          );
           continue;
         }
         const executionPlan = Number(venueQuantity) === fittedExecution.plan.entry.amount
@@ -992,6 +1013,16 @@ async function runEntryScan() {
                 ? "Insufficient free cash after the modeled entry fee."
                 : null;
 
+        // A size too small to be useful because the book capped it is a
+        // liquidity refusal, not a cost one.
+        const liquidityLimited = capacityBound && finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd;
+        if (executionFailure && liquidityLimited) {
+          await blockVenue(
+            `CAPACITY_CAP: observed liquidity allows at most ${capacityCapUsdt.toFixed(2)} USDT; ${executionFailure}`,
+            "BLOCKED_LIQUIDITY"
+          );
+          continue;
+        }
         if (executionFailure) {
           results.push({
             asset,
@@ -1413,38 +1444,48 @@ async function runEntryScan() {
   }
 }
 
-console.log("Starting V6 Institutional HTF Swing Daemon...");
-// The entry scan reads its portfolio snapshot at the very start and mutates
-// it for the rest of the cycle, so the whole scan must hold the lock — not
-// just the final write. Exit checks still run first inside the scan itself
-// (ENTRY_SCAN_PREFLIGHT sweep), so stops are not starved while it holds it.
-const runEntryScanLocked = () => withPortfolioLock(runEntryScan);
-runEntryScanLocked();
+/** Start the stream, scans and watchdog. Only run when this file is the entry point. */
+function startSwingDaemon() {
+  console.log("Starting V6 Institutional HTF Swing Daemon...");
+  wsMesh.start();
+  // The entry scan reads its portfolio snapshot at the very start and mutates
+  // it for the rest of the cycle, so the whole scan must hold the lock, not
+  // just the final write. Exit checks still run first inside the scan itself
+  // (ENTRY_SCAN_PREFLIGHT sweep), so stops are not starved while it holds it.
+  const runEntryScanLocked = () => withPortfolioLock(runEntryScan);
+  runEntryScanLocked();
 
-const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
-const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
-const controlIntervalId = setInterval(async () => {
-  if (isEntryScanning) return;
-  try {
-    const request = await consumeSwingScanRequest();
-    if (!request) return;
-    await Logger.info(`[SCAN CONTROL] Consuming ${request.requestedBy} request for ${request.targetAsset}.`);
-    await runEntryScanLocked();
-  } catch (error) {
-    await Logger.error(`[SCAN CONTROL] Failed to consume scan request: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 5_000);
+  const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
+  const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
+  const controlIntervalId = setInterval(async () => {
+    if (isEntryScanning) return;
+    try {
+      const request = await consumeSwingScanRequest();
+      if (!request) return;
+      await Logger.info(`[SCAN CONTROL] Consuming ${request.requestedBy} request for ${request.targetAsset}.`);
+      await runEntryScanLocked();
+    } catch (error) {
+      await Logger.error(`[SCAN CONTROL] Failed to consume scan request: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 5_000);
 
-const shutdown = async (signal: string) => {
-  console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
-  clearInterval(entryIntervalId);
-  clearInterval(exitWatchdogIntervalId);
-  clearInterval(controlIntervalId);
-  try {
-    wsMesh.stop();
-  } catch {}
-  process.exit(0);
-};
+  const shutdown = async (signal: string) => {
+    console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
+    clearInterval(entryIntervalId);
+    clearInterval(exitWatchdogIntervalId);
+    clearInterval(controlIntervalId);
+    try {
+      wsMesh.stop();
+    } catch {}
+    process.exit(0);
+  };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+// `npm run daemon:swing` runs this file directly; importing it (the offline
+// integration test) only exposes the scan functions without starting loops.
+if (require.main === module) startSwingDaemon();
+
+export { runEntryScan, runExitWatchdog, withPortfolioLock };
