@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
-import { CRYPTO_EXECUTION_PROVIDER, entryInstrumentFor, SUPPORTED_ASSETS } from "../lib/market";
+import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
+import { evaluateEntryEligibility } from "../lib/trading/entryEligibility";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
@@ -658,31 +659,35 @@ async function runEntryScan() {
           continue;
         }
 
-        const cryptoAsset = SUPPORTED_ASSETS[asset]?.category === "crypto";
-        const marketDataAgeMs = Date.now() - new Date(swingSignal.marketDataTimestamp).getTime();
-        const marketIdentityValid = cryptoAsset
-          ? swingSignal.marketDataVenue === CRYPTO_EXECUTION_PROVIDER &&
-            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].bybitLinearSymbol &&
-            Number.isFinite(marketDataAgeMs) && marketDataAgeMs >= 0 && marketDataAgeMs <= 10_000
-          // Interim until the shared instrument eligibility gate (plan Task 4):
-          // non-crypto entries stay blocked rather than accept a provenance
-          // rule written for the retired Yahoo route.
-          : false;
-        if (!marketIdentityValid) {
-          const reason = `Selected execution instrument provenance is invalid or stale (${swingSignal.marketDataProvider}/${swingSignal.marketDataInstrument}).`;
+        // One data decision for every asset: provenance, per-field freshness,
+        // metadata and warm-up. The same object is handed to admission.
+        const dataEligibility = evaluateEntryEligibility({
+          instrument: entryInstrumentFor(asset),
+          metadata: await MarketService.getInstrumentMetadata(asset).catch(() => null),
+          quote: swingSignal.marketQuote ?? null,
+          closedBarCounts: swingSignal.closedBarCounts ?? { m15: 0, h1: 0, h4: 0, w1: 0 },
+          nowMs: Date.now(),
+          // Swing entries may use a fresh REST quote; no faster branch exists here.
+          fastExecution: false,
+          depthAvailable: swingSignal.orderbookImbalanceRatio !== undefined,
+        });
+        if (!dataEligibility.allowed) {
+          const reason = `Entry data not eligible (${dataEligibility.state}): ${dataEligibility.reasons.join("; ")}`;
           results.push({
             asset,
             action: "BLOCKED",
             reason,
-            simpleStatus: "Market venue verification blocked this trade",
+            simpleStatus: dataEligibility.state === "WARMING_UP"
+              ? "Waiting for enough completed price history"
+              : "Market data check blocked this trade",
             simpleReason: reason,
-            nextStep: "The bot will retry after the selected instrument feed is current and internally consistent.",
-            decisionState: "BLOCKED_DATA",
+            nextStep: "The bot will retry once the instrument's data is current, complete and internally consistent.",
+            decisionState: dataEligibility.state,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
             timestamp,
           });
-          await Logger.warn(`[SWING BLOCK] ${asset} market provenance rejected: ${reason}`);
+          await Logger.warn(`[SWING BLOCK] ${asset} data eligibility: ${reason}`);
           continue;
         }
 
@@ -783,6 +788,7 @@ async function runEntryScan() {
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd,
+          dataEligibility,
         });
 
         if (!admission.approved) {
