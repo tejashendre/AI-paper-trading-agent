@@ -5,7 +5,14 @@ import { Logger } from "@/lib/logger";
 import { getRedis } from "@/lib/redis";
 import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
+import {
+  calculateInstrumentPnl,
+  instrumentFee,
+  instrumentNotional,
+  instrumentQuantityFromNotional,
+  positionInstrument,
+  positionLegIdentity,
+} from "@/lib/trading/assetSpecs";
 import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
@@ -57,6 +64,20 @@ function ensurePortfolioStats(portfolio: Portfolio) {
   portfolio.balances = portfolio.balances || {};
 }
 
+// Position economics come from the model frozen on the position, so a legacy
+// position keeps its own quantity unit and P&L formula after the upgrade.
+function positionPnl(pos: OpenPosition, entryPrice: number, exitPrice: number, quantity: number): number {
+  return calculateInstrumentPnl({ instrument: positionInstrument(pos), entryPrice, exitPrice, quantity, direction: pos.direction });
+}
+
+function positionNotional(pos: OpenPosition, quantity: number, price: number): number {
+  return instrumentNotional(positionInstrument(pos), quantity, price);
+}
+
+function positionEntryFee(pos: OpenPosition): number {
+  return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice);
+}
+
 async function getLivePrice(asset: string): Promise<number> {
   return MarketService.getCurrentPrice(asset);
 }
@@ -78,6 +99,7 @@ function buildCloseTrade(
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     asset,
+    ...positionLegIdentity(pos),
     action: isShort ? "COVER" : "SELL",
     direction: isShort ? "SHORT" : "LONG",
     amount: pos.amount,
@@ -197,6 +219,7 @@ function estimatePositionExit(
 ): PaperFillEstimate {
   return estimatePaperFill({
     asset: pos.asset,
+    instrument: positionInstrument(pos),
     action: pos.direction === "SHORT" ? "COVER" : "SELL",
     requestedPrice,
     amount,
@@ -213,11 +236,11 @@ function estimatePositionExit(
 
 function unrealizedNetPnl(asset: string, pos: OpenPosition, currentPrice: number): number {
   const exit = estimatePositionExit(pos, currentPrice, pos.amount, "MARK");
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
-  const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+  const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, pos.amount);
+  const entryFee = positionEntryFee(pos);
   const carryCost = estimateCarryCostUsd({
     asset,
-    notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+    notionalUsd: pos.notionalUsd ?? positionNotional(pos, pos.amount, pos.entryPrice),
     openedAt: pos.entryTime,
     fundingRate: pos.fundingRate,
   });
@@ -248,7 +271,7 @@ function repairInvalidProtectiveStop(pos: OpenPosition, currentPrice: number): b
 function profitMultiple(asset: string, pos: OpenPosition, currentPrice: number): number {
   const maxLoss = pos.maxLossUsd && pos.maxLossUsd > 0
     ? pos.maxLossUsd
-    : Math.abs(calculatePnlUsd(asset, pos.entryPrice, pos.stopLoss, pos.amount, pos.direction));
+    : Math.abs(positionPnl(pos, pos.entryPrice, pos.stopLoss, pos.amount));
   if (!Number.isFinite(maxLoss) || maxLoss <= 0) return 0;
   return unrealizedNetPnl(asset, pos, currentPrice) / maxLoss;
 }
@@ -305,11 +328,11 @@ async function closePosition(
   const redis = getRedis();
   const isShort = pos.direction === "SHORT";
   const exit = estimatePositionExit(pos, exitPrice, pos.amount, reason);
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
-  const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
+  const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, pos.amount);
+  const entryFee = positionEntryFee(pos);
   const carryCost = estimateCarryCostUsd({
     asset,
-    notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+    notionalUsd: pos.notionalUsd ?? positionNotional(pos, pos.amount, pos.entryPrice),
     openedAt: pos.entryTime,
     fundingRate: pos.fundingRate,
   });
@@ -376,6 +399,7 @@ async function closePosition(
       source,
       asset,
       tradeId: closeTrade.id,
+      positionId: pos.positionId,
       payload: { trade: closeTrade, position: pos, requestedExitPrice: exitPrice, exit },
     });
   }
@@ -413,10 +437,12 @@ async function scaleIntoWinner(
   if (!Number.isFinite(addMarginUsd) || addMarginUsd < 50) return false;
 
   const addNotionalUsd = addMarginUsd * leverage;
-  const addAmount = amountFromNotionalUsd(asset, addNotionalUsd, currentPrice);
+  // A scale-in adds to the same contract under the position's own model.
+  const addAmount = instrumentQuantityFromNotional(positionInstrument(pos), addNotionalUsd, currentPrice);
   if (addAmount <= 0) return false;
   const scaleFill = estimatePaperFill({
     asset,
+    instrument: positionInstrument(pos),
     action: pos.direction === "SHORT" ? "SHORT" : "BUY",
     requestedPrice: currentPrice,
     amount: addAmount,
@@ -432,7 +458,7 @@ async function scaleIntoWinner(
   const entryFee = scaleFill.feeUsd;
   if (addMarginUsd + entryFee > portfolio.usd) return false;
 
-  const existingNotional = estimateNotionalUsd(asset, pos.amount, pos.entryPrice);
+  const existingNotional = positionNotional(pos, pos.amount, pos.entryPrice);
   const existingAmount = pos.amount;
   const totalAmount = existingAmount + addAmount;
   const projectedEntryPrice = totalAmount > 0
@@ -448,8 +474,8 @@ async function scaleIntoWinner(
   const projectedTargetExit = estimatePositionExit(projectedPosition, pos.takeProfit, totalAmount, "TAKE_PROFIT");
   const projectedStopExit = estimatePositionExit(projectedPosition, pos.stopLoss, totalAmount, "STOP_LOSS");
   const projectedEntryFee = Number(projectedPosition.entryFeePaid || 0);
-  const projectedGrossReward = calculatePnlUsd(asset, projectedEntryPrice, projectedTargetExit.fillPrice, totalAmount, pos.direction);
-  const projectedGrossStop = calculatePnlUsd(asset, projectedEntryPrice, projectedStopExit.fillPrice, totalAmount, pos.direction);
+  const projectedGrossReward = positionPnl(pos, projectedEntryPrice, projectedTargetExit.fillPrice, totalAmount);
+  const projectedGrossStop = positionPnl(pos, projectedEntryPrice, projectedStopExit.fillPrice, totalAmount);
   const projectedNetReward = projectedGrossReward - projectedEntryFee - projectedTargetExit.feeUsd;
   const projectedNetLoss = Math.abs(Math.min(0, projectedGrossStop - projectedEntryFee - projectedStopExit.feeUsd));
   const projectedPlan = {
@@ -480,6 +506,7 @@ async function scaleIntoWinner(
       type: "RISK_CIRCUIT_BREAKER",
       source,
       asset,
+      positionId: pos.positionId,
       payload: { scope: "SCALE_IN", portfolioBudget, projectedPlan, scaleFill },
     });
     return false;
@@ -518,6 +545,7 @@ async function scaleIntoWinner(
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     asset,
+    ...positionLegIdentity(pos),
     action: pos.direction === "SHORT" ? "SHORT" : "BUY",
     direction: pos.direction,
     amount: addAmount,
@@ -575,6 +603,7 @@ async function scaleIntoWinner(
     source,
     asset,
     tradeId: scaleTrade.id,
+    positionId: pos.positionId,
     payload: { trade: scaleTrade, position: pos, portfolioBudget, projectedPlan, scaleFill },
   });
   await Logger.info(`[${source}] Scaled into ${asset} ${pos.direction}. Added margin $${addMarginUsd.toFixed(2)} after profitable follow-through.`);
@@ -603,9 +632,9 @@ async function takePartialProfit(
   const entryFeeShare = (pos.entryFeePaid || 0) * exitFraction;
   const entryExecutionCostShare = (pos.entryExecutionCostUsd || entryFeeShare) * exitFraction;
   const entryPriceImpactShare = (pos.entryPriceImpactCostUsd || 0) * exitFraction;
-  const previousNotional = pos.notionalUsd || estimateNotionalUsd(asset, pos.amount, pos.entryPrice);
+  const previousNotional = pos.notionalUsd || positionNotional(pos, pos.amount, pos.entryPrice);
   const partialExit = estimatePositionExit(pos, currentPrice, exitAmount, "PARTIAL_EXIT");
-  const grossPnl = calculatePnlUsd(asset, pos.entryPrice, partialExit.fillPrice, exitAmount, pos.direction);
+  const grossPnl = positionPnl(pos, pos.entryPrice, partialExit.fillPrice, exitAmount);
   const carryCost = estimateCarryCostUsd({
     asset,
     notionalUsd: previousNotional * exitFraction,
@@ -623,7 +652,7 @@ async function takePartialProfit(
   pos.entryPriceImpactCostUsd = Math.max(0, (pos.entryPriceImpactCostUsd || 0) - entryPriceImpactShare);
   pos.notionalUsd = Math.max(0, previousNotional * (1 - exitFraction));
   const remainingStopExit = estimatePositionExit(pos, pos.stopLoss, pos.amount, "STOP_LOSS");
-  const remainingStopPnl = calculatePnlUsd(asset, pos.entryPrice, remainingStopExit.fillPrice, pos.amount, pos.direction);
+  const remainingStopPnl = positionPnl(pos, pos.entryPrice, remainingStopExit.fillPrice, pos.amount);
   pos.maxLossUsd = Math.abs(Math.min(0, remainingStopPnl - Number(pos.entryFeePaid || 0) - remainingStopExit.feeUsd));
   pos.partialExitCount = (pos.partialExitCount || 0) + 1;
   pos.lastPartialExitTime = new Date().toISOString();
@@ -671,6 +700,7 @@ async function takePartialProfit(
     source,
     asset,
     tradeId: partialTrade.id,
+    positionId: pos.positionId,
     payload: { trade: partialTrade, position: pos, requestedExitPrice: currentPrice, partialExit },
   });
   await Logger.info(`[${source}] Partial profit ${asset} ${pos.direction}. Closed ${(exitFraction * 100).toFixed(0)}%, net PnL ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}.`);

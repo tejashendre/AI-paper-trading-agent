@@ -1,4 +1,5 @@
-import { OpenPosition } from "@/lib/types";
+import { OpenPosition, Portfolio } from "@/lib/types";
+import { InstrumentRef, legacyInstrument } from "@/lib/trading/instrumentRegistry";
 
 export type AssetClass = "crypto" | "forex" | "commodity";
 
@@ -15,6 +16,12 @@ export interface AssetContractSpec {
   feeRate: number;
   minMarginUsd: number;
 }
+
+/**
+ * Version of the leverage, margin and minimum-margin policy below, frozen
+ * onto every new position so later policy edits cannot relabel old risk.
+ */
+export const RISK_POLICY_VERSION = "risk-policy-v1-2026-10-01";
 
 const CRYPTO_MAKER_FEE_RATE = 0.0002;
 const CRYPTO_TAKER_FEE_RATE = 0.00055;
@@ -197,4 +204,88 @@ export function estimateFeeUsd(
   const spec = getAssetSpec(asset);
   const feeRate = liquidity === "maker" ? spec.makerFeeRate : spec.takerFeeRate;
   return estimateNotionalUsd(asset, amount, price) * feeRate;
+}
+
+// ---------------------------------------------------------------------------
+// Position economics. Every calculation on an existing position goes through
+// the model frozen on that position, never through today's asset routing.
+// The asset-keyed functions above are the legacy formulas.
+// ---------------------------------------------------------------------------
+
+/** The instrument a position was opened on; pre-upgrade records read as legacy. */
+export function positionInstrument(
+  position: Pick<OpenPosition, "asset" | "instrument" | "strategyType">
+): InstrumentRef {
+  if (position.instrument) return position.instrument;
+  const autonomous = position.strategyType === "swing" || position.strategyType === "scalp";
+  return legacyInstrument(position.asset, autonomous ? "LEGACY_SYNTHETIC_V1" : "LEGACY_PAPER_V1");
+}
+
+const isLinear = (instrument: InstrumentRef) => instrument.economicsModel === "BYBIT_LINEAR_USDT_V1";
+
+/** Gross P&L in the instrument's settlement unit. Linear: quantity times price change. */
+export function calculateInstrumentPnl(input: {
+  instrument: InstrumentRef;
+  entryPrice: number;
+  exitPrice: number;
+  quantity: number;
+  direction: OpenPosition["direction"];
+}): number {
+  if (!isLinear(input.instrument)) {
+    return calculatePnlUsd(input.instrument.asset, input.entryPrice, input.exitPrice, input.quantity, input.direction);
+  }
+  const signedMove = input.direction === "SHORT" ? input.entryPrice - input.exitPrice : input.exitPrice - input.entryPrice;
+  return signedMove * input.quantity;
+}
+
+export function instrumentNotional(instrument: InstrumentRef, quantity: number, price: number): number {
+  return isLinear(instrument) ? quantity * price : estimateNotionalUsd(instrument.asset, quantity, price);
+}
+
+export function instrumentQuantityFromNotional(instrument: InstrumentRef, notional: number, price: number): number {
+  return isLinear(instrument) ? notional / price : amountFromNotionalUsd(instrument.asset, notional, price);
+}
+
+export function instrumentFee(
+  instrument: InstrumentRef,
+  quantity: number,
+  price: number,
+  liquidity: "maker" | "taker" = "taker"
+): number {
+  const spec = getAssetSpec(instrument.asset);
+  const rate = liquidity === "maker" ? spec.makerFeeRate : spec.takerFeeRate;
+  return instrumentNotional(instrument, quantity, price) * rate;
+}
+
+/** Identity every new autonomous position must carry from its first fill. */
+export function autonomousPositionIdentity(input: {
+  instrument: InstrumentRef;
+  initialRiskUsdt: number;
+  costModelVersion: string;
+  positionId?: string;
+}) {
+  if (!Number.isFinite(input.initialRiskUsdt) || input.initialRiskUsdt <= 0) {
+    throw new Error(`initialRiskUsdt must be a positive amount, got ${input.initialRiskUsdt}`);
+  }
+  if (!input.costModelVersion) throw new Error("costModelVersion is required");
+  return {
+    positionId: input.positionId ?? crypto.randomUUID(),
+    instrument: input.instrument,
+    economicsModel: input.instrument.economicsModel,
+    initialRiskUsdt: input.initialRiskUsdt,
+    costModelVersion: input.costModelVersion,
+    riskPolicyVersion: RISK_POLICY_VERSION,
+  };
+}
+
+/** Identity copied from a position onto each of its entry, scale-in and exit legs. */
+export function positionLegIdentity(position: OpenPosition) {
+  const instrument = positionInstrument(position);
+  return { positionId: position.positionId, instrument, economicsModel: instrument.economicsModel };
+}
+
+/** Why a migration conflict blocks new entries in this asset, or null. */
+export function migrationEntryBlock(portfolio: Pick<Portfolio, "instrumentMigration">, asset: string): string | null {
+  const reason = portfolio.instrumentMigration?.blockedAssets?.[asset];
+  return reason ? `${asset}: new entries wait for a migration conflict to be resolved (${reason})` : null;
 }

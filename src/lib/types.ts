@@ -3,6 +3,9 @@
 // Single source of truth for all modules.
 // ================================================================
 
+// Type-only: keeps the registry's runtime code out of client bundles.
+import type { EconomicsModel, InstrumentRef } from "@/lib/trading/instrumentRegistry";
+
 // ======================== Market Data ============================
 
 export interface Candle {
@@ -234,6 +237,34 @@ export interface OpenPosition {
   expectedNetRewardUsd?: number;
   expectedNetLossUsd?: number;
   carryCostPaid?: number;
+  /** Stable identity shared by the entry, scale-ins and every exit leg. */
+  positionId?: string;
+  /**
+   * Contract and economic model frozen when the position opened. Absent on
+   * pre-upgrade records, which read as their legacy model; never rewritten
+   * from today's registry.
+   */
+  instrument?: InstrumentRef;
+  economicsModel?: EconomicsModel;
+  /** Modeled net loss at the initial stop, fixed at entry. */
+  initialRiskUsdt?: number;
+  costModelVersion?: string;
+  riskPolicyVersion?: string;
+  /** Fields added by a state migration; deleting them restores the original record. */
+  migrationAddedFields?: string[];
+}
+
+export interface InstrumentMigrationMarker {
+  version: string;
+  appliedAtMs: number;
+  /** Hash of every migrated record with migration-added fields removed. */
+  originalHash: string;
+  previousAccountingCurrency: "USD_PROXY";
+  accountingAssumption: string;
+  /** Account fields this migration added. */
+  addedFields: string[];
+  /** Assets whose new entries wait until a provenance conflict is resolved. */
+  blockedAssets: Record<string, string>;
 }
 
 export interface Portfolio {
@@ -261,6 +292,13 @@ export interface Portfolio {
   totalFeesPaid?: number;     // Accumulated transaction fees paid
   totalExecutionCostsPaid?: number; // Fees + spread/slippage/gap/carry assumptions
   totalCarryPaid?: number;
+  /**
+   * Unit of the cash fields. Absent means the historical nominal USD proxy.
+   * "USDT" after migration is a labeled paper-account assumption, not an
+   * executed currency conversion.
+   */
+  accountingCurrency?: "USD_PROXY" | "USDT";
+  instrumentMigration?: InstrumentMigrationMarker;
   lastUpdated: string;
 }
 
@@ -330,6 +368,11 @@ export interface Trade {
   gapCostUsd?: number;
   reasoning: string;
   isPartialExit?: boolean;
+  /** Position this leg belongs to; shared by entry, scale-in and exit legs. */
+  positionId?: string;
+  instrument?: InstrumentRef;
+  economicsModel?: EconomicsModel;
+  migrationAddedFields?: string[];
   // Filled when position is closed:
   pnl?: number;
   pnlPercent?: number;

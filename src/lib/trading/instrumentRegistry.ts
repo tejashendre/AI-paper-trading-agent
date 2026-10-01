@@ -103,6 +103,28 @@ export function getConfiguredInstrument(asset: string): InstrumentRef {
   };
 }
 
+/**
+ * Reference for a position opened under a pre-Bybit model. Its quantity unit
+ * and P&L formula belong to that model and are never reinterpreted through
+ * today's registry; for USDJPY in particular, legacy quantity is USD exposure.
+ */
+export function legacyInstrument(
+  asset: string,
+  model: Exclude<EconomicsModel, "BYBIT_LINEAR_USDT_V1">
+): InstrumentRef {
+  if (!isConfiguredAsset(asset)) {
+    throw new Error(`"${asset}" is not a configured asset`);
+  }
+  return {
+    asset,
+    symbol: asset,
+    venue: "LEGACY",
+    economicsModel: model,
+    instrumentVersion: instrumentVersion(asset, model),
+    settlementCurrency: "USD_PROXY",
+  };
+}
+
 // Positive decimal string as Bybit publishes it. Kept as a string so that
 // lot/tick arithmetic can be done exactly later; never defaulted to zero.
 const positiveDecimal = z

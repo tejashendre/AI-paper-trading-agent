@@ -26,6 +26,8 @@ export interface ExecutionLedgerEventInput {
   asset?: string;
   decisionId?: string;
   tradeId?: string;
+  /** Position the event belongs to. Absent on events written before position identity existed. */
+  positionId?: string;
   timestamp?: string;
   payload: unknown;
 }
@@ -39,6 +41,7 @@ export interface ExecutionLedgerRecord {
   asset?: string;
   decisionId?: string;
   tradeId?: string;
+  positionId?: string;
   strategyVersion: string;
   executionCostModelVersion: string;
   previousHash: string | null;
@@ -249,6 +252,9 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
     asset: input.asset,
     decisionId: input.decisionId,
     tradeId: input.tradeId,
+    // Undefined is dropped by JSON.stringify, so records without a position
+    // hash exactly as they did before this field existed.
+    positionId: input.positionId,
     strategyVersion: TRADING_STRATEGY_VERSION,
     executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
     previousHash: previous?.hash || null,

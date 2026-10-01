@@ -3,7 +3,10 @@ import {
   calculatePnlUsd,
   estimateFeeUsd,
   estimateNotionalUsd,
+  instrumentFee,
+  instrumentNotional,
 } from "./assetSpecs";
+import type { InstrumentRef } from "./instrumentRegistry";
 
 export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v2-2026-07-19";
 
@@ -164,6 +167,11 @@ export function estimatePaperFill(input: {
   profile?: ExecutionCostProfile;
   /** Overrides the catalogued fee rate, e.g. maker instead of taker. */
   feeRate?: number;
+  /**
+   * The existing position's frozen instrument. Quantity units belong to that
+   * instrument's model, so an exit must not be valued by today's routing.
+   */
+  instrument?: InstrumentRef;
 }): PaperFillEstimate {
   if (!Number.isFinite(input.requestedPrice) || input.requestedPrice <= 0) {
     throw new Error(`Invalid requested execution price for ${input.asset}`);
@@ -177,9 +185,12 @@ export function estimatePaperFill(input: {
   // so contract lookups would throw. Linear USDT perps are all USD-quoted with
   // a unit contract, which is exactly `amount * price`.
   const isDerived = input.profile !== undefined;
-  const requestedNotionalUsd = isDerived
-    ? input.amount * input.requestedPrice
-    : estimateNotionalUsd(input.asset, input.amount, input.requestedPrice);
+  const notionalAt = (price: number) => isDerived
+    ? input.amount * price
+    : input.instrument
+      ? instrumentNotional(input.instrument, input.amount, price)
+      : estimateNotionalUsd(input.asset, input.amount, price);
+  const requestedNotionalUsd = notionalAt(input.requestedPrice);
   const conditionMultiplier = marketConditionMultiplier(input.context);
   const sizeRatio = Math.max(0, requestedNotionalUsd / Math.max(profile.referenceNotionalUsd, 1));
   const sizeImpactBps = profile.sizeImpactBps * Math.sqrt(sizeRatio);
@@ -191,12 +202,12 @@ export function estimatePaperFill(input: {
   const totalAdverseBps = spreadBps + slippageBps + gapBps;
   const adverseDirection = input.action === "BUY" || input.action === "COVER" ? 1 : -1;
   const fillPrice = input.requestedPrice * (1 + adverseDirection * totalAdverseBps / 10_000);
-  const notionalUsd = isDerived
-    ? input.amount * fillPrice
-    : estimateNotionalUsd(input.asset, input.amount, fillPrice);
+  const notionalUsd = notionalAt(fillPrice);
   const feeUsd = input.feeRate !== undefined
     ? notionalUsd * input.feeRate
-    : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
+    : input.instrument
+      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker")
+      : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
   const spreadCostUsd = requestedNotionalUsd * spreadBps / 10_000;
   const slippageCostUsd = requestedNotionalUsd * slippageBps / 10_000;
   const gapCostUsd = requestedNotionalUsd * gapBps / 10_000;
