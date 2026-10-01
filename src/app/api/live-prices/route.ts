@@ -51,7 +51,7 @@ export async function GET(request: Request) {
         provider: quote.provider,
         instrument: quote.instrument,
         mode,
-        fresh: age !== null && age <= (quote.transport === "WS" ? 10 : 45),
+        fresh: age !== null && age <= 10 && quote.eventTimeMs<=Date.now()+2000,
         updatedAt: quote.updatedAt,
         ageSeconds: age,
         ...empty,

@@ -1,5 +1,8 @@
 # Project learnings
 
+- Browser display can consume Bybit's public stream independently of daemon scan cadence. Rendering each message is unnecessary; latest-state rendering at up to 10 Hz is sufficient and carries no tick archive.
+- Increasing uncertainty pushes a below-benchmark Sharpe probability toward 0.5. The audit's fat-tail comparison must use a Sharpe above its full-trial benchmark to assert lower confidence; changing the trial count exposed the old fixture's wrong-tail assumption.
+
 - Trial count means attempted configurations, including variants under the same display version. A discount without measured covariance overstates evidence.
 - A hypothetical result must use closed prices inside its label window. Delayed evaluation cannot substitute the current live price.
 - Shadow bar replay is descriptive when funding, fee or execution evidence is incomplete. Raw candidate counts are not independent completed trades.

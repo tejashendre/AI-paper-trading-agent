@@ -1,5 +1,8 @@
 # Audit log
 
+## 2026-10-01 browser and status verification
+Task 11 adds one public browser socket for all nine ticker and trade topics, reuses the backend ticker parser, limits rendering to 10 Hz, and falls back to authenticated read-only server quotes. Unit coverage verifies delta behavior, reconnect reset and cleanup. Full upgrade suite: 230/230. Node 20 production build succeeds. Playwright checked 1440px desktop and 390px mobile: no horizontal overflow or page exceptions, research panel visible, and 1,368 received public frames including all nine ticker topics. UI verification injected research summary fields into a read-only production snapshot; it did not exercise a deployed v5 backend. API, transport, data quality, closed-bar age and research activation are separate states.
+
 ## 2026-10-01 remaining research release
 Tasks 8-9 committed with 221 tests passing. Task 10 adds immutable bounded trials, purged folds, seeded block intervals, full trial correction, cost stress, causal shadow labels, hourly reviews and a compressed 1 GiB archive. Current full suite: 229/229; TypeScript passes. Public capture used all nine symbols and 15m/1h/4h/W; compressed data uses about 1.25 MB. Latest 15m window is 2026-09-21 02:45 UTC through 2026-10-01 12:30 UTC. FX has 139 closed 4h bars and three weekly bars. Descriptive replay has no GBPUSD candidate in this short window and no promotion-qualified cost evidence. Capture/replay hashes and exact counts are recorded in docs/BYBIT_RESEARCH_CAPTURE_2026-10-01.json. Production remains on Release A until final reviewed deployment.
 
