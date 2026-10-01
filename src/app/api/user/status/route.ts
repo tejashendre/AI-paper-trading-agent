@@ -4,7 +4,10 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { calculatePnlUsd, estimateFeeUsd, estimateNotionalUsd } from "@/lib/trading/assetSpecs";
+import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from "@/lib/trading/assetSpecs";
+import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/trading/positionOutcomes";
+import { buildCoverageSnapshot, DailyFunnel, ScanDecision, VetoCode } from "@/lib/trading/coverageStatus";
+import { CONFIGURED_ASSETS } from "@/lib/trading/instrumentRegistry";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -21,8 +24,11 @@ import { RESEARCH_HARNESS_VERSION } from "@/lib/research/walkForward";
 export const dynamic = "force-dynamic";
 
 function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
+    // Marked under the model frozen on the position, not today's routing.
+    const instrument = positionInstrument({ ...pos, asset });
     const exit = estimatePaperFill({
         asset,
+        instrument,
         action: pos.direction === "SHORT" ? "COVER" : "SELL",
         requestedPrice: currentPrice,
         amount: pos.amount,
@@ -35,11 +41,15 @@ function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
             orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
         },
     });
-    const grossPnl = calculatePnlUsd(asset, pos.entryPrice, exit.fillPrice, pos.amount, pos.direction);
-    const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-    const carryCost = estimateCarryCostUsd({
+    const grossPnl = calculateInstrumentPnl({
+        instrument, entryPrice: pos.entryPrice, exitPrice: exit.fillPrice, quantity: pos.amount, direction: pos.direction,
+    });
+    const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
+    // Linear positions book funding to cash at each settlement; marking it
+    // again here would count it twice.
+    const carryCost = instrument.economicsModel === "BYBIT_LINEAR_USDT_V1" ? 0 : estimateCarryCostUsd({
         asset,
-        notionalUsd: pos.notionalUsd ?? estimateNotionalUsd(asset, pos.amount, pos.entryPrice),
+        notionalUsd: pos.notionalUsd ?? instrumentNotional(instrument, pos.amount, pos.entryPrice),
         openedAt: pos.entryTime,
         fundingRate: pos.fundingRate,
     });
@@ -113,54 +123,70 @@ function buildEquityCurveTrades(trades: any[]) {
         }));
 }
 
-function buildClosedTradeStats(trades: any[], initialCapital = 10_000) {
-    const closedTrades = (trades || [])
-        .filter((trade) => typeof trade?.pnl === "number" && Number.isFinite(Number(trade.pnl)))
-        .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
-
-    const totalTrades = closedTrades.length;
-    const winningTrades = closedTrades.filter((trade) => Number(trade.pnl) >= 0).length;
-    const losingTrades = totalTrades - winningTrades;
-    const grossProfit = closedTrades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl || 0)), 0);
-    const grossLoss = closedTrades.reduce((sum, trade) => sum + Math.abs(Math.min(0, Number(trade.pnl || 0))), 0);
-    const totalPnl = grossProfit - grossLoss;
-    const winRate = totalTrades > 0 ? winningTrades / totalTrades : 0;
-    const averageWin = winningTrades > 0 ? grossProfit / winningTrades : 0;
-    const averageLoss = losingTrades > 0 ? grossLoss / losingTrades : 0;
-    const expectancy = totalTrades > 0 ? totalPnl / totalTrades : 0;
-    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0;
-
-    let equity = initialCapital;
-    let peak = initialCapital;
-    let maxDrawdown = 0;
-    let maxDrawdownPercent = 0;
-
-    for (const trade of closedTrades) {
-        equity += Number(trade.pnl || 0);
-        if (equity > peak) peak = equity;
-        const drawdown = Math.max(0, peak - equity);
-        const drawdownPercent = peak > 0 ? (drawdown / peak) * 100 : 0;
-        maxDrawdown = Math.max(maxDrawdown, drawdown);
-        maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdownPercent);
-    }
-
+/**
+ * Position-level statistics: win rate, profit factor and expectancy count
+ * completed positions, with partial exits inside their position. Realized
+ * cash from every exit leg is reported separately and labeled as cash.
+ */
+function buildClosedTradeStats(trades: any[], initialCapital = 10_000, openPositions: any[] = []) {
+    const { completed, conflicts } = buildPositionOutcomes({ trades: trades || [], openPositions });
+    const summary = summarizeCompletedPositions({ outcomes: completed, trades: trades || [], initialCapital });
     return {
-        source: "closed_trade_history",
-        totalTrades,
-        winningTrades,
-        losingTrades,
-        winRate,
-        grossProfit,
-        grossLoss,
-        profitFactor,
-        totalPnl,
-        averageWin,
-        averageLoss,
-        expectancy,
-        maxDrawdown,
-        maxDrawdownPercent,
-        latestClosedAt: closedTrades[closedTrades.length - 1]?.timestamp || null,
+        source: summary.source,
+        unit: "completed_position" as const,
+        totalTrades: summary.completedPositions,
+        winningTrades: summary.winningPositions,
+        losingTrades: summary.losingPositions,
+        winRate: summary.winRate,
+        grossProfit: summary.grossProfit,
+        grossLoss: summary.grossLoss,
+        profitFactor: summary.profitFactor,
+        totalPnl: summary.totalPnl,
+        averageWin: summary.averageWin,
+        averageLoss: summary.averageLoss,
+        expectancy: summary.expectancy,
+        maxDrawdown: summary.maxDrawdown,
+        maxDrawdownPercent: summary.maxDrawdownPercent,
+        latestClosedAt: summary.latestClosedAt,
+        exitLegs: summary.exitLegs,
+        realizedCashFromExitLegs: summary.realizedCashFromExitLegs,
+        positionConflicts: conflicts.length,
     };
+}
+
+/**
+ * One row per configured asset: data readiness, the latest decision's first
+ * binding veto, and 7/30-day funnels. Funnel counts were written by the
+ * daemon once per decision; reading them here never increments anything.
+ */
+async function buildAssetCoverage(aiTrades: any[], aiPortfolio: any, swingScan: any, feedHealthMatrix: any) {
+    const redis = getRedis();
+    const outcomes = buildPositionOutcomes({ trades: aiTrades || [], openPositions: Object.values(aiPortfolio?.openPositions || {}) }).completed;
+    const funnels: Record<string, DailyFunnel[]> = {};
+    const assets: Record<string, any> = {};
+    await Promise.all(CONFIGURED_ASSETS.map(async (asset) => {
+        funnels[asset] = (await redis.get<DailyFunnel[]>(`coverage:funnel:v1:${asset}`).catch(() => null)) ?? [];
+        const feed = (feedHealthMatrix?.assets || []).find((row: any) => row.asset === asset);
+        const result = (swingScan?.results || []).find((row: any) => row.asset === asset);
+        const metadata = await MarketService.getInstrumentMetadata(asset).catch(() => null);
+        const lastDecision: ScanDecision | null = result
+            ? {
+                decisionId: `${swingScan.startedAt}:${asset}`,
+                asset,
+                at: swingScan.completedAt || swingScan.startedAt,
+                action: result.action,
+                vetoCode: (result.vetoCode ?? null) as VetoCode | null,
+                reason: result.reason,
+            }
+            : null;
+        assets[asset] = {
+            dataEligibility: feed?.dataEligibility ?? null,
+            quoteEventTimeMs: feed?.dataEligibility?.quoteEventTimeMs ?? null,
+            lastDecision,
+            fundingIntervalMinutes: metadata?.fundingIntervalMinutes ?? null,
+        };
+    }));
+    return buildCoverageSnapshot({ nowMs: Date.now(), assets, outcomes, trades: aiTrades || [], funnels });
 }
 
 function portfolioWithClosedStats(portfolio: any, stats: ReturnType<typeof buildClosedTradeStats>) {
@@ -447,8 +473,8 @@ export async function GET(request: Request) {
         const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
         const userEquityTrades = buildEquityCurveTrades(userTrades);
         const aiEquityTrades = buildEquityCurveTrades(aiTrades);
-        const userClosedStats = buildClosedTradeStats(userTrades, Number(userPortfolio?.initialCapital || 10_000));
-        const aiClosedStats = buildClosedTradeStats(aiTrades, Number(aiPortfolio?.initialCapital || 10_000));
+        const userClosedStats = buildClosedTradeStats(userTrades, Number(userPortfolio?.initialCapital || 10_000), Object.values(userPortfolio?.openPositions || {}));
+        const aiClosedStats = buildClosedTradeStats(aiTrades, Number(aiPortfolio?.initialCapital || 10_000), Object.values(aiPortfolio?.openPositions || {}));
         const userPortfolioDisplay = portfolioWithClosedStats(userPortfolio, userClosedStats);
         const aiPortfolioDisplay = portfolioWithClosedStats(aiPortfolio, aiClosedStats);
         const aiAssetBookDigest = buildAssetBookDigest({
@@ -503,7 +529,10 @@ export async function GET(request: Request) {
             }
         }
 
+        const assetCoverage = await buildAssetCoverage(aiTrades, aiPortfolio, swingScan, feedHealthMatrix).catch(() => []);
+
         return NextResponse.json({
+            assetCoverage,
             deployment: {
                 commit: process.env.APP_COMMIT_SHA || null,
                 deployedAt: process.env.APP_DEPLOYED_AT || null,

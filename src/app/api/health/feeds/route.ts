@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  * asset trading, and nothing about the portfolio view reveals that.
  *
  * The payload carries feed status only: which upstream serves each asset, how
- * old its data is, and whether that is fresh enough to trade on. No positions,
+ * old its data is, and whether it passes the entry data gate. No positions,
  * balances, trades or account identifiers, so it is safe to serve publicly
  * alongside the other spectator endpoints.
  */
@@ -23,53 +23,40 @@ export async function GET() {
   try {
     const matrix = await FeedHealthSummary.build();
 
-    const byCategory: Record<string, { total: number; tradeable: number; assets: string[] }> = {};
+    // Data readiness only. A ready feed does not mean the asset will trade:
+    // strategy, cost and risk checks are separate and can still veto.
+    const byCategory: Record<string, { total: number; dataReady: number; assets: string[] }> = {};
     for (const row of matrix.assets) {
-      const bucket = (byCategory[row.category] ??= { total: 0, tradeable: 0, assets: [] });
+      const bucket = (byCategory[row.category] ??= { total: 0, dataReady: 0, assets: [] });
       bucket.total += 1;
-      if (row.safeForSwingExecution) bucket.tradeable += 1;
+      if (row.dataEligibility.allowed) bucket.dataReady += 1;
       else bucket.assets.push(row.asset);
     }
 
-    // The upstream each asset class depends on, so a reader can tell at a
-    // glance whether a problem is one asset or one provider having an outage.
-    // Derived from the router rather than restated here, so this can never
-    // drift from where the data actually comes from. It said "Yahoo" for the
-    // FX pairs for one deploy after they moved to Kraken, which is exactly the
-    // kind of quiet inaccuracy this endpoint exists to prevent.
-    const UPSTREAM_LABEL: Record<string, string> = {
-      BYBIT_LINEAR: "Bybit linear perpetuals",
-      KRAKEN: "Kraken spot",
-      YAHOO: "Yahoo Finance",
-    };
-    const feeds = Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => {
-      const provider = primaryMarketDataProvider(asset);
-      const instrument = provider === "BYBIT_LINEAR"
-        ? config.bybitLinearSymbol
-        : provider === "KRAKEN"
-          ? config.krakenPair
-          : config.yahooTicker;
-      return {
-        asset,
-        category: config.category,
-        provider,
-        upstream: UPSTREAM_LABEL[provider] ?? provider,
-        instrument,
-        streamsLive: Boolean(config.bybitLinearSymbol || config.krakenWsSymbol),
-      };
-    });
+    // The upstream each asset depends on, derived from the router rather than
+    // restated here. Every asset is one Bybit perpetual; the stream and REST
+    // are two transports of that one venue, not independent sources.
+    const feeds = Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => ({
+      asset,
+      category: config.category,
+      provider: primaryMarketDataProvider(asset),
+      upstream: "Bybit linear perpetuals",
+      instrument: config.bybitLinearSymbol,
+      streamsLive: true,
+      independentVenues: 1,
+    }));
 
-    const blocked = matrix.assets.filter((a) => !a.safeForSwingExecution);
-    const plain = blocked.length === 0
-      ? `All ${matrix.assets.length} assets have fresh data and can trade.`
-      : `${matrix.assets.length - blocked.length} of ${matrix.assets.length} assets can trade. ` +
-        `${blocked.map((a) => a.asset).join(", ")} ${blocked.length === 1 ? "is" : "are"} held back because ` +
-        `${blocked.length === 1 ? "its" : "their"} data feed is stale. The bot refuses to trade on stale ` +
-        `prices rather than guessing, so this stops trades rather than causing bad ones.`;
+    const blocked = matrix.assets.filter((a) => !a.dataEligibility.allowed);
+    const firstCode = (row: (typeof matrix.assets)[number]) => row.dataEligibility.reasons[0]?.split(":")[0] ?? row.dataEligibility.state;
+    const plain = (blocked.length === 0
+      ? `All ${matrix.assets.length} assets have entry-ready data.`
+      : `${matrix.assets.length - blocked.length} of ${matrix.assets.length} assets have entry-ready data. ` +
+        `Held back: ${blocked.map((a) => `${a.asset} (${firstCode(a)})`).join(", ")}.`) +
+      " This covers data only; strategy, cost and risk checks still decide whether a trade happens.";
 
     return NextResponse.json({
       plainEnglish: plain,
-      tradeableNow: matrix.assets.length - blocked.length,
+      dataReadyNow: matrix.assets.length - blocked.length,
       totalAssets: matrix.assets.length,
       byCategory,
       feeds,

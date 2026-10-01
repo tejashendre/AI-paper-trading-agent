@@ -20,6 +20,7 @@ services:
       retries: 5
 
   quant-dashboard:
+    image: quant-trader:${APP_COMMIT_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -50,6 +51,7 @@ services:
       retries: 5
 
   swing-daemon:
+    image: quant-trader:${APP_COMMIT_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -80,6 +82,7 @@ services:
       start_period: 120s
 
   xsec-daemon:
+    image: quant-trader:${APP_COMMIT_SHA:-local}
     build:
       context: .
       dockerfile: Dockerfile

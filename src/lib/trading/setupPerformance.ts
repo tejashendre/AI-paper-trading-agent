@@ -1,4 +1,5 @@
 import { Trade } from "@/lib/types";
+import { buildPositionOutcomes, outcomeAsTrade } from "@/lib/trading/positionOutcomes";
 
 type PerformanceSide = "trade" | "opportunity";
 
@@ -34,7 +35,10 @@ export interface SetupPerformanceBucket {
 
 export interface SetupPerformanceSummary {
   generatedAt: string;
+  /** Completed positions; partial exits are part of their position, not extra samples. */
   closedTradeCount: number;
+  /** Positions left out because their legs could not be reconciled. */
+  positionConflicts: string[];
   taggedTradeCount: number;
   setupCount: number;
   assetCount: number;
@@ -265,7 +269,7 @@ function sortBuckets(buckets: SetupPerformanceBucket[]) {
 function buildFindings(summary: Omit<SetupPerformanceSummary, "plainFindings">) {
   const findings: string[] = [];
   if (summary.closedTradeCount === 0) {
-    findings.push("No closed tagged AI trades yet, so the system is learning mostly from watched opportunities.");
+    findings.push("No completed tagged AI positions yet, so the system is learning mostly from watched opportunities.");
   }
   if (summary.bestSetup) {
     findings.push(summary.bestSetup.promotionEligible
@@ -280,7 +284,7 @@ function buildFindings(summary: Omit<SetupPerformanceSummary, "plainFindings">) 
     findings.push(`${quarantinedCount} setup${quarantinedCount === 1 ? " is" : "s are"} quarantined after failing later chronological expectancy checks.`);
   }
   if (summary.bySetup.some((bucket) => bucket.opportunityCount > 0 && bucket.tradeCount === 0)) {
-    findings.push("Some patterns have opportunity evidence but no closed trades yet; treat them as early signals, not proven edge.");
+    findings.push("Some patterns have opportunity evidence but no completed positions yet; treat them as early signals, not proven edge.");
   }
   return findings.slice(0, 4);
 }
@@ -296,7 +300,11 @@ export class SetupPerformance {
     const strategyTrades = options.strategyVersion
       ? aiTrades.filter((trade) => trade.strategyVersion === options.strategyVersion)
       : aiTrades;
-    const closedTrades = strategyTrades.filter((trade) => typeof trade.pnl === "number" && !trade.isPartialExit);
+    // One sample per completed position. Partial exits are part of their
+    // position's result; dropping them used to turn a +15 partial and a -5
+    // final into a learned loss of 5.
+    const outcomes = buildPositionOutcomes({ trades: strategyTrades, openPositions: [] });
+    const closedTrades = outcomes.completed.map(outcomeAsTrade);
     const chronologicalClosedTrades = [...closedTrades].sort((a, b) => (
       new Date(a.exitTime || a.timestamp).getTime() - new Date(b.exitTime || b.timestamp).getTime()
     ));
@@ -357,7 +365,9 @@ export class SetupPerformance {
 
     const summaryWithoutFindings = {
       generatedAt: new Date().toISOString(),
+      // Completed positions, not exit legs.
       closedTradeCount: closedTrades.length,
+      positionConflicts: outcomes.conflicts,
       taggedTradeCount,
       setupCount: setupBuckets.length,
       assetCount: assetBuckets.length,

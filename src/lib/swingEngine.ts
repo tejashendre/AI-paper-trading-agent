@@ -1,5 +1,6 @@
 import { Candle, IndicatorSnapshot, StatisticalMetrics } from "@/lib/types";
-import { MarketPriceSnapshot, MarketService } from "./market";
+import { closedCandles, MarketPriceSnapshot, MarketService } from "./market";
+import { ClosedBarCounts, WEEKLY_FEATURE_MIN_BARS } from "./trading/entryEligibility";
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
 import { calculateLearningAdjustment, LocalLearningMemory, LocalLearningRule } from "./trading/localLearning";
@@ -81,6 +82,10 @@ export interface SwingSignal {
   marketDataTimestamp: string;
   marketDataBid?: number;
   marketDataAsk?: number;
+  /** The full quote this signal priced from, for the shared entry-eligibility gate. */
+  marketQuote?: MarketPriceSnapshot;
+  /** Completed bars per timeframe when the signal was evaluated. */
+  closedBarCounts?: ClosedBarCounts;
   signalPrice: number;
   slippagePercent: number;
   oldScoreOverride: boolean;
@@ -803,6 +808,14 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
     candles15m, candles1h, candles4h, candles1w,
     livePriceSnapshot, orderbookResult, deepSensors,
   } = input;
+  // Counted against exchange time; a forming bar is not a completed one.
+  const referenceMs = Number.isFinite(livePriceSnapshot.eventTimeMs) ? livePriceSnapshot.eventTimeMs : Date.now();
+  const closedBarCounts: ClosedBarCounts = {
+    m15: closedCandles(candles15m, "15m", referenceMs).length,
+    h1: closedCandles(candles1h, "1h", referenceMs).length,
+    h4: closedCandles(candles4h, "4h", referenceMs).length,
+    w1: closedCandles(candles1w, "1w", referenceMs).length,
+  };
 
     const ind15m = computeAllIndicators(candles15m);
     const ind1h = computeAllIndicators(candles1h);
@@ -904,7 +917,9 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
 
     // Weekly bias adjustment
     let weeklyBiasAdjustment = 0;
-    if (candles1w.length >= 8) {
+    // A young contract has fewer completed weeks; the feature is then
+    // unavailable and contributes nothing rather than being estimated.
+    if (candles1w.length >= WEEKLY_FEATURE_MIN_BARS) {
       // True 8-period EMA calculation
       const weeklyCloses = candles1w.slice(-8).map((c) => c.close);
       const k = 2 / (8 + 1);
@@ -1158,6 +1173,8 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
         marketDataTimestamp: livePriceSnapshot.updatedAt,
         marketDataBid: livePriceSnapshot.bid,
         marketDataAsk: livePriceSnapshot.ask,
+        marketQuote: livePriceSnapshot,
+        closedBarCounts,
         signalPrice,
         slippagePercent,
         oldScoreOverride: false,
@@ -1219,6 +1236,8 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
       marketDataTimestamp: livePriceSnapshot.updatedAt,
       marketDataBid: livePriceSnapshot.bid,
       marketDataAsk: livePriceSnapshot.ask,
+      marketQuote: livePriceSnapshot,
+      closedBarCounts,
       signalPrice,
       slippagePercent,
       oldScoreOverride: exceptionEntry,
@@ -1241,13 +1260,16 @@ export class SwingEngine {
       const [candles1mResult, candles5mResult, candles15m, candles1h, candles4h, candles1w, livePriceSnapshot, orderbookResult, deepSensors, learningRules] = await Promise.all([
         MarketService.getCandles("1m", 80, assetKey).catch(() => [] as Candle[]),
         MarketService.getCandles("5m", 80, assetKey).catch(() => [] as Candle[]),
-        MarketService.getCandles("15m", 100, assetKey),
-        MarketService.getCandles("1h", 100, assetKey),
+        // 101 so that 100 are completed alongside the forming bar.
+        MarketService.getCandles("15m", 101, assetKey),
+        MarketService.getCandles("1h", 101, assetKey),
         MarketService.getCandles("4h", 100, assetKey),
         MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
         MarketService.getCurrentPriceSnapshot(assetKey),
         assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
-        assetMode === "REALTIME_FAST" ? MarketService.getDeepSensors(assetKey).catch(() => null) : Promise.resolve(null),
+        // Funding and open interest exist for every perpetual and are recorded
+        // whatever the strategy speed; only the fast tier scores them.
+        MarketService.getDeepSensors(assetKey).catch(() => null),
         LocalLearningMemory.getRules().catch(() => [] as LocalLearningRule[]),
       ]);
 

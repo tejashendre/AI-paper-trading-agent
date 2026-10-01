@@ -17,11 +17,11 @@ const FAILURE_STREAK_KEY_PREFIX = 'mesh:fail_streak:';
  * Builds a complete FreeMarketFrame for a given asset and timeframe.
  *
  * This is the AI's primary data input. It:
- * 1. Fetches candles via MarketService (Kraken → Yahoo → CoinGecko fallback chain)
+ * 1. Fetches candles from the asset's Bybit perpetual (no other venue)
  * 2. Fetches current price
- * 3. Checks source agreement (Kraken vs CoinGecko for crypto)
+ * 3. Checks stream/REST transport consistency (one venue, not two sources)
  * 4. Scores feed health (staleness, missing candles, anomalies)
- * 5. Optionally attaches crypto sentiment (Fear & Greed Index)
+ * 5. Optionally attaches crypto sentiment (off by default; context only)
  *
  * Never throws — returns a degraded frame with warnings if data is unavailable.
  */
@@ -29,7 +29,8 @@ export async function buildMarketFrame(
   assetKey: string,
   timeframe: Timeframe,
   limit: number = 200,
-  includeSentiment: boolean = true
+  // Sentiment is optional context and never a required connection.
+  includeSentiment: boolean = false
 ): Promise<FreeMarketFrame | null> {
   const config = SUPPORTED_ASSETS[assetKey];
   if (!config) {
@@ -44,7 +45,7 @@ export async function buildMarketFrame(
   // ── 1. Fetch candles ─────────────────────────────────────────
   let candles = [];
   let primarySource: DataSource = 'CACHE';
-  let fallbackUsed = false;
+  const fallbackUsed = false;
   let cacheAgeSeconds = 0;
 
   try {
@@ -91,12 +92,8 @@ export async function buildMarketFrame(
     if (agreement.warnings.length > 0) {
       warnings.push(...agreement.warnings);
     }
-
-    // Comparison venues can reduce confidence, but cannot silently replace the
-    // selected execution instrument.
-    if (config.category === 'crypto' && !agreement.sourcesChecked.includes('BYBIT_LINEAR')) {
-      fallbackUsed = true;
-    }
+    // There is no fallback venue: a missing Bybit quote is a failure, never a
+    // silent substitution, so fallbackUsed stays false.
   } catch {
     // Source agreement is supplementary; don't fail the frame
     warnings.push('Source agreement check failed, assuming 1.0');
@@ -129,18 +126,18 @@ export async function buildMarketFrame(
   // Merge feed health warnings into frame warnings
   warnings.push(...feedHealth.warnings);
 
-  // ── 7. Fetch sentiment (crypto only, optional) ───────────────
+  // ── 7. Sensors for every perpetual; sentiment (crypto only, optional) ──
   let sentiment = undefined;
   let openInterest = undefined;
   let fundingRate = undefined;
-  
+
+  try {
+    const sensors = await MarketService.getDeepSensors(assetKey);
+    openInterest = sensors.openInterest;
+    fundingRate = sensors.fundingRate;
+  } catch {}
+
   if (config.category === 'crypto') {
-    try {
-      const sensors = await MarketService.getDeepSensors(assetKey);
-      openInterest = sensors.openInterest;
-      fundingRate = sensors.fundingRate;
-    } catch {}
-    
     if (includeSentiment) {
       try {
         sentiment = await getSentiment() ?? undefined;
@@ -181,7 +178,7 @@ export async function buildMarketFrame(
 export async function buildAllMarketFrames(
   timeframe: Timeframe,
   limit: number = 200,
-  includeSentiment: boolean = true
+  includeSentiment: boolean = false
 ): Promise<Record<string, FreeMarketFrame | null>> {
   const assets = Object.keys(SUPPORTED_ASSETS);
   const results: Record<string, FreeMarketFrame | null> = {};

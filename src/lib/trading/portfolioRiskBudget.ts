@@ -1,7 +1,8 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { estimateFeeUsd } from "./assetSpecs";
+import { instrumentFee, instrumentNotional, positionInstrument, tradeInstrument } from "./assetSpecs";
 
-export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v2-2026-08-04";
+// v3: named factors in true USDT notional, factor stop-risk cap, gross notional ceiling.
+export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v3-2026-10-01";
 
 export interface PortfolioRiskBudgetInput {
   portfolio: Portfolio;
@@ -38,6 +39,8 @@ export interface PortfolioRiskBudgetDecision {
     consecutiveFullStopLosses: number;
     correlatedFullStopLosses: number;
     accountingDriftUsd: number;
+    factorExposure: Record<string, FactorExposure>;
+    grossNotionalUsdt: number;
   };
   limits: {
     maxEntriesAsset1h: number;
@@ -54,6 +57,8 @@ export interface PortfolioRiskBudgetDecision {
     maxConsecutiveFullStopLosses: number;
     maxCorrelatedFullStopLosses: number;
     hardDrawdownPercent: number;
+    maxFactorPlannedRiskUsd: number;
+    maxGrossNotionalUsdt: number;
   };
 }
 
@@ -97,20 +102,54 @@ function eventExecutionCostUsd(trade: Trade): number {
   if (Number.isFinite(explicit) && explicit >= 0) return explicit;
   if (!Number.isFinite(Number(trade.amount)) || !Number.isFinite(Number(trade.price))) return 0;
   try {
-    return estimateFeeUsd(trade.asset, Number(trade.amount), Number(trade.price));
+    // Each row is costed under the model it was written with.
+    return instrumentFee(tradeInstrument(trade), Number(trade.amount), Number(trade.price));
   } catch {
     return 0;
   }
 }
 
+export interface RiskFactorClassification {
+  riskClass: "crypto" | "forex" | "commodity" | "unknown";
+  /** Shared driver. Grouping states exposure; it does not assume a fixed correlation. */
+  factor: string;
+  /** Direction of exposure to the factor, e.g. long EURUSD is short USD. */
+  factorDirection: OpenPosition["direction"];
+}
+
+export function classifyRiskFactor(asset: string, direction: OpenPosition["direction"]): RiskFactorClassification {
+  const opposite = direction === "LONG" ? "SHORT" : "LONG";
+  if (["BTC", "ETH", "SOL"].includes(asset)) return { riskClass: "crypto", factor: "CRYPTO", factorDirection: direction };
+  if (asset === "EURUSD" || asset === "GBPUSD") return { riskClass: "forex", factor: "USD", factorDirection: opposite };
+  if (asset === "USDJPY") return { riskClass: "forex", factor: "USD", factorDirection: direction };
+  if (asset === "GOLD" || asset === "SILVER") return { riskClass: "commodity", factor: "METALS", factorDirection: direction };
+  if (asset === "OIL") return { riskClass: "commodity", factor: "ENERGY", factorDirection: direction };
+  return { riskClass: "unknown", factor: asset, factorDirection: direction };
+}
+
 function exposureKey(asset: string, direction: OpenPosition["direction"]): string {
-  if (["BTC", "ETH", "SOL"].includes(asset)) return `CRYPTO:${direction}`;
-  if (["GOLD", "SILVER"].includes(asset)) return `PRECIOUS_METALS:${direction}`;
-  if (asset === "EURUSD" || asset === "GBPUSD") {
-    return `USD:${direction === "LONG" ? "SHORT" : "LONG"}`;
+  const { factor, factorDirection } = classifyRiskFactor(asset, direction);
+  return `${factor}:${factorDirection}`;
+}
+
+export interface FactorExposure {
+  positions: number;
+  /** True USDT notional under each position's own economic model. */
+  notionalUsdt: number;
+  plannedRiskUsdt: number;
+}
+
+export function portfolioFactorExposure(positions: OpenPosition[]): Record<string, FactorExposure> {
+  const exposure: Record<string, FactorExposure> = {};
+  for (const position of positions) {
+    if (!position) continue;
+    const key = exposureKey(position.asset, position.direction);
+    const bucket = (exposure[key] ??= { positions: 0, notionalUsdt: 0, plannedRiskUsdt: 0 });
+    bucket.positions += 1;
+    bucket.notionalUsdt += instrumentNotional(positionInstrument(position), position.amount, position.entryPrice);
+    bucket.plannedRiskUsdt += Math.max(0, Number(position.maxLossUsd ?? position.riskAmountUsd ?? 0));
   }
-  if (asset === "USDJPY") return `USD:${direction}`;
-  return `${asset}:${direction}`;
+  return exposure;
 }
 
 function riskCluster(asset: string): string {
@@ -184,6 +223,9 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   const correlatedSameDirectionCount = Object.values(input.portfolio.openPositions || {}).filter(
     (position) => exposureKey(position.asset, position.direction) === candidateExposureKey
   ).length;
+  const openPositions = Object.values(input.portfolio.openPositions || {});
+  const factorExposure = portfolioFactorExposure(openPositions);
+  const grossNotionalUsdt = Object.values(factorExposure).reduce((sum, bucket) => sum + bucket.notionalUsdt, 0);
   const consecutiveFullStopLosses = countLeadingFullStopLosses(allClosed);
   const candidateCluster = riskCluster(input.asset);
   const correlatedFullStopLosses = countLeadingFullStopLosses(
@@ -210,6 +252,10 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
     maxConsecutiveFullStopLosses: 4,
     maxCorrelatedFullStopLosses: 3,
     hardDrawdownPercent: 10,
+    // A factor may carry no more planned stop risk than the whole book.
+    maxFactorPlannedRiskUsd: equity * 0.03,
+    // No higher than the existing daily entry notional budget.
+    maxGrossNotionalUsdt: equity * 2.5,
   };
 
   const diagnostics = {
@@ -232,6 +278,8 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
     consecutiveFullStopLosses,
     correlatedFullStopLosses,
     accountingDriftUsd,
+    factorExposure,
+    grossNotionalUsdt,
   };
 
   const reject = (reason: string): PortfolioRiskBudgetDecision => ({
@@ -255,9 +303,18 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   if (netPnl7d <= -limits.maxWeeklyLossUsd) return reject("Rolling seven-day loss circuit breaker is active.");
   if (consecutiveFullStopLosses >= limits.maxConsecutiveFullStopLosses) return reject("Portfolio full-stop loss streak requires a reset or reviewed probation cohort before another entry.");
   if (correlatedFullStopLosses >= limits.maxCorrelatedFullStopLosses) return reject(`${candidateCluster} full-stop loss streak is quarantined pending a reset or reviewed probation cohort.`);
+  const factorRisk = (factorExposure[candidateExposureKey]?.plannedRiskUsdt ?? 0) + input.candidateMaxLossUsd;
+  if (factorRisk > limits.maxFactorPlannedRiskUsd) {
+    return reject(`FACTOR_RISK: ${candidateExposureKey} planned stop risk would be $${factorRisk.toFixed(2)}, above the $${limits.maxFactorPlannedRiskUsd.toFixed(2)} cap.`);
+  }
   if (plannedOpenRiskUsd + input.candidateMaxLossUsd > limits.maxPlannedRiskUsd) return reject("Aggregate planned stop risk would exceed 3% of equity.");
   if (stressLossUsd > limits.maxStressLossUsd) return reject("Historical expected-shortfall stress plus planned risk would exceed 6% of equity.");
-  if (correlatedSameDirectionCount >= limits.maxCorrelatedSameDirection) return reject("Correlated same-direction exposure budget is full.");
+  if (correlatedSameDirectionCount >= limits.maxCorrelatedSameDirection) {
+    return reject(`Correlated ${candidateExposureKey} exposure budget is full (${correlatedSameDirectionCount} open).`);
+  }
+  if (grossNotionalUsdt + input.candidateNotionalUsd > limits.maxGrossNotionalUsdt) {
+    return reject(`GROSS_NOTIONAL: total notional would be $${(grossNotionalUsdt + input.candidateNotionalUsd).toFixed(2)}, above the $${limits.maxGrossNotionalUsdt.toFixed(2)} ceiling.`);
+  }
 
   return {
     approved: true,

@@ -20,11 +20,10 @@
     "daemon:xsec": "tsx src/daemon/crossSectionalDaemon.ts",
     "redis:housekeeping": "tsx scripts/redis-housekeeping.ts",
     "reset:arena": "tsx scripts/reset-arena.ts",
-    "ledger:archive": "tsx scripts/ledger-archive.ts"
+    "ledger:archive": "tsx scripts/ledger-archive.ts",
+    "test:upgrade": "node scripts/run-upgrade-tests.mjs"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.106.2",
-    "ccxt": "^4.5.56",
     "date-fns": "^3.6.0",
     "ioredis": "^5.11.0",
     "lightweight-charts": "^4.2.0",

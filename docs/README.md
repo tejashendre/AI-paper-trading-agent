@@ -4,14 +4,17 @@
 
 | Document | What it covers |
 |---|---|
+| [Bybit all-asset implementation plan](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md) | Current implementation handoff: all nine Bybit contracts, state migration, costs/funding, coverage gates, learning, research, tests, and rollout. Proposed changes, not deployed behavior. |
+| [Strategy coverage audit, 1 October 2026](./STRATEGY_COVERAGE_AUDIT_2026-10-01.md) | Verified routing, full-position accounting, risk-state, and learning defects with linked evidence. |
+| [Bybit all-assets rollout runbook](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md) | Release A state changes, entry freeze, read-only snapshot and migration preview, in-container checks, rollback hazards, recorded offline results, and evidence limits. Not a release authorization. |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Operating contract, topology, and what the system deliberately is not. |
 | [CROSS_SECTIONAL_MOMENTUM_2026-08-25.md](./CROSS_SECTIONAL_MOMENTUM_2026-08-25.md) | The ranked long/short perp book: why breadth is the mechanism, the robustness checks, and what was tested and rejected. |
 | [EXIT_POLICY_AND_STOP_GEOMETRY_2026-08-25.md](./EXIT_POLICY_AND_STOP_GEOMETRY_2026-08-25.md) | The swing-engine repair: six competing dollar-threshold exit guards replaced by one R-based policy, and a stop widened to sit outside the signal's own noise. |
 | [UPGRADE_ROADMAP.md](./UPGRADE_ROADMAP.md) | What would take this from 7/10 to 10/10, in what order, what the strategy's real capacity is, and what should deliberately never be built. |
 
-Read the two dated documents together. The first explains why the swing engine
-alone could not become profitable; the second explains why it was losing money
-faster than it had to.
+Start with the October audit and implementation plan for current work. The August
+research documents record earlier strategy and exit-policy experiments; their
+performance figures are historical evidence, not a current live verdict.
 
 ## history/
 

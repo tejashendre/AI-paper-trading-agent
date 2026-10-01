@@ -27,7 +27,7 @@ export interface LocalLearningRule {
 
 function writeJsonBackup(filename: string, value: unknown) {
   try {
-    const dir = path.join(process.cwd(), "data");
+    const dir = path.join(process.cwd(), "data", "learning", TRADING_STRATEGY_VERSION);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, filename), JSON.stringify(value, null, 2));
   } catch {}

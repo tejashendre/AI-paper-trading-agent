@@ -3,9 +3,14 @@ import {
   calculatePnlUsd,
   estimateFeeUsd,
   estimateNotionalUsd,
+  instrumentFee,
+  instrumentNotional,
 } from "./assetSpecs";
+import type { InstrumentRef } from "./instrumentRegistry";
 
-export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v2-2026-07-19";
+// v3: versioned public fee schedules for Bybit contracts, taker-only paper
+// fills, and observed-spread entry profiles.
+export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v3-2026-10-01";
 
 export type PaperExecutionAction = "BUY" | "SELL" | "SHORT" | "COVER";
 export type PaperExecutionReason =
@@ -82,6 +87,8 @@ export interface PaperExecutionPlanInput {
   takeProfit: number;
   amount: number;
   context?: Omit<PaperExecutionContext, "reason">;
+  /** Cost profile override, e.g. the catalogue profile widened to the observed spread. */
+  profile?: ExecutionCostProfile;
 }
 
 const PROFILES: Record<string, ExecutionCostProfile> = {
@@ -164,6 +171,11 @@ export function estimatePaperFill(input: {
   profile?: ExecutionCostProfile;
   /** Overrides the catalogued fee rate, e.g. maker instead of taker. */
   feeRate?: number;
+  /**
+   * The existing position's frozen instrument. Quantity units belong to that
+   * instrument's model, so an exit must not be valued by today's routing.
+   */
+  instrument?: InstrumentRef;
 }): PaperFillEstimate {
   if (!Number.isFinite(input.requestedPrice) || input.requestedPrice <= 0) {
     throw new Error(`Invalid requested execution price for ${input.asset}`);
@@ -177,9 +189,12 @@ export function estimatePaperFill(input: {
   // so contract lookups would throw. Linear USDT perps are all USD-quoted with
   // a unit contract, which is exactly `amount * price`.
   const isDerived = input.profile !== undefined;
-  const requestedNotionalUsd = isDerived
-    ? input.amount * input.requestedPrice
-    : estimateNotionalUsd(input.asset, input.amount, input.requestedPrice);
+  const notionalAt = (price: number) => isDerived
+    ? input.amount * price
+    : input.instrument
+      ? instrumentNotional(input.instrument, input.amount, price)
+      : estimateNotionalUsd(input.asset, input.amount, price);
+  const requestedNotionalUsd = notionalAt(input.requestedPrice);
   const conditionMultiplier = marketConditionMultiplier(input.context);
   const sizeRatio = Math.max(0, requestedNotionalUsd / Math.max(profile.referenceNotionalUsd, 1));
   const sizeImpactBps = profile.sizeImpactBps * Math.sqrt(sizeRatio);
@@ -191,12 +206,12 @@ export function estimatePaperFill(input: {
   const totalAdverseBps = spreadBps + slippageBps + gapBps;
   const adverseDirection = input.action === "BUY" || input.action === "COVER" ? 1 : -1;
   const fillPrice = input.requestedPrice * (1 + adverseDirection * totalAdverseBps / 10_000);
-  const notionalUsd = isDerived
-    ? input.amount * fillPrice
-    : estimateNotionalUsd(input.asset, input.amount, fillPrice);
+  const notionalUsd = notionalAt(fillPrice);
   const feeUsd = input.feeRate !== undefined
     ? notionalUsd * input.feeRate
-    : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
+    : input.instrument
+      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker")
+      : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
   const spreadCostUsd = requestedNotionalUsd * spreadBps / 10_000;
   const slippageCostUsd = requestedNotionalUsd * slippageBps / 10_000;
   const gapCostUsd = requestedNotionalUsd * gapBps / 10_000;
@@ -234,6 +249,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.entryPrice,
     amount: input.amount,
     context: { ...context, reason: "ENTRY" },
+    profile: input.profile,
   });
   const targetExit = estimatePaperFill({
     asset: input.asset,
@@ -241,6 +257,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.takeProfit,
     amount: input.amount,
     context: { ...context, reason: "TAKE_PROFIT" },
+    profile: input.profile,
   });
   const stopExit = estimatePaperFill({
     asset: input.asset,
@@ -248,6 +265,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.stopLoss,
     amount: input.amount,
     context: { ...context, reason: "STOP_LOSS" },
+    profile: input.profile,
   });
 
   const grossRewardUsd = calculatePnlUsd(
@@ -319,4 +337,134 @@ export function estimateCarryCostUsd(input: {
     ? input.notionalUsd * Math.abs(Number(input.fundingRate)) * fundingPeriods
     : 0;
   return Math.max(0, modeledCarry, observedFunding);
+}
+
+// ---------------------------------------------------------------------------
+// Perpetual funding, settled at the venue's actual boundaries. Pure: callers
+// supply settlements, intervals and the quantity held, and persist results.
+// ---------------------------------------------------------------------------
+
+export interface FundingSettlement {
+  symbol: string;
+  settlementTimeMs: number;
+  rate: number;
+  markPrice: number;
+}
+
+/** Positive is cash received, negative is cash paid. Longs pay a positive rate. */
+export function fundingCashflow(input: {
+  direction: OpenPosition["direction"];
+  quantity: number;
+  settlement: FundingSettlement;
+}): number {
+  const paidByLongs = Math.abs(input.quantity) * input.settlement.markPrice * input.settlement.rate;
+  return input.direction === "LONG" ? -paidByLongs : paidByLongs;
+}
+
+export interface QuantityLeg {
+  atMs: number;
+  /** Positive opens or adds, negative reduces. */
+  quantityDelta: number;
+}
+
+/**
+ * Quantity held at a settlement. Event order at a shared millisecond: the
+ * settlement comes first, then fills stamped with that time. An entry at the
+ * boundary therefore owes nothing, and a close at the boundary still pays.
+ */
+export function quantityHeldAt(legs: QuantityLeg[], settlementTimeMs: number): number {
+  return Math.max(0, legs.filter((leg) => leg.atMs < settlementTimeMs).reduce((sum, leg) => sum + leg.quantityDelta, 0));
+}
+
+/** Settlement boundaries in (fromMs, toMs], aligned to UTC multiples of the symbol's interval. */
+export function expectedFundingTimes(fromMs: number, toMs: number, intervalMinutes: number): number[] {
+  const step = intervalMinutes * 60_000;
+  if (!(step > 0) || !(toMs > fromMs)) return [];
+  const times: number[] = [];
+  for (let at = Math.floor(fromMs / step) * step + step; at <= toMs; at += step) times.push(at);
+  return times;
+}
+
+export function fundingEventId(positionId: string, symbol: string, settlementTimeMs: number): string {
+  return `funding:${positionId}:${symbol}:${settlementTimeMs}`;
+}
+
+export interface FundingCashflowEvent {
+  id: string;
+  positionId: string;
+  symbol: string;
+  settlementTimeMs: number;
+  direction: OpenPosition["direction"];
+  quantity: number;
+  rate: number;
+  markPrice: number;
+  amountUsdt: number;
+}
+
+/**
+ * Cashflows for one position over a window. Boundaries already settled are
+ * skipped, so a restart or a replayed history page charges nothing twice. A
+ * boundary the position held through but whose settlement (or mark price) is
+ * unavailable is pending, never a zero charge. When the history request
+ * succeeded and a boundary older than a day still has no record, the venue
+ * did not settle there (for example after an interval change); it is listed
+ * as absent rather than charged or kept pending forever.
+ */
+export function planFundingCashflows(input: {
+  positionId: string;
+  symbol: string;
+  positionAt: (atMs: number) => { direction: OpenPosition["direction"]; quantity: number };
+  settlements: FundingSettlement[];
+  settledTimes: number[];
+  fromMs: number;
+  toMs: number;
+  intervalMinutes: number;
+  nowMs: number;
+  fetchSucceeded: boolean;
+}): { events: FundingCashflowEvent[]; pendingTimes: number[]; absentTimes: number[] } {
+  const settled = new Set(input.settledTimes);
+  const byTime = new Map<number, FundingSettlement>();
+  for (const record of input.settlements) {
+    if (record.symbol === input.symbol && !byTime.has(record.settlementTimeMs)) byTime.set(record.settlementTimeMs, record);
+  }
+  const candidates = new Set([
+    ...expectedFundingTimes(input.fromMs, input.toMs, input.intervalMinutes),
+    ...[...byTime.keys()].filter((at) => at > input.fromMs && at <= input.toMs),
+  ]);
+
+  const events: FundingCashflowEvent[] = [];
+  const pendingTimes: number[] = [];
+  const absentTimes: number[] = [];
+  for (const at of [...candidates].sort((a, b) => a - b)) {
+    if (settled.has(at)) continue;
+    const held = input.positionAt(at);
+    if (!(held.quantity > 0)) continue;
+    const record = byTime.get(at);
+    const usable = record && Number.isFinite(record.rate) && Number.isFinite(record.markPrice) && record.markPrice > 0;
+    if (!usable) {
+      // A successful but incomplete history page is not proof that a due
+      // settlement cost zero. Keep old gaps pending for later reconciliation.
+      pendingTimes.push(at);
+      continue;
+    }
+    events.push({
+      id: fundingEventId(input.positionId, input.symbol, at),
+      positionId: input.positionId,
+      symbol: input.symbol,
+      settlementTimeMs: at,
+      direction: held.direction,
+      quantity: held.quantity,
+      rate: record!.rate,
+      markPrice: record!.markPrice,
+      amountUsdt: fundingCashflow({ direction: held.direction, quantity: held.quantity, settlement: record! }),
+    });
+  }
+  return { events, pendingTimes, absentTimes };
+}
+
+/** Where funding settlements and each symbol's interval come from; injectable for tests. */
+export interface FundingDeps {
+  nowMs: () => number;
+  settlements: (symbol: string, fromMs: number, toMs: number) => Promise<FundingSettlement[]>;
+  intervalMinutes: (symbol: string) => Promise<number>;
 }

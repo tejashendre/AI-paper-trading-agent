@@ -1,5 +1,6 @@
 # ---- never ship secrets ----
 .env
+.env.*
 .env.local
 .env*.local
 ssh-key-*.key*

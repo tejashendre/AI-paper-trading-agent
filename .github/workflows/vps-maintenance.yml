@@ -1,9 +1,10 @@
 name: VPS Maintenance
 
-# Manual only. Two operations that need shell access on the box but should not
-# need a human at a terminal: reclaiming Docker disk, and restoring a portfolio
-# from one of the snapshots the deploy and reset workflows leave behind.
+# Daily scheduled runs compress the ledger and reclaim unused Docker artifacts.
+# Portfolio restore remains an explicit manual operation.
 on:
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       prune_docker:
@@ -26,6 +27,10 @@ on:
         required: false
         default: true
 
+concurrency:
+  group: quant-vps
+  cancel-in-progress: false
+
 jobs:
   maintenance:
     runs-on: ubuntu-latest
@@ -41,7 +46,7 @@ jobs:
           script: |
             set -eu
             cd /home/ubuntu/version-6
-            DRY="${{ inputs.dry_run }}"
+            DRY="${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}"
 
             echo "=================== DISK BEFORE ==================="
             df -h . | tail -1
@@ -134,11 +139,11 @@ jobs:
               fi
             fi
 
-            if [ "${{ inputs.prune_docker }}" = "true" ]; then
+            if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.prune_docker }}" = "true" ]; then
               echo ""
               echo "=================== DOCKER PRUNE ==================="
               # Never prunes volumes, so redis_data and ./data are untouched.
-              export PRUNE_UNTIL="${{ inputs.cache_age }}"
+              export PRUNE_UNTIL="${{ inputs.cache_age || '24h' }}"
               if [ "$DRY" = "true" ]; then
                 sh scripts/vps-maintenance.sh --dry-run
               else

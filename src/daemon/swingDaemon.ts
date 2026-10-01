@@ -1,23 +1,36 @@
 import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
-import { CRYPTO_EXECUTION_PROVIDER, SUPPORTED_ASSETS } from "../lib/market";
+import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
+import { evaluateEntryEligibility, missingClosedBars } from "../lib/trading/entryEligibility";
+import { DailyFunnel, recordFunnelDecision, VetoCode } from "../lib/trading/coverageStatus";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
 import { Trade, OpenPosition, PaperMarginMode } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
-import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
+import { settleAndPersistFunding, sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
 import { getMarketSessionState } from "../lib/trading/marketSession";
 import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
-import { fitPaperExecutionPlanToRiskBudget } from "../lib/trading/executionCostModel";
+import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile } from "../lib/trading/executionCostModel";
+import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
-import { getAssetSpec } from "../lib/trading/assetSpecs";
+import {
+  alignStopTowardEntry,
+  autonomousPositionIdentity,
+  decimalString,
+  feeScheduleFor,
+  floorOrderQty,
+  getAssetSpec,
+  migrationEntryBlock,
+  positionLegIdentity,
+  validateOrderSize,
+} from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
 
@@ -37,6 +50,8 @@ let lastEquitySampleAt = 0;
 let lastRealizedEquity: number | null = null;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
+/** Set by an operator to stop new swing entries; exits are unaffected. */
+const ENTRY_FREEZE_KEY = "swing:entryFreeze";
 
 type SwingScanAction = "HOLD" | "BLOCKED" | "ENTRY" | "SKIPPED" | "ERROR";
 type SwingDecisionSummaryKey =
@@ -58,6 +73,8 @@ interface SwingScanResult {
   asset: string;
   action: SwingScanAction;
   reason: string;
+  /** The first check that stopped this decision; null for an entry. */
+  vetoCode?: VetoCode | null;
   simpleStatus?: string;
   simpleReason?: string;
   nextStep?: string;
@@ -116,7 +133,6 @@ const updateAIPortfolio = (p: any) => PortfolioManager.updatePortfolio(p, "ai");
 const logAITrade = (t: any) => PortfolioManager.logTrade(t, "ai");
 
 const wsMesh = new WebsocketDataMesh();
-wsMesh.start();
 
 let isEntryScanning = false;
 let isExitWatching = false;
@@ -345,6 +361,24 @@ async function updateLifetimeStats(results: SwingScanResult[]): Promise<Lifetime
   return updated;
 }
 
+/** Count each asset's scan decision into its daily funnel, once per decision id. */
+async function recordCoverageFunnels(results: SwingScanResult[], startedAt: string) {
+  const redis = getRedis();
+  for (const result of results) {
+    const key = `coverage:funnel:v1:${result.asset}`;
+    const days = (await redis.get<DailyFunnel[]>(key).catch(() => null)) ?? [];
+    const next = recordFunnelDecision(days, {
+      decisionId: `${startedAt}:${result.asset}`,
+      asset: result.asset,
+      at: startedAt,
+      action: result.action,
+      vetoCode: result.vetoCode ?? null,
+      reason: result.reason,
+    });
+    if (next !== days) await redis.set(key, next).catch(() => undefined);
+  }
+}
+
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
@@ -358,6 +392,7 @@ async function saveScanSnapshot(
   const decisionSummary = summarizeDecisionStates(results);
   const blockerSummary = summarizeEntryBlockers(results);
   const lifetimeStats = await updateLifetimeStats(results);
+  await recordCoverageFunnels(results, startedAt).catch(() => undefined);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
@@ -418,6 +453,10 @@ async function runExitWatchdog() {
       try {
         const portfolio = await getAIPortfolio();
         ensurePortfolioShape(portfolio);
+        // Book any newly published funding before exit decisions use cash.
+        await settleAndPersistFunding(portfolio, "ai", "EXIT_WATCHDOG").catch((error) =>
+          Logger.warn(`[EXIT_WATCHDOG] funding settlement deferred: ${error instanceof Error ? error.message : String(error)}`)
+        );
         await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
         await sampleSwingEquity(portfolio);
       } finally {
@@ -434,6 +473,13 @@ async function runExitWatchdog() {
 async function runEntryScan() {
   if (isEntryScanning) return;
   isEntryScanning = true;
+
+  // An operator freeze (migration or rollback window) stops new entries only.
+  // The exit watchdog runs on its own timer and keeps managing positions.
+  const freeze = await getRedis().get<{ reason?: string; setBy?: string }>(ENTRY_FREEZE_KEY).catch(() => null);
+  if (freeze) {
+    await Logger.warn(`[SWING SCAN] New entries are frozen${freeze.reason ? `: ${freeze.reason}` : ""}. Evaluations and exits keep running.`);
+  }
   scanSequence += 1;
 
   let portfolioRelease: (() => Promise<void>) | null = null;
@@ -501,6 +547,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "ACTIVE_POSITION",
           reason: "Active position already open for this asset.",
           simpleStatus: `Managing active ${activePosition.direction.toLowerCase()} trade`,
           simpleReason: activePosition.thesisStatus
@@ -526,9 +573,16 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "COOLDOWN",
           reason: "Asset is cooling down after a recent swing exit.",
           timestamp,
         });
+        continue;
+      }
+
+      const migrationBlock = migrationEntryBlock(portfolio, asset);
+      if (migrationBlock) {
+        results.push({ asset, action: "SKIPPED", vetoCode: "MIGRATION_CONFLICT", reason: migrationBlock, timestamp });
         continue;
       }
 
@@ -537,6 +591,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "SESSION_CLOSED",
           reason: session.reason,
           timestamp,
         });
@@ -550,6 +605,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "SKIPPED",
+            vetoCode: "EVENT_BLACKOUT",
             reason: eventCheck.reason,
             simpleStatus: "Paused for news event",
             simpleReason: eventCheck.reason,
@@ -565,6 +621,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "FEED_UNHEALTHY",
           reason: `Feed health blocked autonomous entry: ${assetFeed.warnings[0] || assetFeed.status}.`,
           simpleStatus: "Waiting for reliable market data",
           simpleReason: assetFeed.warnings[0] || `Feed status is ${assetFeed.status.toLowerCase()}.`,
@@ -579,6 +636,22 @@ async function runEntryScan() {
       try {
         const swingSignal = await SwingEngine.analyze(asset);
 
+        if (freeze) {
+          results.push({
+            asset, action: "BLOCKED", vetoCode: "OPERATOR_FREEZE",
+            reason: `OPERATOR_FREEZE: ${freeze.reason || "new entries are paused"}`,
+            simpleStatus: "New entries temporarily paused",
+            simpleReason: "The bot continues evaluating this market and managing existing positions during release verification.",
+            nextStep: "New entries resume when the verified rollout clears the operator pause.",
+            decisionState: swingSignal.decisionState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            price: swingSignal.livePrice,
+            timestamp,
+          });
+          continue;
+        }
+
         const requiredOffPeakConviction = swingSignal.entryMode === "CONTROLLED_PROBE" ? 68 : 72;
         if (
           swingSignal.action !== "HOLD" &&
@@ -588,6 +661,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "HOLD",
+            vetoCode: "OFF_PEAK_CONVICTION",
             reason: `${session.reason} Conviction ${swingSignal.finalConviction} is below the ${requiredOffPeakConviction} required outside peak hours.`,
             simpleStatus: "Waiting for peak liquidity window",
             simpleReason: session.reason,
@@ -611,10 +685,17 @@ async function runEntryScan() {
         }
 
         if (swingSignal.action === "HOLD") {
+          // Short history explains a HOLD before anything the signal says.
+          const warmUp = missingClosedBars(swingSignal.closedBarCounts ?? { m15: 0, h1: 0, h4: 0, w1: 0 });
           results.push({
             asset,
             action: "HOLD",
-            reason: swingSignal.reasoning,
+            vetoCode: warmUp.length > 0
+              ? "WARMING_UP"
+              : swingSignal.decisionState === "BLOCKED_DATA"
+                ? "SIGNAL_UNAVAILABLE"
+                : swingSignal.riskMode === "Watch Only" ? "LEARNING" : "NO_SETUP",
+            reason: warmUp.length > 0 ? `${warmUp.join("; ")}. ${swingSignal.reasoning}` : swingSignal.reasoning,
             simpleStatus: swingSignal.simpleStatus,
             simpleReason: swingSignal.simpleReason,
             nextStep: swingSignal.nextStep,
@@ -652,31 +733,46 @@ async function runEntryScan() {
           continue;
         }
 
-        const cryptoAsset = SUPPORTED_ASSETS[asset]?.category === "crypto";
-        const marketDataAgeMs = Date.now() - new Date(swingSignal.marketDataTimestamp).getTime();
-        const marketIdentityValid = cryptoAsset
-          ? swingSignal.marketDataVenue === CRYPTO_EXECUTION_PROVIDER &&
-            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].bybitLinearSymbol &&
-            Number.isFinite(marketDataAgeMs) && marketDataAgeMs >= 0 && marketDataAgeMs <= 10_000
-          : swingSignal.marketDataVenue === "YAHOO" &&
-            swingSignal.marketDataInstrument === SUPPORTED_ASSETS[asset].yahooTicker;
-        if (!marketIdentityValid) {
-          const reason = `Selected execution instrument provenance is invalid or stale (${swingSignal.marketDataProvider}/${swingSignal.marketDataInstrument}).`;
+        // One data decision for every asset: provenance, per-field freshness,
+        // metadata and warm-up. The same object is handed to admission.
+        const venueMetadata = await MarketService.getInstrumentMetadata(asset).catch(() => null);
+        const dataEligibility = evaluateEntryEligibility({
+          instrument: entryInstrumentFor(asset),
+          metadata: venueMetadata,
+          quote: swingSignal.marketQuote ?? null,
+          closedBarCounts: swingSignal.closedBarCounts ?? { m15: 0, h1: 0, h4: 0, w1: 0 },
+          nowMs: Date.now(),
+          // Swing entries may use a fresh REST quote; no faster branch exists here.
+          fastExecution: false,
+          depthAvailable: swingSignal.orderbookImbalanceRatio !== undefined,
+        });
+        if (!dataEligibility.allowed) {
+          const reason = `Entry data not eligible (${dataEligibility.state}): ${dataEligibility.reasons.join("; ")}`;
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: dataEligibility.state === "WARMING_UP" ? "WARMING_UP" : "DATA_NOT_ELIGIBLE",
             reason,
-            simpleStatus: "Market venue verification blocked this trade",
+            simpleStatus: dataEligibility.state === "WARMING_UP"
+              ? "Waiting for enough completed price history"
+              : "Market data check blocked this trade",
             simpleReason: reason,
-            nextStep: "The bot will retry after the selected instrument feed is current and internally consistent.",
-            decisionState: "BLOCKED_DATA",
+            nextStep: "The bot will retry once the instrument's data is current, complete and internally consistent.",
+            decisionState: dataEligibility.state,
             dataQuality: swingSignal.dataQuality,
             finalConviction: swingSignal.finalConviction,
             timestamp,
           });
-          await Logger.warn(`[SWING BLOCK] ${asset} market provenance rejected: ${reason}`);
+          await Logger.warn(`[SWING BLOCK] ${asset} data eligibility: ${reason}`);
           continue;
         }
+        // Eligibility guarantees usable metadata here. A stop or target that
+        // is not on the venue tick could not be placed, so both move onto it
+        // toward entry, which can only reduce risk and promised reward. Every
+        // later step (admission, plan, position, trades, ledger) uses these.
+        const metadata = venueMetadata!;
+        swingSignal.stopLoss = alignStopTowardEntry({ price: swingSignal.stopLoss, entryPrice: swingSignal.entryPrice, metadata });
+        swingSignal.takeProfit = alignStopTowardEntry({ price: swingSignal.takeProfit, entryPrice: swingSignal.entryPrice, metadata });
 
         const isShort = swingSignal.action === "SWING_SHORT";
         const portfolioGuard = PortfolioGuards.evaluateNewSwing({
@@ -693,6 +789,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "PORTFOLIO_GUARD",
             reason: portfolioGuard.reason,
             simpleStatus: "Portfolio exposure blocked this trade",
             simpleReason: portfolioGuard.reason,
@@ -737,7 +834,7 @@ async function runEntryScan() {
           (isShort && swingSignal.stopLoss <= swingSignal.entryPrice);
         if (invalidStop) {
           results.push({
-            asset, action: "BLOCKED", reason: "Stop loss is on wrong side of entry price",
+            asset, action: "BLOCKED", vetoCode: "INVALID_STOP", reason: "Stop loss is on wrong side of entry price",
             simpleStatus: "Invalid stop loss", simpleReason: "Stop loss would trigger immediately — skipping.",
             nextStep: "Waiting for better data quality.", decisionState: "BLOCKED_RISK",
             score: swingSignal.score, timestamp,
@@ -775,12 +872,14 @@ async function runEntryScan() {
           reasoning: swingSignal.reasoning,
           strategyType: "swing",
           requestedMarginUsd,
+          dataEligibility,
         });
 
         if (!admission.approved) {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "ADMISSION",
             reason: admission.reason,
             simpleStatus: "Trade blocked for safety",
             simpleReason: admission.reason,
@@ -820,14 +919,42 @@ async function runEntryScan() {
           continue;
         }
 
-        const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+        // Observed liquidity: no observation means no entry. The capacity cap
+        // can only shrink the size, and the modeled spread is widened to what
+        // the book actually shows.
+        const side = isShort ? "SELL" : "BUY";
+        const liquidity = await MarketService.getLiquiditySnapshot(asset).catch(() => null);
+        const capacityCapUsdt = capacityNotionalCap({ side, liquidity });
+        const blockVenue = async (reason: string, decisionState: string) => {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            vetoCode: decisionState === "BLOCKED_VENUE_SIZE" ? "VENUE_SIZE" : "LIQUIDITY",
+            reason,
+            simpleStatus: "Venue liquidity or size rules blocked this trade",
+            simpleReason: reason,
+            nextStep: "The bot will retry when the order fits the venue's size rules and observed liquidity.",
+            decisionState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            timestamp,
+          });
+          await Logger.warn(`[SWING BLOCK] ${asset} ${reason}`);
+        };
+        if (capacityCapUsdt === null || !liquidity) {
+          await blockVenue("LIQUIDITY_UNAVAILABLE: no usable order book or turnover observation for this instrument.", "BLOCKED_LIQUIDITY");
+          continue;
+        }
+        // True when the book, not the risk budget, limits the order size.
+        const capacityBound = capacityCapUsdt / swingSignal.entryPrice < admission.amount;
+        const catalogProfile = getExecutionCostProfile(asset);
+        const observedHalfSpreadBps = ((liquidity.bestAsk - liquidity.bestBid) / ((liquidity.bestAsk + liquidity.bestBid) / 2)) * 5_000;
+        const planInput = {
           asset,
-          direction: isShort ? "SHORT" : "LONG",
+          direction: (isShort ? "SHORT" : "LONG") as "SHORT" | "LONG",
           entryPrice: swingSignal.entryPrice,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
-          amount: admission.amount,
-          riskBudgetUsd: admission.riskAmountUsd,
           context: {
             assetMode: swingSignal.assetMode,
             dataQuality: swingSignal.dataQuality,
@@ -835,14 +962,63 @@ async function runEntryScan() {
             liquidityState: swingSignal.liquidityState,
             orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           },
+          profile: { ...catalogProfile, halfSpreadBps: Math.max(catalogProfile.halfSpreadBps, observedHalfSpreadBps) },
+        };
+        const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+          ...planInput,
+          amount: Math.min(admission.amount, capacityCapUsdt / swingSignal.entryPrice),
+          riskBudgetUsd: admission.riskAmountUsd,
         });
-        const executionPlan = fittedExecution.plan;
+
+        // Venue lot rules on the final size: floor to the step, never round up.
+        const venueQuantity = floorOrderQty(decimalString(fittedExecution.plan.entry.amount), metadata);
+        const sizeCheck = validateOrderSize({
+          quantity: venueQuantity,
+          price: fittedExecution.plan.entry.fillPrice,
+          metadata,
+          maxNotionalUsdt: admission.notionalUsd * 1.01,
+          stopPrice: swingSignal.stopLoss,
+          maxLossUsdt: admission.riskAmountUsd,
+        });
+        if (!sizeCheck.allowed) {
+          await blockVenue(
+            capacityBound
+              ? `CAPACITY_CAP: observed liquidity allows at most ${capacityCapUsdt.toFixed(2)} USDT; ${sizeCheck.reasons.join("; ")}`
+              : sizeCheck.reasons.join("; "),
+            capacityBound ? "BLOCKED_LIQUIDITY" : "BLOCKED_VENUE_SIZE"
+          );
+          continue;
+        }
+        const executionPlan = Number(venueQuantity) === fittedExecution.plan.entry.amount
+          ? fittedExecution.plan
+          : buildPaperExecutionPlan({ ...planInput, amount: Number(venueQuantity) });
+        const capacity = evaluateFillCapacity({
+          side,
+          quantity: executionPlan.entry.amount,
+          entryPrice: executionPlan.entry.fillPrice,
+          stopPrice: swingSignal.stopLoss,
+          impactBps: executionPlan.entry.slippageBps,
+          liquidity,
+        });
+        if (!capacity.allowed) {
+          await blockVenue(capacity.reasons.join("; "), "BLOCKED_LIQUIDITY");
+          continue;
+        }
         const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
         const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
-        const executionFailure = executionPlan.netRewardUsd <= 0
-          ? "Modeled execution costs eliminate the target reward."
-          : executionPlan.netRewardRiskRatio < minimumExecutionRewardRisk
-            ? `Final modeled reward/risk ${executionPlan.netRewardRiskRatio.toFixed(2)} is below ${minimumExecutionRewardRisk.toFixed(2)}.`
+        // Projected carry for admission only. Assumption: the position pays
+        // the larger of the current funding rate's magnitude and 0.01% at
+        // every boundary for one day. Realized funding is booked from the
+        // venue's published settlements, never from this estimate.
+        const projectedCarryUsdt = executionPlan.entry.notionalUsd *
+          Math.max(Math.abs(Number(swingSignal.fundingRate ?? 0)), 0.0001) *
+          ((24 * 60) / metadata.fundingIntervalMinutes);
+        const rewardAfterCarry = executionPlan.netRewardUsd - projectedCarryUsdt;
+        const rewardRiskAfterCarry = rewardAfterCarry / (executionPlan.netLossUsd + projectedCarryUsdt);
+        const executionFailure = rewardAfterCarry <= 0
+          ? "Modeled execution costs and projected funding eliminate the target reward."
+          : rewardRiskAfterCarry < minimumExecutionRewardRisk
+            ? `Final modeled reward/risk after projected funding ${rewardRiskAfterCarry.toFixed(2)} is below ${minimumExecutionRewardRisk.toFixed(2)}.`
             : executionPlan.netLossUsd > admission.riskAmountUsd * 1.01
               ? `Modeled stop loss $${executionPlan.netLossUsd.toFixed(2)} exceeds the approved $${admission.riskAmountUsd.toFixed(2)} risk budget.`
               : finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd
@@ -851,10 +1027,21 @@ async function runEntryScan() {
                 ? "Insufficient free cash after the modeled entry fee."
                 : null;
 
+        // A size too small to be useful because the book capped it is a
+        // liquidity refusal, not a cost one.
+        const liquidityLimited = capacityBound && finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd;
+        if (executionFailure && liquidityLimited) {
+          await blockVenue(
+            `CAPACITY_CAP: observed liquidity allows at most ${capacityCapUsdt.toFixed(2)} USDT; ${executionFailure}`,
+            "BLOCKED_LIQUIDITY"
+          );
+          continue;
+        }
         if (executionFailure) {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "EXECUTION_COST",
             reason: executionFailure,
             simpleStatus: "Execution economics blocked this trade",
             simpleReason: executionFailure,
@@ -907,6 +1094,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "PORTFOLIO_RISK_BUDGET",
             reason: portfolioBudget.reason,
             simpleStatus: "Portfolio circuit breaker blocked this trade",
             simpleReason: portfolioBudget.reason,
@@ -946,6 +1134,27 @@ async function runEntryScan() {
           continue;
         }
 
+        // Frozen identity and economics for the life of the position. Built
+        // before any cash moves, so an invalid risk basis skips the entry
+        // instead of leaving a half-written position.
+        let identity: ReturnType<typeof autonomousPositionIdentity>;
+        try {
+          identity = autonomousPositionIdentity({
+            instrument: entryInstrumentFor(asset),
+            initialRiskUsdt: executionPlan.netLossUsd,
+            costModelVersion: executionPlan.modelVersion,
+          });
+        } catch (error) {
+          results.push({
+            asset,
+            action: "SKIPPED",
+            vetoCode: "IDENTITY",
+            reason: `Position identity unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            timestamp,
+          });
+          continue;
+        }
+
         const entryTradeId = crypto.randomUUID();
         await ExecutionLedger.record({
           type: "ENTRY_APPROVED",
@@ -953,6 +1162,7 @@ async function runEntryScan() {
           asset,
           decisionId: entryTradeId,
           tradeId: entryTradeId,
+          positionId: identity.positionId,
           payload: {
             marketData: {
               signalPrice: swingSignal.signalPrice,
@@ -973,6 +1183,10 @@ async function runEntryScan() {
             admission,
             portfolioBudget,
             executionPlan,
+            projectedCarry: {
+              usdt: projectedCarryUsdt,
+              assumption: "max(|current funding rate|, 0.01%) paid at every boundary for 24h; admission only",
+            },
           },
         });
 
@@ -1050,14 +1264,19 @@ async function runEntryScan() {
           expectedNetRewardUsd: executionPlan.netRewardUsd,
           expectedNetLossUsd: executionPlan.netLossUsd,
           carryCostPaid: 0,
+          fillLiquidity: capacity.snapshot,
+          feeScheduleVersion: feeScheduleFor(identity.instrument).version,
+          ...identity,
         };
 
+        newPos.quantityLegs = [{ atMs: Date.parse(newPos.entryTime), quantityDelta: newPos.amount }];
         portfolio.openPositions[asset] = newPos;
 
         const entryTrade: Trade = {
           id: entryTradeId,
           timestamp: new Date().toISOString(),
           asset,
+          ...positionLegIdentity(newPos),
           action: isShort ? "SHORT" : "BUY",
           direction: isShort ? "SHORT" : "LONG",
           amount: executionPlan.entry.amount,
@@ -1113,6 +1332,8 @@ async function runEntryScan() {
           spreadCostUsd: executionPlan.entry.spreadCostUsd,
           slippageCostUsd: executionPlan.entry.slippageCostUsd,
           gapCostUsd: executionPlan.entry.gapCostUsd,
+          fillLiquidity: capacity.snapshot,
+          feeScheduleVersion: newPos.feeScheduleVersion,
           reasoning: newPos.reasoning,
         };
 
@@ -1125,12 +1346,14 @@ async function runEntryScan() {
           asset,
           decisionId: entryTradeId,
           tradeId: entryTradeId,
+          positionId: identity.positionId,
           payload: { trade: entryTrade, position: newPos, portfolioBudget, executionPlan },
         });
 
         results.push({
           asset,
           action: "ENTRY",
+          vetoCode: null,
           reason: newPos.reasoning,
           simpleStatus: swingSignal.simpleStatus,
           simpleReason: swingSignal.simpleReason,
@@ -1181,6 +1404,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "ERROR",
+          vetoCode: "ERROR",
           reason: error instanceof Error ? error.message : String(error),
           timestamp,
         });
@@ -1234,38 +1458,48 @@ async function runEntryScan() {
   }
 }
 
-console.log("Starting V6 Institutional HTF Swing Daemon...");
-// The entry scan reads its portfolio snapshot at the very start and mutates
-// it for the rest of the cycle, so the whole scan must hold the lock — not
-// just the final write. Exit checks still run first inside the scan itself
-// (ENTRY_SCAN_PREFLIGHT sweep), so stops are not starved while it holds it.
-const runEntryScanLocked = () => withPortfolioLock(runEntryScan);
-runEntryScanLocked();
+/** Start the stream, scans and watchdog. Only run when this file is the entry point. */
+function startSwingDaemon() {
+  console.log("Starting V6 Institutional HTF Swing Daemon...");
+  wsMesh.start();
+  // The entry scan reads its portfolio snapshot at the very start and mutates
+  // it for the rest of the cycle, so the whole scan must hold the lock, not
+  // just the final write. Exit checks still run first inside the scan itself
+  // (ENTRY_SCAN_PREFLIGHT sweep), so stops are not starved while it holds it.
+  const runEntryScanLocked = () => withPortfolioLock(runEntryScan);
+  runEntryScanLocked();
 
-const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
-const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
-const controlIntervalId = setInterval(async () => {
-  if (isEntryScanning) return;
-  try {
-    const request = await consumeSwingScanRequest();
-    if (!request) return;
-    await Logger.info(`[SCAN CONTROL] Consuming ${request.requestedBy} request for ${request.targetAsset}.`);
-    await runEntryScanLocked();
-  } catch (error) {
-    await Logger.error(`[SCAN CONTROL] Failed to consume scan request: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 5_000);
+  const entryIntervalId = setInterval(runEntryScanLocked, ENTRY_SCAN_INTERVAL_MS);
+  const exitWatchdogIntervalId = setInterval(runExitWatchdog, EXIT_WATCHDOG_INTERVAL_MS);
+  const controlIntervalId = setInterval(async () => {
+    if (isEntryScanning) return;
+    try {
+      const request = await consumeSwingScanRequest();
+      if (!request) return;
+      await Logger.info(`[SCAN CONTROL] Consuming ${request.requestedBy} request for ${request.targetAsset}.`);
+      await runEntryScanLocked();
+    } catch (error) {
+      await Logger.error(`[SCAN CONTROL] Failed to consume scan request: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 5_000);
 
-const shutdown = async (signal: string) => {
-  console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
-  clearInterval(entryIntervalId);
-  clearInterval(exitWatchdogIntervalId);
-  clearInterval(controlIntervalId);
-  try {
-    wsMesh.stop();
-  } catch {}
-  process.exit(0);
-};
+  const shutdown = async (signal: string) => {
+    console.log(`\nReceived ${signal}. Shutting down swingDaemon gracefully...`);
+    clearInterval(entryIntervalId);
+    clearInterval(exitWatchdogIntervalId);
+    clearInterval(controlIntervalId);
+    try {
+      wsMesh.stop();
+    } catch {}
+    process.exit(0);
+  };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+// `npm run daemon:swing` runs this file directly; importing it (the offline
+// integration test) only exposes the scan functions without starting loops.
+if (require.main === module) startSwingDaemon();
+
+export { runEntryScan, runExitWatchdog, withPortfolioLock };

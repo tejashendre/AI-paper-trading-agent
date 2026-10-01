@@ -129,7 +129,7 @@ for service in quant-dashboard swing-daemon redis; do
 done
 echo "Required services are running."
 
-for container in quant-redis quant-dashboard quant-swing-daemon; do
+for container in quant-redis quant-dashboard quant-swing-daemon quant-xsec-daemon; do
   attempt=0
   while :; do
     health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$container" 2>/dev/null || true)"
@@ -140,21 +140,21 @@ for container in quant-redis quant-dashboard quant-swing-daemon; do
     sleep 5
   done
 done
-echo "Healthchecks passed for Redis, dashboard, and swing daemon."
+echo "Healthchecks passed for Redis, dashboard, swing daemon, and XSEC daemon."
 
 section "Runtime Source Parity"
 HOST_MANIFEST="$(node scripts/source-manifest.mjs)"
 echo "Host manifest: $HOST_MANIFEST"
-for container in quant-dashboard quant-swing-daemon; do
+for container in quant-dashboard quant-swing-daemon quant-xsec-daemon; do
   CONTAINER_MANIFEST="$(docker exec "$container" node scripts/source-manifest.mjs)"
   echo "$container manifest: $CONTAINER_MANIFEST"
   [ "$CONTAINER_MANIFEST" = "$HOST_MANIFEST" ] || fail "$container runtime files do not match the host Git checkout."
 done
-echo "Every runtime source file matches across Git checkout and both application containers."
+echo "Every runtime source file matches across Git checkout and all application containers."
 
 if [ -n "$EXPECTED_COMMIT" ]; then
   section "Image Revision"
-  for container in quant-dashboard quant-swing-daemon; do
+  for container in quant-dashboard quant-swing-daemon quant-xsec-daemon; do
     IMAGE_COMMIT="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$container")"
     echo "$container image revision: $IMAGE_COMMIT"
     case "$IMAGE_COMMIT" in
@@ -166,6 +166,20 @@ fi
 
 section "Execution Ledger"
 docker compose exec -T quant-dashboard npm run ledger:verify
+
+section "Bybit Instruments"
+# Read-only and offline: the deployed image maps all nine assets to Bybit
+# linear contracts and names each fee schedule's evidence status. It uses only
+# src/, which the image ships, and opens no network or Redis connection.
+docker compose exec -T swing-daemon tsx -e '
+const { CONFIGURED_ASSETS, getConfiguredInstrument } = require("./src/lib/trading/instrumentRegistry");
+const { feeScheduleFor } = require("./src/lib/trading/assetSpecs");
+for (const asset of CONFIGURED_ASSETS) {
+  const instrument = getConfiguredInstrument(asset);
+  console.log(asset, instrument.instrumentVersion, feeScheduleFor(instrument).status);
+}
+if (CONFIGURED_ASSETS.length !== 9) process.exit(1);
+' || fail "The deployed image does not map the nine assets to Bybit instruments."
 
 if [ -n "$STATUS_URL" ]; then
   if [ -n "$EXPECTED_COMMIT" ]; then

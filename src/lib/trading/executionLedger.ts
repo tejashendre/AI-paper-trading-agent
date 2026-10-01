@@ -5,7 +5,7 @@ import zlib from "zlib";
 import { getRedis } from "@/lib/redis";
 import { EXECUTION_COST_MODEL_VERSION } from "./executionCostModel";
 
-export const TRADING_STRATEGY_VERSION = "swing-v4.2.0-2026-08-04";
+export const TRADING_STRATEGY_VERSION = "swing-v4.3.0-2026-10-01";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =
@@ -17,15 +17,21 @@ export type ExecutionLedgerEventType =
   | "EXIT_FILLED"
   | "SCALE_IN_FILLED"
   | "PARTIAL_EXIT_FILLED"
+  | "FUNDING_SETTLED"
+  | "POSITION_COMPLETED"
   | "RISK_CIRCUIT_BREAKER"
   | "SYSTEM_ERROR";
 
 export interface ExecutionLedgerEventInput {
+  /** Immutable id for an event that may be retried; generated when absent. */
+  id?: string;
   type: ExecutionLedgerEventType;
   source: string;
   asset?: string;
   decisionId?: string;
   tradeId?: string;
+  /** Position the event belongs to. Absent on events written before position identity existed. */
+  positionId?: string;
   timestamp?: string;
   payload: unknown;
 }
@@ -39,6 +45,7 @@ export interface ExecutionLedgerRecord {
   asset?: string;
   decisionId?: string;
   tradeId?: string;
+  positionId?: string;
   strategyVersion: string;
   executionCostModelVersion: string;
   previousHash: string | null;
@@ -242,13 +249,16 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
   const previous = readHead(directory, filePath);
   const unsigned: Omit<ExecutionLedgerRecord, "hash"> = {
     schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
-    id: crypto.randomUUID(),
+    id: input.id ?? crypto.randomUUID(),
     timestamp,
     type: input.type,
     source: input.source,
     asset: input.asset,
     decisionId: input.decisionId,
     tradeId: input.tradeId,
+    // Undefined is dropped by JSON.stringify, so records without a position
+    // hash exactly as they did before this field existed.
+    positionId: input.positionId,
     strategyVersion: TRADING_STRATEGY_VERSION,
     executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
     previousHash: previous?.hash || null,
@@ -302,7 +312,20 @@ export class ExecutionLedger {
     }
   }
 
-  static verify(directory = ledgerDirectory()): ExecutionLedgerVerification {
+  /**
+   * Whether an event id is already recorded in any day file from `sinceIso`'s
+   * day onward. Used before re-appending a retried event, so a crash between
+   * append and acknowledgement never duplicates it.
+   */
+  static hasEvent(id: string, sinceIso: string, directory = ledgerDirectory()): boolean {
+    const since = sinceIso.slice(0, 10);
+    const needle = `"id":${JSON.stringify(id)}`;
+    return dayFiles(directory)
+      .filter((file) => file.slice(0, 10) >= since)
+      .some((file) => readDayFile(directory, file).includes(needle));
+  }
+
+  static verify(directory = ledgerDirectory(), throughHash?: string): ExecutionLedgerVerification {
     if (!fs.existsSync(directory)) {
       return { valid: true, files: 0, events: 0, headHash: null, errors: [] };
     }
@@ -327,12 +350,18 @@ export class ExecutionLedger {
             errors.push(`${file}:${index + 1} event hash mismatch`);
           }
           previousHash = hash;
+          // Maintenance can verify the same immutable prefix even if the
+          // running daemons append new records during compression.
+          if (throughHash && hash === throughHash) {
+            return { valid: errors.length === 0, files: files.indexOf(file) + 1, events, headHash: hash, errors };
+          }
         } catch (error) {
           errors.push(`${file}:${index + 1} invalid JSON (${error instanceof Error ? error.message : String(error)})`);
         }
       }
     }
 
+    if (throughHash) errors.push("Requested ledger head was not found");
     return {
       valid: errors.length === 0,
       files: files.length,

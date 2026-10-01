@@ -56,6 +56,14 @@ interface StatusData extends RawRecord {
     assets?: Array<{ asset?: string; status?: string; score?: number }>;
     summary?: { good?: number; degraded?: number; bad?: number };
   };
+  assetCoverage?: Array<{
+    asset?: string;
+    symbol?: string;
+    dataReady?: boolean;
+    riskAllowed?: boolean;
+    primaryVeto?: string | null;
+    completedPositions?: number;
+  }>;
   learningDigest?: {
     headline?: string;
     totalEvaluated?: number;
@@ -278,6 +286,19 @@ async function main(): Promise<void> {
     kv("Bad", styled(String(summary.bad ?? 0), (summary.bad ?? 0) > 0 ? c.red : c.green));
   } else {
     kv("Status", styled("No feed health data returned", c.dim));
+  }
+
+  // Data health is not permission to trade: each row shows the first check
+  // that stopped the asset's latest decision.
+  section("Asset Coverage");
+  const coverage = status.assetCoverage ?? [];
+  if (coverage.length > 0) {
+    for (const row of coverage) {
+      const verdict = row.primaryVeto ? styled(row.primaryVeto, row.dataReady ? c.yellow : c.red) : styled("entry possible", c.green);
+      kv(`${row.asset} (${row.symbol})`, `${verdict} ${styled(`| data ${row.dataReady ? "ready" : "not ready"} | ${row.completedPositions ?? 0} completed position(s)`, c.dim)}`);
+    }
+  } else {
+    kv("Status", styled("No coverage rows returned", c.dim));
   }
 
   section("Learning");
