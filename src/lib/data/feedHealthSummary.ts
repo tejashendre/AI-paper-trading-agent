@@ -28,7 +28,7 @@ export interface AssetFeedHealthSummary {
    * The same data-eligibility decision the daemon applies to a new entry.
    * Data only: strategy, cost and risk checks still decide whether a trade happens.
    */
-  dataEligibility: Pick<EntryEligibility, "allowed" | "state" | "reasons">;
+  dataEligibility: Pick<EntryEligibility, "allowed" | "state" | "reasons"> & { quoteEventTimeMs?: number | null };
   updatedAt: string;
 }
 
@@ -113,7 +113,7 @@ async function dataEligibilityFor(asset: string): Promise<AssetFeedHealthSummary
     fastExecution: false,
     depthAvailable: true,
   });
-  return { allowed, state, reasons };
+  return { allowed, state, reasons, quoteEventTimeMs: quote?.eventTimeMs ?? null };
 }
 
 function summarizeReport(

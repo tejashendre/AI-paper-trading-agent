@@ -2457,11 +2457,11 @@ function DashboardContent({ secret }: { secret: string }) {
 
               <div className="grid grid-cols-3 gap-2 mt-4">
                 <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Fast Ready</div>
+                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Fast Feeds OK</div>
                   <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.fastEligible || 0}</div>
                 </div>
                 <div className={`p-2 rounded-lg border ${bgSubCard}`}>
-                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Swing Ready</div>
+                  <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Swing Feeds OK</div>
                   <div className={`text-sm font-bold font-mono ${textPrimary}`}>{data.feedHealthMatrix.summary?.swingEligible || 0}</div>
                 </div>
                 <div className={`p-2 rounded-lg border ${bgSubCard}`}>
@@ -2493,6 +2493,48 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 ))}
               </div>
+
+              {(data.assetCoverage || []).length > 0 && (
+                <div className="mt-5">
+                  <h3 className={`text-[10px] font-bold font-mono uppercase tracking-wider ${textSub}`}>Can each asset trade?</h3>
+                  <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+                    Healthy data is only the first check. Setup, costs and risk can still stop an entry; the first check that stopped the latest scan is shown.
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {(data.assetCoverage || []).map((row: any) => {
+                      const vetoCode = row.primaryVeto ? String(row.primaryVeto).split(":")[0] : null;
+                      const vetoText = row.primaryVeto ? String(row.primaryVeto).split(": ").slice(1).join(": ") : null;
+                      return (
+                        <div key={row.asset} className={`p-2.5 rounded-lg border ${bgSubCard}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className={`text-xs font-bold font-mono ${textPrimary}`}>
+                              {row.asset} <span className={`font-normal ${textMuted}`}>{row.symbol}</span>
+                            </div>
+                            <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${dataHealthBadgeClass(!vetoCode ? "GOOD" : row.dataReady ? "DEGRADED" : "BAD", isDark)}`}>
+                              {vetoCode ? vetoCode.replaceAll("_", " ") : "ENTRY POSSIBLE"}
+                            </span>
+                          </div>
+                          <div className={`grid grid-cols-2 gap-1 mt-2 text-[8px] font-mono ${textMuted}`}>
+                            <span>Data: <b className={textPrimary}>{row.dataReady ? "Ready" : "Not ready"}</b></span>
+                            <span>Setup: <b className={textPrimary}>{row.strategyReady ? "Found" : "None"}</b></span>
+                            <span>Costs: <b className={textPrimary}>{row.costReady ? "Pass" : "Not passed"}</b></span>
+                            <span>Risk: <b className={textPrimary}>{row.riskAllowed ? "Allowed" : "Blocked"}</b></span>
+                            <span>7d: <b className={textPrimary}>{row.funnel7d?.evaluations ?? 0} scans, {row.funnel7d?.candidates ?? 0} setups, {row.funnel7d?.fills ?? 0} fills</b></span>
+                            <span>Completed positions: <b className={textPrimary}>{row.completedPositions}</b></span>
+                          </div>
+                          {vetoText && <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>{vetoText}</p>}
+                          {(row.limitations || []).map((note: string) => (
+                            <p key={note} className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>{note.split(": ").slice(1).join(": ")}</p>
+                          ))}
+                          {(row.notes || []).slice(2).map((note: string) => (
+                            <p key={note} className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>{note}</p>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {(data.feedHealthMatrix.plainFindings || []).length > 0 && (
                 <div className="mt-4 space-y-1">

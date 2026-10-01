@@ -65,8 +65,36 @@ interface BookResponse {
   costModel: CostVerdict | null;
   edgeCheck: EdgeCheck | null;
   capacity: Capacity | null;
+  risk?: {
+    state: "ACTIVE" | "ENTRY_HALT" | "REDUCE_ONLY" | "SHADOW";
+    reasons: string[];
+    openPositions: number;
+    grossExposureUsdt: number;
+    currentDrawdownPercent: number;
+    lifetimeMaxDrawdownPercent: number;
+    lastUnwind: { at: string; executed: number; detail: string } | null;
+    edgeVerdict: string | null;
+    edgeReviewedAt: string | null;
+  };
+  shadow?: {
+    label: "SHADOW_ONLY";
+    explanation: string;
+    fills: number;
+    rebalances: number;
+    openPositions: number;
+    feesUsdt: number;
+    fundingUsdt: number;
+    hypotheticalRealizedPnlUsdt: number;
+    hypotheticalUnrealizedPnlUsdt: number;
+  } | null;
   error?: string;
 }
+
+const RISK_STATE_TEXT: Record<string, string> = {
+  ENTRY_HALT: "No new positions; existing ones are still managed",
+  REDUCE_ONLY: "Drawdown breaker hit: unwinding in stages, no new risk",
+  SHADOW: "Halted and flat: trading on paper-only shadow evidence",
+};
 
 export default function CrossSectionalBook({ isDark, plainLanguage = false }: { isDark: boolean; plainLanguage?: boolean }) {
   const [data, setData] = useState<BookResponse | null>(null);
@@ -161,11 +189,43 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
           )}
         </div>
         <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border whitespace-nowrap ${
-          isDark ? "border-emerald-900/40 text-emerald-300 bg-emerald-950/20" : "border-emerald-200 text-emerald-700 bg-emerald-50"
+          data.risk && data.risk.state !== "ACTIVE"
+            ? isDark ? "border-amber-900/50 text-amber-300 bg-amber-950/25" : "border-amber-200 text-amber-700 bg-amber-50"
+            : isDark ? "border-emerald-900/40 text-emerald-300 bg-emerald-950/20" : "border-emerald-200 text-emerald-700 bg-emerald-50"
         }`}>
-          {exposure.openPositions > 0 ? "ACTIVE" : "FLAT"}
+          {data.risk && data.risk.state !== "ACTIVE" ? data.risk.state.replace("_", " ") : exposure.openPositions > 0 ? "ACTIVE" : "FLAT"}
         </span>
       </div>
+
+      {data.risk && data.risk.state !== "ACTIVE" && (
+        <div className={`mt-3 p-2.5 rounded-lg border ${isDark ? "border-amber-900/50 bg-amber-950/20" : "border-amber-200 bg-amber-50"}`}>
+          <div className={`text-[10px] font-bold font-mono ${textPrimary}`}>{RISK_STATE_TEXT[data.risk.state]}</div>
+          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1 mt-1.5 text-[8px] font-mono ${textMuted}`}>
+            <span>Open exposure: <b className={textPrimary}>${data.risk.grossExposureUsdt.toFixed(0)}</b></span>
+            <span>Drawdown now: <b className={textPrimary}>{data.risk.currentDrawdownPercent.toFixed(2)}%</b></span>
+            <span>Worst ever: <b className={textPrimary}>{data.risk.lifetimeMaxDrawdownPercent.toFixed(2)}%</b></span>
+            <span>Edge reviewed: <b className={textPrimary}>{data.risk.edgeReviewedAt ? new Date(data.risk.edgeReviewedAt).toLocaleString() : "never"}</b></span>
+          </div>
+          {data.risk.lastUnwind && (
+            <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>
+              Last unwind attempt {new Date(data.risk.lastUnwind.at).toLocaleTimeString()}: {data.risk.lastUnwind.executed} fill(s). {data.risk.lastUnwind.detail}
+            </p>
+          )}
+        </div>
+      )}
+
+      {data.shadow && (
+        <div className={`mt-2 p-2.5 rounded-lg border border-dashed ${bgSub}`}>
+          <div className={`text-[9px] font-bold font-mono uppercase ${textMuted}`}>Shadow book (no capital)</div>
+          <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>{data.shadow.explanation}</p>
+          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1 mt-1.5 text-[8px] font-mono ${textMuted}`}>
+            <span>Rebalances: <b className={textPrimary}>{data.shadow.rebalances}</b></span>
+            <span>Fills: <b className={textPrimary}>{data.shadow.fills}</b></span>
+            <span>Fees and funding: <b className={textPrimary}>${(data.shadow.feesUsdt + data.shadow.fundingUsdt).toFixed(2)}</b></span>
+            <span>Hypothetical result: <b className={textPrimary}>{money(data.shadow.hypotheticalRealizedPnlUsdt + data.shadow.hypotheticalUnrealizedPnlUsdt)}</b></span>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
         <div className={`p-2 rounded-lg border ${bgSub}`}>
