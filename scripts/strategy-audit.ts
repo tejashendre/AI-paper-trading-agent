@@ -1345,8 +1345,10 @@ function auditProductionRegressions(): AuditResult[] {
   const publicBounds = [backtestSource, chartSource].every((source) => source.includes("parsedLimit > 1_000"));
   const manualFeeSafe = manualSource.includes("Number.isFinite(usdAmount)") &&
     manualSource.includes("const netPnl = pnl - entryFee - exitFee");
-  const daemonHealth = composeSource.includes("quant-swing-daemon") && composeSource.includes("swing:lastScan:ai");
-  const deploymentWaitsForHealth = deployCheckSource.includes('-ge 36') && deployCheckSource.includes('sleep 5');
+  const daemonHealth = composeSource.includes("quant-swing-daemon") && composeSource.includes("swing:lastScan:ai") &&
+    composeSource.includes("s?.runtimeCommit===process.env.APP_COMMIT_SHA") && composeSource.includes("age<180000");
+  const healthAttempts = Number(deployCheckSource.match(/\[ "\$attempt" -ge (\d+) \]/)?.[1] ?? 0);
+  const deploymentWaitsForHealth = healthAttempts * 5 >= 300 && deployCheckSource.includes('sleep 5');
   const recoverySafe = portfolioSource.includes("function isValidPortfolio") &&
     portfolioSource.includes("fs.renameSync(temporaryPath, filePath)") &&
     portfolioSource.includes("if (Array.isArray(backup) && backup.length > 0)") &&
@@ -1422,7 +1424,7 @@ function auditProductionRegressions(): AuditResult[] {
       ? "Manual entries reject non-finite sizes and closes deduct both fee legs."
       : "Manual paper trades can corrupt balances or overstate PnL."),
     result(daemonHealth ? "PASS" : "FAIL", "daemon scan healthcheck", daemonHealth
-      ? "Compose marks the daemon unhealthy when its scan snapshot disappears."
+      ? "Compose requires a recent real scan from the current deployed commit."
       : "Container liveness does not prove the strategy loop is advancing."),
     result(deploymentWaitsForHealth ? "PASS" : "FAIL", "deployment health readiness", deploymentWaitsForHealth
       ? "Deployment verification waits for container health instead of failing during startup."

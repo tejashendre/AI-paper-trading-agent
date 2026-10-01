@@ -51,3 +51,8 @@ Next: Tejas reviews the branch and the runbook. Release B (plan Tasks 8-10) only
 - [ ] Finish production build, commit reviewed changes, and run pull-request CI plus private VPS migration/public-market preflight.
 - [ ] Merge verified result, deploy, compare live account/history and feeds, inspect rendered dashboard, and record final evidence.
 Prior planning-only and Claude no-deploy boundaries above are historical checkpoints. Tejas's current request authorizes completion and deployment.
+
+## Deployment recovery
+- [x] PR #8 cloud preflight and deployment reached image/source/account validation; manual history preserved and approved XSEC unwind completed.
+- [x] Diagnose restart lease delay and reset scan IDs; reproduce and repair current-commit scan health and persistent numbering.
+- [ ] Verify and deploy the restart fix, lift release freeze after real scan advancement, complete storage/UI proof.

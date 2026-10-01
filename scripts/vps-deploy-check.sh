@@ -136,7 +136,7 @@ for container in quant-redis quant-dashboard quant-swing-daemon quant-xsec-daemo
     echo "$container health: $health"
     [ "$health" = "healthy" ] && break
     attempt=$((attempt + 1))
-    [ "$attempt" -ge 36 ] && fail "Container did not become healthy: $container ($health)"
+    [ "$attempt" -ge 72 ] && fail "Container did not become healthy: $container ($health)"
     sleep 5
   done
 done

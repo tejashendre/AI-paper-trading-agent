@@ -75,11 +75,11 @@ services:
     restart: unless-stopped
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);r.get('swing:lastScan:ai').then(v=>{r.disconnect();process.exit(v?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
+      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);r.get('swing:lastScan:ai').then(v=>{r.disconnect();const s=v?JSON.parse(v):null;const age=Date.now()-Date.parse(s?.completedAt);process.exit(s?.runtimeCommit===process.env.APP_COMMIT_SHA&&Number.isFinite(age)&&age>=0&&age<180000?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 360s
 
   xsec-daemon:
     image: quant-trader:${APP_COMMIT_SHA:-local}
