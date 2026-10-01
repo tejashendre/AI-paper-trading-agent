@@ -10,7 +10,11 @@ import { Logger } from "@/lib/logger";
 import {
   deriveExecutionCostProfile,
   estimatePaperFill,
+  expectedFundingTimes,
+  FundingCashflowEvent,
+  FundingDeps,
   PaperFillEstimate,
+  planFundingCashflows,
 } from "@/lib/trading/executionCostModel";
 import {
   BookPlan,
@@ -61,6 +65,22 @@ export interface BookPosition {
   feesPaidUsd: number;
   fundingPaidUsd: number;
   realizedPnlUsd: number;
+  /** Signed quantity after each change, oldest first, for funding at each boundary. */
+  quantityHistory?: Array<{ atMs: number; quantity: number }>;
+  /** Funding is settled for boundaries after this time (the upgrade point for older positions). */
+  fundingFromMs?: number;
+  fundingSettledTimes?: number[];
+  fundingPendingTimes?: number[];
+}
+
+/** A closed position whose last funding boundaries are not yet settled. */
+export interface BookFundingTail {
+  symbol: string;
+  quantityHistory: Array<{ atMs: number; quantity: number }>;
+  fundingFromMs: number;
+  settledTimes: number[];
+  pendingTimes: number[];
+  closedAtMs: number;
 }
 
 export interface BookTrade {
@@ -95,6 +115,9 @@ export interface BookPortfolio {
   strategyVersion: string;
   createdAt: string;
   updatedAt: string;
+  fundingTail?: BookFundingTail[];
+  /** The latest funding cashflows, kept for audit. */
+  recentFundingEvents?: FundingCashflowEvent[];
 }
 
 export function emptyBookPortfolio(initialCapitalUsd = 10_000): BookPortfolio {
@@ -256,7 +279,25 @@ export function applyBookPlan(input: {
     feesUsd += fill.feeUsd;
 
     const now = new Date().toISOString();
+    const nowMs = Date.parse(now);
+    // Older positions start funding at the upgrade point; boundaries before
+    // it were charged by the previous scheduler and are not charged again.
+    const fundingFromMs = existing?.fundingFromMs ?? existing?.quantityHistory?.[0]?.atMs ?? nowMs;
+    const history = [
+      ...(existing?.quantityHistory ?? (existing ? [{ atMs: fundingFromMs, quantity: existingQty }] : [])),
+      { atMs: nowMs, quantity: Math.abs(targetQty * ticker.markPrice) < 1 ? 0 : targetQty },
+    ];
     if (Math.abs(targetQty * ticker.markPrice) < 1) {
+      if (existing) {
+        (portfolio.fundingTail ??= []).push({
+          symbol: order.symbol,
+          quantityHistory: history,
+          fundingFromMs,
+          settledTimes: existing.fundingSettledTimes ?? [],
+          pendingTimes: existing.fundingPendingTimes ?? [],
+          closedAtMs: nowMs,
+        });
+      }
       delete portfolio.positions[order.symbol];
     } else {
       // Averaging only applies when adding in the same direction; a flip or a
@@ -279,6 +320,10 @@ export function applyBookPlan(input: {
         feesPaidUsd: (existing?.feesPaidUsd ?? 0) + fill.feeUsd,
         fundingPaidUsd: existing?.fundingPaidUsd ?? 0,
         realizedPnlUsd: (existing?.realizedPnlUsd ?? 0) + realized,
+        quantityHistory: history,
+        fundingFromMs,
+        fundingSettledTimes: existing?.fundingSettledTimes ?? [],
+        fundingPendingTimes: existing?.fundingPendingTimes ?? [],
       };
     }
 
@@ -315,24 +360,119 @@ export function applyBookPlan(input: {
   return { executed, skipped, turnover: plan.turnover, equityBefore, equityAfter, feesUsd, trades, reason: plan.reason, reconciliation };
 }
 
-/**
- * Charge funding on open positions. Longs pay a positive rate, shorts receive
- * it. Funding is a real and sometimes dominant cost for a perpetual book, so
- * it is settled explicitly rather than folded into an assumed spread.
- */
-export function settleFunding(portfolio: BookPortfolio, prices: Map<string, PerpTicker>): number {
-  let total = 0;
-  for (const position of Object.values(portfolio.positions)) {
-    const ticker = prices.get(position.symbol);
-    if (!ticker || !Number.isFinite(ticker.fundingRate)) continue;
-    const notional = Math.abs(position.quantity) * ticker.markPrice;
-    const payment = notional * ticker.fundingRate * Math.sign(position.quantity);
-    total += payment;
-    position.fundingPaidUsd += payment;
+function signedQuantityAt(history: Array<{ atMs: number; quantity: number }>, atMs: number): number {
+  let quantity = 0;
+  for (const entry of history) {
+    if (entry.atMs < atMs) quantity = entry.quantity;
+    else break;
   }
-  portfolio.cashUsd -= total;
-  portfolio.fundingPaidUsd += total;
-  return total;
+  return quantity;
+}
+
+/**
+ * Settle funding for the book at the venue's actual boundaries, using each
+ * symbol's own interval and the quantity held at each boundary (a flip
+ * changes the side that pays). Already-settled boundaries are skipped, so
+ * restarts never charge twice; missing settlement data stays pending rather
+ * than being treated as free. Closed positions remain as tails until their
+ * last boundaries settle. Cash moves here, once; nothing is charged at exit.
+ */
+export async function settleBookFunding(
+  portfolio: BookPortfolio,
+  deps: FundingDeps
+): Promise<{ booked: number; pending: number; errors: string[] }> {
+  const now = deps.nowMs();
+  let booked = 0;
+  let pending = 0;
+  const errors: string[] = [];
+
+  const settle = async (state: {
+    symbol: string;
+    history: Array<{ atMs: number; quantity: number }>;
+    fromMs: number;
+    settledTimes: number[];
+    toMs: number;
+    position?: BookPosition;
+  }) => {
+    const intervalMinutes = await deps.intervalMinutes(state.symbol);
+    const settled = new Set(state.settledTimes);
+    const due = expectedFundingTimes(state.fromMs, state.toMs, intervalMinutes)
+      .filter((at) => !settled.has(at) && signedQuantityAt(state.history, at) !== 0);
+    if (due.length === 0) return { settledTimes: state.settledTimes, pendingTimes: [] as number[] };
+    let settlements: Awaited<ReturnType<FundingDeps["settlements"]>> = [];
+    let fetchSucceeded = true;
+    try {
+      settlements = await deps.settlements(state.symbol, Math.min(...due) - 1, state.toMs);
+    } catch {
+      fetchSucceeded = false;
+    }
+    const plan = planFundingCashflows({
+      positionId: `xsec:${state.symbol}`,
+      symbol: state.symbol,
+      positionAt: (atMs) => {
+        const quantity = signedQuantityAt(state.history, atMs);
+        return { direction: quantity < 0 ? "SHORT" : "LONG", quantity: Math.abs(quantity) };
+      },
+      settlements,
+      settledTimes: state.settledTimes,
+      fromMs: state.fromMs,
+      toMs: state.toMs,
+      intervalMinutes,
+      nowMs: now,
+      fetchSucceeded,
+    });
+    for (const event of plan.events) {
+      portfolio.cashUsd += event.amountUsdt;
+      portfolio.fundingPaidUsd -= event.amountUsdt;
+      if (state.position) state.position.fundingPaidUsd -= event.amountUsdt;
+      portfolio.recentFundingEvents = [...(portfolio.recentFundingEvents ?? []), event].slice(-200);
+      booked += 1;
+    }
+    pending += plan.pendingTimes.length;
+    return {
+      settledTimes: [...state.settledTimes, ...plan.events.map((event) => event.settlementTimeMs), ...plan.absentTimes],
+      pendingTimes: plan.pendingTimes,
+    };
+  };
+
+  for (const position of Object.values(portfolio.positions)) {
+    try {
+      position.fundingFromMs ??= position.quantityHistory?.[0]?.atMs ?? now;
+      position.quantityHistory ??= [{ atMs: position.fundingFromMs, quantity: position.quantity }];
+      const outcome = await settle({
+        symbol: position.symbol,
+        history: position.quantityHistory,
+        fromMs: position.fundingFromMs,
+        settledTimes: position.fundingSettledTimes ?? [],
+        toMs: now,
+        position,
+      });
+      position.fundingSettledTimes = outcome.settledTimes;
+      position.fundingPendingTimes = outcome.pendingTimes;
+    } catch (error) {
+      errors.push(`${position.symbol}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  for (const tail of portfolio.fundingTail ?? []) {
+    try {
+      const outcome = await settle({
+        symbol: tail.symbol,
+        history: tail.quantityHistory,
+        fromMs: tail.fundingFromMs,
+        settledTimes: tail.settledTimes,
+        toMs: tail.closedAtMs,
+      });
+      tail.settledTimes = outcome.settledTimes;
+      // An empty pending list means every boundary up to the close is done.
+      tail.pendingTimes = outcome.pendingTimes;
+    } catch (error) {
+      errors.push(`${tail.symbol} (closed): ${error instanceof Error ? error.message : String(error)}`);
+      tail.pendingTimes = tail.pendingTimes.length > 0 ? tail.pendingTimes : [tail.closedAtMs];
+    }
+  }
+  if (portfolio.fundingTail) portfolio.fundingTail = portfolio.fundingTail.filter((tail) => tail.pendingTimes.length > 0);
+  return { booked, pending, errors };
 }
 
 // ── persistence ──────────────────────────────────────────────────────────────

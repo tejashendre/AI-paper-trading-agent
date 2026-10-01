@@ -8,7 +8,7 @@ import { getRedis } from "../lib/redis";
 import { Trade, OpenPosition, PaperMarginMode } from "../lib/types";
 import { WebsocketDataMesh } from "./websocketDataMesh";
 import { TradeAdmissionController } from "../lib/trading/tradeAdmission";
-import { sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
+import { settleAndPersistFunding, sweepSwingExits, SwingExitSweepResult } from "../lib/execution/swingLifecycle";
 import { getMarketSessionState } from "../lib/trading/marketSession";
 import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
@@ -430,6 +430,10 @@ async function runExitWatchdog() {
       try {
         const portfolio = await getAIPortfolio();
         ensurePortfolioShape(portfolio);
+        // Book any newly published funding before exit decisions use cash.
+        await settleAndPersistFunding(portfolio, "ai", "EXIT_WATCHDOG").catch((error) =>
+          Logger.warn(`[EXIT_WATCHDOG] funding settlement deferred: ${error instanceof Error ? error.message : String(error)}`)
+        );
         await sweepSwingExits(portfolio, { portfolioType: "ai", source: "EXIT_WATCHDOG" });
         await sampleSwingEquity(portfolio);
       } finally {
@@ -932,10 +936,19 @@ async function runEntryScan() {
         }
         const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
         const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
-        const executionFailure = executionPlan.netRewardUsd <= 0
-          ? "Modeled execution costs eliminate the target reward."
-          : executionPlan.netRewardRiskRatio < minimumExecutionRewardRisk
-            ? `Final modeled reward/risk ${executionPlan.netRewardRiskRatio.toFixed(2)} is below ${minimumExecutionRewardRisk.toFixed(2)}.`
+        // Projected carry for admission only. Assumption: the position pays
+        // the larger of the current funding rate's magnitude and 0.01% at
+        // every boundary for one day. Realized funding is booked from the
+        // venue's published settlements, never from this estimate.
+        const projectedCarryUsdt = executionPlan.entry.notionalUsd *
+          Math.max(Math.abs(Number(swingSignal.fundingRate ?? 0)), 0.0001) *
+          ((24 * 60) / metadata.fundingIntervalMinutes);
+        const rewardAfterCarry = executionPlan.netRewardUsd - projectedCarryUsdt;
+        const rewardRiskAfterCarry = rewardAfterCarry / (executionPlan.netLossUsd + projectedCarryUsdt);
+        const executionFailure = rewardAfterCarry <= 0
+          ? "Modeled execution costs and projected funding eliminate the target reward."
+          : rewardRiskAfterCarry < minimumExecutionRewardRisk
+            ? `Final modeled reward/risk after projected funding ${rewardRiskAfterCarry.toFixed(2)} is below ${minimumExecutionRewardRisk.toFixed(2)}.`
             : executionPlan.netLossUsd > admission.riskAmountUsd * 1.01
               ? `Modeled stop loss $${executionPlan.netLossUsd.toFixed(2)} exceeds the approved $${admission.riskAmountUsd.toFixed(2)} risk budget.`
               : finalRequiredMarginUsd < getAssetSpec(asset).minMarginUsd
@@ -1087,6 +1100,10 @@ async function runEntryScan() {
             admission,
             portfolioBudget,
             executionPlan,
+            projectedCarry: {
+              usdt: projectedCarryUsdt,
+              assumption: "max(|current funding rate|, 0.01%) paid at every boundary for 24h; admission only",
+            },
           },
         });
 
@@ -1169,6 +1186,7 @@ async function runEntryScan() {
           ...identity,
         };
 
+        newPos.quantityLegs = [{ atMs: Date.parse(newPos.entryTime), quantityDelta: newPos.amount }];
         portfolio.openPositions[asset] = newPos;
 
         const entryTrade: Trade = {

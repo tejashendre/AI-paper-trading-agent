@@ -17,10 +17,13 @@ export type ExecutionLedgerEventType =
   | "EXIT_FILLED"
   | "SCALE_IN_FILLED"
   | "PARTIAL_EXIT_FILLED"
+  | "FUNDING_SETTLED"
   | "RISK_CIRCUIT_BREAKER"
   | "SYSTEM_ERROR";
 
 export interface ExecutionLedgerEventInput {
+  /** Immutable id for an event that may be retried; generated when absent. */
+  id?: string;
   type: ExecutionLedgerEventType;
   source: string;
   asset?: string;
@@ -245,7 +248,7 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
   const previous = readHead(directory, filePath);
   const unsigned: Omit<ExecutionLedgerRecord, "hash"> = {
     schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
-    id: crypto.randomUUID(),
+    id: input.id ?? crypto.randomUUID(),
     timestamp,
     type: input.type,
     source: input.source,
@@ -306,6 +309,19 @@ export class ExecutionLedger {
       console.error("[EXECUTION LEDGER] Failed to append event.", error);
       return null;
     }
+  }
+
+  /**
+   * Whether an event id is already recorded in any day file from `sinceIso`'s
+   * day onward. Used before re-appending a retried event, so a crash between
+   * append and acknowledgement never duplicates it.
+   */
+  static hasEvent(id: string, sinceIso: string, directory = ledgerDirectory()): boolean {
+    const since = sinceIso.slice(0, 10);
+    const needle = `"id":${JSON.stringify(id)}`;
+    return dayFiles(directory)
+      .filter((file) => file.slice(0, 10) >= since)
+      .some((file) => readDayFile(directory, file).includes(needle));
   }
 
   static verify(directory = ledgerDirectory()): ExecutionLedgerVerification {

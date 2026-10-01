@@ -4,6 +4,7 @@ import {
   isMetadataUsable,
   validateBybitMetadata,
 } from "@/lib/trading/instrumentRegistry";
+import type { FundingDeps, FundingSettlement } from "@/lib/trading/executionCostModel";
 
 /**
  * Bybit V5 public market transport. No API key, and by construction it can
@@ -382,3 +383,54 @@ export class BybitTickerBook {
     this.states.clear();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Funding settlement history. Each settlement carries the mark price at its
+// boundary, taken from the one-minute mark-price bar that opens there; when
+// that bar is unavailable the mark is NaN and the boundary stays pending.
+// ---------------------------------------------------------------------------
+
+export async function fetchFundingSettlements(
+  symbol: string,
+  fromMs: number,
+  toMs: number,
+  options: BybitRequestOptions = {}
+): Promise<FundingSettlement[]> {
+  const encoded = encodeURIComponent(symbol);
+  const { result } = await bybitPublicGet<{ list?: Array<{ fundingRate?: string; fundingRateTimestamp?: string }> }>(
+    `/v5/market/funding/history?category=linear&symbol=${encoded}&startTime=${Math.floor(fromMs) + 1}&endTime=${Math.floor(toMs)}&limit=200`,
+    options
+  );
+  const rows = (result.list ?? [])
+    .map((row) => ({ at: Number(row.fundingRateTimestamp), rate: Number(row.fundingRate) }))
+    .filter((row) => Number.isFinite(row.at) && row.at > fromMs && row.at <= toMs && Number.isFinite(row.rate));
+  const settlements: FundingSettlement[] = [];
+  for (const row of rows) {
+    let markPrice = Number.NaN;
+    try {
+      const { result: bars } = await bybitPublicGet<{ list?: unknown[][] }>(
+        `/v5/market/mark-price-kline?category=linear&symbol=${encoded}&interval=1&start=${row.at}&end=${row.at + 59_999}&limit=1`,
+        options
+      );
+      const bar = (bars.list ?? []).find((entry) => Number(entry?.[0]) === row.at);
+      markPrice = Number(bar?.[1]);
+    } catch {
+      // Left as NaN: the boundary stays pending rather than priced at a guess.
+    }
+    settlements.push({ symbol, settlementTimeMs: row.at, rate: row.rate, markPrice });
+  }
+  return settlements;
+}
+
+/** Live funding inputs: published settlements and each symbol's current interval. */
+export const liveFundingDeps: FundingDeps = {
+  nowMs: () => Date.now(),
+  settlements: (symbol, fromMs, toMs) => fetchFundingSettlements(symbol, fromMs, toMs),
+  intervalMinutes: async (symbol) => {
+    // Funding is risk-reducing bookkeeping, so the last validated interval is
+    // acceptable when a refresh fails; it never admits a new entry.
+    const metadata = await getBybitInstrumentMetadata(symbol).catch(() => lastValidBybitMetadata(symbol));
+    if (!metadata) throw new Error(`${symbol}: funding interval unknown`);
+    return metadata.fundingIntervalMinutes;
+  },
+};

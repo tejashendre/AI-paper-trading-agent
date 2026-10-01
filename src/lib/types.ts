@@ -256,6 +256,39 @@ export interface OpenPosition {
   fillLiquidity?: Record<string, unknown>;
   /** Fee schedule version the entry was costed with. */
   feeScheduleVersion?: string;
+  /** Fills that changed the held quantity, for funding at each boundary. */
+  quantityLegs?: Array<{ atMs: number; quantityDelta: number }>;
+  /** Signed funding already booked to cash (positive received). */
+  fundingBookedUsdt?: number;
+  /** Booked funding already attributed to exit legs. */
+  fundingAllocatedUsdt?: number;
+  /** Settlement boundaries already booked; the idempotency key with positionId. */
+  fundingSettledTimes?: number[];
+  /** Boundaries held through whose settlement data is not yet available. */
+  fundingPendingTimes?: number[];
+}
+
+/** A ledger event already reflected in persisted state and waiting to be appended. */
+export interface PendingLedgerEvent {
+  id: string;
+  type: "FUNDING_SETTLED";
+  source: string;
+  asset: string;
+  positionId: string;
+  timestamp: string;
+  payload: unknown;
+}
+
+/** A closed position whose funding boundaries are still awaiting settlement data. */
+export interface FundingTail {
+  positionId: string;
+  asset: string;
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  quantityLegs: Array<{ atMs: number; quantityDelta: number }>;
+  settledTimes: number[];
+  pendingTimes: number[];
+  closedAtMs: number;
 }
 
 export interface InstrumentMigrationMarker {
@@ -303,6 +336,9 @@ export interface Portfolio {
    */
   accountingCurrency?: "USD_PROXY" | "USDT";
   instrumentMigration?: InstrumentMigrationMarker;
+  /** Written in the same object as the cash they describe, then drained to the ledger. */
+  pendingLedgerEvents?: PendingLedgerEvent[];
+  fundingTail?: FundingTail[];
   lastUpdated: string;
 }
 
@@ -379,6 +415,10 @@ export interface Trade {
   migrationAddedFields?: string[];
   fillLiquidity?: Record<string, unknown>;
   feeScheduleVersion?: string;
+  /** Booked funding attributed to this exit leg (positive received). */
+  fundingCashflowUsdt?: number;
+  /** PENDING_RECONCILIATION when some boundaries still await settlement data. */
+  fundingStatus?: "SETTLED" | "PENDING_RECONCILIATION";
   // Filled when position is closed:
   pnl?: number;
   pnlPercent?: number;
