@@ -66,7 +66,7 @@ Next optional slice: implement the documented subsecond quote display with separ
 
 ## Complete remaining upgrade (authorized 2026-10-01)
 - [x] Task 8: class-aware trend and shadow range strategy families evaluated across all nine (212/212 suite, TypeScript clean).
-- [ ] Task 9: independent, instrument-scoped learning with bounded adjustments and explicit units.
+- [x] Task 9: independent, instrument-scoped learning with bounded adjustments and explicit units (221/221 suite, TypeScript clean).
 - [ ] Task 10: reproducible candidate registry, cost stress, untouched evaluation and forward promotion gates.
 - [ ] Extend real-daemon integration, coverage funnels and research visibility for the complete path.
 - [ ] Subsecond browser quotes with reconnect/fallback and separate transport/candle-quality indicators.
