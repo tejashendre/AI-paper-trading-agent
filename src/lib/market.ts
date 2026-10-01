@@ -1,5 +1,6 @@
 import { Candle, Timeframe } from "@/lib/types";
 import { getRedis } from "@/lib/redis";
+import { CONFIGURED_ASSETS, CONFIGURED_INSTRUMENTS, ConfiguredAsset } from "@/lib/trading/instrumentRegistry";
 
 interface AssetConfig {
   name: string;
@@ -21,23 +22,26 @@ interface CandleRequestOptions {
   allowStale?: boolean;
 }
 
-export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
-  BTC: { name: "Bitcoin", category: "crypto", bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", krakenWsSymbol: "BTC/USD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
-  ETH: { name: "Ethereum", category: "crypto", bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", krakenWsSymbol: "ETH/USD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
-  SOL: { name: "Solana", category: "crypto", bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", krakenWsSymbol: "SOL/USD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
+// Name and risk class come from the instrument registry. The routing fields
+// below are the current data routes; they move to the registry's Bybit
+// symbols in the market-path task, not here.
+const DATA_ROUTES: Record<ConfiguredAsset, Omit<AssetConfig, "name" | "category">> = {
+  BTC: { bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", krakenWsSymbol: "BTC/USD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
+  ETH: { bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", krakenWsSymbol: "ETH/USD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
+  SOL: { bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", krakenWsSymbol: "SOL/USD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
   // EUR/USD and GBP/USD read from Kraken rather than Yahoo. Kraken quotes them
   // as real fiat pairs on a venue this system already holds a websocket to, and
   // its data is better on every axis measured 2026-09-08: 721 bars at every
   // interval against Yahoo's 514, a native 4h series instead of one downsampled
   // from 1h, no gaps, and real volume where Yahoo reports none at all. Quotes
   // agree with Yahoo to within 0.06%.
-  EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZEURZUSD", krakenWsSymbol: "EUR/USD", yahooTicker: "EURUSD=X", coingeckoId: "" },
-  GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZGBPZUSD", krakenWsSymbol: "GBP/USD", yahooTicker: "GBPUSD=X", coingeckoId: "" },
+  EURUSD: { bybitLinearSymbol: "", krakenPair: "ZEURZUSD", krakenWsSymbol: "EUR/USD", yahooTicker: "EURUSD=X", coingeckoId: "" },
+  GBPUSD: { bybitLinearSymbol: "", krakenPair: "ZGBPZUSD", krakenWsSymbol: "GBP/USD", yahooTicker: "GBPUSD=X", coingeckoId: "" },
   // USD/JPY deliberately stays on Yahoo. Kraken lists it, but the book is thin:
   // bid 152.57 against ask 155.64 is a ~100bps half-spread on 19k of daily
   // volume, which would cost more than any edge the strategy is looking for.
   // Faster data on an untradeable quote is worse than slower data on a real one.
-  USDJPY: { name: "USD/JPY", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
+  USDJPY: { bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
   // Commodities are quoted from Bybit perpetuals rather than Yahoo futures.
   // Yahoo's intraday candles for CME contracts run about ten hours behind while
   // its quote stays current, which left signals computed on stale bars and the
@@ -49,12 +53,19 @@ export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
   // Bybit XAU 4410 vs Yahoo GC=F 4477, CL 92.47 vs CL=F 91.48, XAG 66.03 vs
   // SI=F 66.75. The gaps are the ordinary spot-versus-futures basis, so these
   // track the same underlying without being the same contract.
-  GOLD: { name: "Gold", category: "commodity", bybitLinearSymbol: "XAUUSDT", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
+  GOLD: { bybitLinearSymbol: "XAUUSDT", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
   // WTI, not Brent. Bybit lists both; WTI turns over $34.7M a day against
   // Brent's $10.2M, and WTI is what this system has always meant by OIL.
-  OIL: { name: "Crude Oil", category: "commodity", bybitLinearSymbol: "CLUSDT", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
-  SILVER: { name: "Silver", category: "commodity", bybitLinearSymbol: "XAGUSDT", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
+  OIL: { bybitLinearSymbol: "CLUSDT", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
+  SILVER: { bybitLinearSymbol: "XAGUSDT", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
 };
+
+export const SUPPORTED_ASSETS: Record<string, AssetConfig> = Object.fromEntries(
+  CONFIGURED_ASSETS.map((asset) => [
+    asset,
+    { name: CONFIGURED_INSTRUMENTS[asset].name, category: CONFIGURED_INSTRUMENTS[asset].riskClass, ...DATA_ROUTES[asset] },
+  ])
+);
 
 export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
 export const CRYPTO_EXECUTION_SOURCE = "BYBIT_LINEAR_WS" as const;
