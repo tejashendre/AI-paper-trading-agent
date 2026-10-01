@@ -1,5 +1,8 @@
 # Audit log
 
+## 2026-10-01 remaining research release
+Tasks 8-9 committed with 221 tests passing. Task 10 adds immutable bounded trials, purged folds, seeded block intervals, full trial correction, cost stress, causal shadow labels, hourly reviews and a compressed 1 GiB archive. Current full suite: 229/229; TypeScript passes. Public capture used all nine symbols and 15m/1h/4h/W; compressed data uses about 1.25 MB. Latest 15m window is 2026-09-21 02:45 UTC through 2026-10-01 12:30 UTC. FX has 139 closed 4h bars and three weekly bars. Descriptive replay has no GBPUSD candidate in this short window and no promotion-qualified cost evidence. Capture/replay hashes and exact counts are recorded in docs/BYBIT_RESEARCH_CAPTURE_2026-10-01.json. Production remains on Release A until final reviewed deployment.
+
 ## 2026-09-30 intake
 User requests logical strategy audit, broad configured asset coverage, measurable self-learning, and free operation with optional LLM. Scope: audit and concrete design; no trading parameter changes or deployment. First slice: map configured instruments to data feeds, signal gates, and available runtime evidence.
 ## 2026-10-01 verified audit checkpoint

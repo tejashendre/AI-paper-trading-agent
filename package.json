@@ -14,6 +14,8 @@
     "agent:explain": "tsx scripts/explain-latest-scan.ts",
     "replay:strategy": "tsx scripts/replay-strategy.ts",
     "research:audit": "tsx scripts/research-audit.ts",
+    "research:capture": "tsx scripts/capture-bybit-evidence.ts",
+    "research:replay": "tsx scripts/replay-captured-families.ts",
     "ledger:verify": "tsx scripts/verify-execution-ledger.ts",
     "source:manifest": "node scripts/source-manifest.mjs",
     "replay:xsec": "tsx scripts/replay-xsec.ts",

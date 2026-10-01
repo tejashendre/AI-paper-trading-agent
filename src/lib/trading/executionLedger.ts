@@ -9,6 +9,8 @@ export const TRADING_STRATEGY_VERSION = "swing-v5.0.0-2026-10-01";
 export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 
 export type ExecutionLedgerEventType =
+  | "RESEARCH_CANDIDATE_REGISTERED"
+  | "RESEARCH_REVIEWED"
   | "SYSTEM_RESET"
   | "SCAN_COMPLETED"
   | "ENTRY_APPROVED"

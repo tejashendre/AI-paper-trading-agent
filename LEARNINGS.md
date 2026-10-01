@@ -1,5 +1,9 @@
 # Project learnings
 
+- Trial count means attempted configurations, including variants under the same display version. A discount without measured covariance overstates evidence.
+- A hypothetical result must use closed prices inside its label window. Delayed evaluation cannot substitute the current live price.
+- Shadow bar replay is descriptive when funding, fee or execution evidence is incomplete. Raw candidate counts are not independent completed trades.
+
 Audit findings will be recorded after verification. Existing technical decisions are in docs/ARCHITECTURE.md and dated research documents.
 ## 2026-10-01 verified findings
 - Feed health is distinct from entry capability: a category-based legacy gate can reject correctly routed instrument snapshots.
