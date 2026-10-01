@@ -1,6 +1,8 @@
 import { Trade } from "@/lib/types";
+import { buildPositionOutcomes, outcomeAsTrade } from "@/lib/trading/positionOutcomes";
 
-export const RESEARCH_HARNESS_VERSION = "walk-forward-v1-2026-07-19";
+// v2: samples are completed positions rather than exit legs.
+export const RESEARCH_HARNESS_VERSION = "walk-forward-v2-2026-10-01";
 
 interface ClosedSample {
   id: string;
@@ -52,6 +54,8 @@ export interface WalkForwardResearchReport {
   numberOfTrials: number;
   folds: WalkForwardFold[];
   aggregateTest: ResearchMetrics;
+  /** Every completed position in the cohort, the unit all metrics count. */
+  aggregateSample: { unit: "completed_position"; count: number; netPnlUsd: number };
   byAsset: Record<string, ResearchMetrics>;
   byRegime: Record<string, ResearchMetrics>;
   byEntryMode: Record<string, ResearchMetrics>;
@@ -214,7 +218,10 @@ function metrics(samples: ClosedSample[], numberOfTrials: number): ResearchMetri
 
 function toSamples(trades: Trade[], cohortStart?: string, strategyVersion?: string): ClosedSample[] {
   const startMs = cohortStart ? new Date(cohortStart).getTime() : -Infinity;
-  return trades
+  // One sample per completed position: partial exits belong to their position
+  // and are not independent observations.
+  return buildPositionOutcomes({ trades, openPositions: [] }).completed
+    .map(outcomeAsTrade)
     .filter((trade) => Number.isFinite(Number(trade.pnl)))
     .map((trade) => {
       const timestamp = trade.exitTime || trade.timestamp;
@@ -325,7 +332,7 @@ export function buildWalkForwardResearchReport(input: {
   const aggregateTestSamples = samples.filter((sample) => testIds.has(sample.id));
   const aggregateTest = metrics(aggregateTestSamples, numberOfTrials);
   const messages: string[] = [];
-  if (samples.length < 30) messages.push(`Only ${samples.length} closed trade(s); at least 30 are required for preliminary review.`);
+  if (samples.length < 30) messages.push(`Only ${samples.length} completed position(s); at least 30 are required for preliminary review.`);
   if (folds.length === 0) messages.push("No complete train/validation/test fold is available yet.");
   if (aggregateTest.trades > 0 && Number(aggregateTest.profitFactor || 0) < 1.1) messages.push("Out-of-sample profit factor is below 1.10.");
   if (aggregateTest.trades > 0 && aggregateTest.expectancyUsd <= 0) messages.push("Out-of-sample expectancy is not positive.");
@@ -344,6 +351,11 @@ export function buildWalkForwardResearchReport(input: {
     numberOfTrials,
     folds,
     aggregateTest,
+    aggregateSample: {
+      unit: "completed_position",
+      count: samples.length,
+      netPnlUsd: samples.reduce((sum, sample) => sum + sample.pnlUsd, 0),
+    },
     byAsset: groupedMetrics(samples, (sample) => sample.asset, numberOfTrials),
     byRegime: groupedMetrics(samples, (sample) => sample.marketRegime, numberOfTrials),
     byEntryMode: groupedMetrics(samples, (sample) => sample.entryMode, numberOfTrials),

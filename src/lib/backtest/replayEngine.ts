@@ -365,9 +365,14 @@ function buildSignal(asset: string, series: ReplaySeries, index: number): SwingS
       price: livePrice,
       provider: "REPLAY",
       source: "HTTP",
+      transport: "REST",
       venue: "REPLAY",
       instrument: asset,
+      instrumentVersion: "REPLAY",
       updatedAt: new Date(time * 1000).toISOString(),
+      eventTimeMs: time * 1000,
+      receivedAtMs: time * 1000,
+      quoteTimes: { lastPriceMs: time * 1000, bidAskMs: null, markMs: null },
     },
     // Historical order-book and funding tapes are not retained, so live-flow
     // evidence is neutral here — the same state production sees when those

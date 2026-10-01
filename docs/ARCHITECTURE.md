@@ -2,6 +2,12 @@
 
 **Last verified:** 2026-08-26 against the deployed stack at trader.tejashendre.com
 
+**Release A (Bybit for all nine assets), 2026-10-01:** implemented and tested
+offline on branch `claude/bybit-all-assets-release-a`; not merged and not
+deployed. The sections on data, costs, funding, outcomes and the book's risk
+states describe that branch. Rollout and rollback steps:
+[BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md).
+
 ## Operating contract
 
 This repository runs a deterministic, explainable, **paper-only** trading
@@ -12,7 +18,9 @@ a profitable strategy.
   account, so they can be compared without either being able to corrupt the
   other.
 - Every fill is simulated through one cost model: spread, size-dependent
-  slippage, stop-gap risk, maker/taker fees and funding carry.
+  slippage, stop-gap risk and taker fees from a versioned schedule per asset
+  class. Funding is booked from Bybit's published settlements at each funding
+  boundary, once per position and boundary, never from an estimate.
 - Every risk limit fails closed. When data, accounting, exposure or strategy
   evidence is unsafe, the system declines to trade rather than guessing.
 - No API keys. Every market data source used here is a free public endpoint.
@@ -59,9 +67,8 @@ markets it returns +96% in a 12-month replay. See
 ```mermaid
 flowchart LR
     subgraph FREE["Free public market data — no API keys"]
-        BYBIT["Bybit v5<br/>klines · tickers · funding<br/>crypto + commodities"]
-        WS["Bybit / Binance / Kraken<br/>websockets"]
-        YAHOO["Yahoo<br/>forex only"]
+        BYBIT["Bybit v5 REST<br/>instruments, klines, tickers, order book,<br/>funding history, mark-price klines"]
+        WS["Bybit public linear stream<br/>tickers for the nine assets"]
     end
 
     subgraph ORACLE["Oracle Cloud VPS — Docker Compose"]
@@ -75,7 +82,6 @@ flowchart LR
     BYBIT --> SWINGD
     BYBIT --> XSECD
     WS --> SWINGD
-    YAHOO --> SWINGD
 
     SWINGD <--> REDIS
     XSECD <--> REDIS
@@ -97,7 +103,18 @@ requests a day, far inside free rate limits.
 |---|---|---|---|
 | Crypto | BTC, ETH, SOL | Bybit v5 | `BTCUSDT`, `ETHUSDT`, `SOLUSDT` |
 | Commodities | GOLD, OIL, SILVER | Bybit v5 | `XAUUSDT`, `CLUSDT`, `XAGUSDT` |
-| Forex | EURUSD, GBPUSD, USDJPY | Yahoo Finance | `EURUSD=X`, `GBPUSD=X`, `USDJPY=X` |
+| Forex | EURUSD, GBPUSD, USDJPY | Bybit v5 | `EURUSDUSDT`, `GBPUSDUSDT`, `USDJPYUSDT` |
+
+Since Release A every asset reads one venue, Bybit's linear USDT perpetuals,
+for prices, candles, depth, contract metadata and funding. Each position freezes
+the contract it was opened on (for example `BYBIT_LINEAR_USDT_V1:USDJPYUSDT`), so
+its P&L always uses the economics it was entered under; positions opened before
+the upgrade keep their legacy model and are not scaled into. With one venue there
+is no second source to cross-check a bad print, so the entry gate instead
+requires validated venue metadata, a quote under 10 seconds old on every field
+it uses, at most 2 seconds in the future, and 100 completed 15m, 1h and 4h bars.
+Bybit has not confirmed the fee schedule for the three FX contracts, so they are
+costed at a higher stress rate and their results cannot be promoted.
 
 Commodities are priced from a crypto venue, which is not the obvious choice, so
 the reason is worth stating. They were on Yahoo's CME futures until 2026-09-07,
@@ -115,9 +132,9 @@ Brent fails before it reaches a book.
 **Routing follows the instrument, not the asset class.** Three behaviours key
 off `bybitLinearSymbol` rather than `category`:
 
-- **Data source.** Anything with a perpetual reads from Bybit.
-- **Session hours.** A gold perpetual trades through the weekend even though the metal's futures pit does not, so it is never marked closed.
-- **Staleness tolerance.** A continuously quoted contract is held to 2.5x its bar interval; a market that legitimately closes gets 8x.
+- **Data source.** Every configured asset reads its Bybit linear contract; no active path falls back to another venue.
+- **Session hours.** The contracts trade around the clock, so none is marked closed. TradFi underlyings carry liquidity windows and weekend warnings, and outside peak hours an entry needs higher conviction.
+- **Staleness tolerance.** Every series is a continuously quoted contract and is held to 2.5x its bar interval. Signals read completed bars only; the bar still forming is ignored.
 
 Category still governs *risk* treatment, where "is this a commodity" remains the
 right question: commodity leverage stays capped at 3x against crypto's 5x.
@@ -190,9 +207,10 @@ signal — stopped trades out inside ordinary crypto noise.
 
 ```mermaid
 flowchart TB
-    A["Rebalance tick — 12h"] --> B{"Drawdown past<br/>25% breaker?"}
-    B -->|yes| HOLD1["Hold the book,<br/>add no new risk"]
-    B -->|no| C["Screen universe<br/>point-in-time"]
+    A["Rebalance tick, 12h"] --> R{"Risk state<br/>(recorded first)"}
+    R -->|"REDUCE_ONLY"| UNWIND["Staged unwind each minute,<br/>no new risk"]
+    R -->|"SHADOW or ENTRY_HALT"| SHADOWB["Shadow book trades<br/>the plan without capital"]
+    R -->|"ACTIVE"| C["Screen universe<br/>point-in-time"]
     C --> D{"At least 36<br/>rankable symbols?"}
     D -->|no| HOLD2["Skip — refuse to trade<br/>a thin cross-section"]
     D -->|yes| E["Rank by 72h return"]
@@ -201,8 +219,17 @@ flowchart TB
     G --> H{"Book drift<br/>above 2%?"}
     H -->|no| HOLD3["Hold — churn is not<br/>worth the cost"]
     H -->|yes| I["Emit only the changes<br/>reductions before increases"]
-    I --> J["Fill each at modelled cost<br/>maker on rebalance,<br/>taker on reduction"]
+    I --> J["Fill each at modelled cost<br/>taker fees throughout"]
 ```
+
+**Risk states (Release A).** The book records one of `ACTIVE`, `ENTRY_HALT`,
+`REDUCE_ONLY` or `SHADOW` before acting. A lifetime drawdown past 25% is never
+cleared automatically: the book moves to `REDUCE_ONLY`, unwinds in stages capped
+at 1% of each symbol's turnover per minute, and becomes `SHADOW` once flat. The
+shadow book keeps producing forward evidence. Leaving `SHADOW` needs an owner's
+recorded release (`xsec:riskRelease`) plus promotion evidence. The live book's
+lifetime drawdown was 28.15% when this was written, so deploying Release A
+starts its unwind on the first minute's sweep.
 
 Hysteresis is not cosmetic. Without it the book replaces ~89% of its notional
 every rebalance purely because names shuffle around the cut-off; with it, ~27%.
@@ -213,7 +240,7 @@ The gap *widens* as costs rise, which is exactly the robustness worth buying.
 ```mermaid
 flowchart LR
     PUSH["git push main"] --> CI["GitHub Actions"]
-    CI --> G1["lint"] --> G2["build"] --> G3["tsc"] --> G4["audit:strategy<br/>94 invariant checks"] --> G5["ledger verify"] --> G6["source manifest"]
+    CI --> G1["lint"] --> G2["build"] --> G3["tsc"] --> GT["test:upgrade<br/>offline, no secrets"] --> G4["audit:strategy"] --> G5["ledger verify"] --> G6["source manifest"]
     G6 --> SNAP["Snapshot on VPS:<br/>commit, worktree patch,<br/>runtime tarball, redis dump"]
     SNAP --> BUILD["Rebuild containers"]
     BUILD --> VERIFY["Health + scan advancement<br/>+ source parity + image revision"]
@@ -236,10 +263,11 @@ Two manual workflows sit alongside it, both dry-run by default:
 
 | Namespace | Owner | Contents |
 |---|---|---|
-| `ai:*` | swing daemon | portfolio, trades, signals |
+| `ai:*` | swing daemon | portfolio (with pending ledger events and funding tails), trades, signals, completed position outcomes (`ai:positionOutcomes`) |
 | `user:*` | manual entry via dashboard | portfolio, trades |
-| `xsec:*` | cross-sectional daemon | book portfolio, fills, rebalance snapshot, live equity |
-| `swing:*` | swing daemon | scan snapshot, cooldowns, lifetime counters |
+| `xsec:*` | cross-sectional daemon | book portfolio with risk state, shadow book (`xsec:shadow:*`), fills, rebalance snapshot, live equity, owner release record |
+| `swing:*` | swing daemon | scan snapshot, cooldowns, lifetime counters, operator entry freeze (`swing:entryFreeze`) |
+| `coverage:funnel:v1:*` | swing daemon | per-asset daily decision funnels and veto counts |
 | `perp:*` | cross-sectional daemon | ticker and kline caches, all TTL'd |
 | `learning:<version>:*` | both | rules derived from closed trades, namespaced by strategy version |
 | `./data` | both | JSON backups, hash-chained execution ledger, deploy and reset snapshots |
@@ -273,7 +301,8 @@ Nothing here asks to be taken on trust:
 ```bash
 npm run replay:xsec        # cross-sectional book over 12 months of Bybit history
 npm run replay:strategy    # swing engine, same cost model
-npm run audit:strategy     # 94 invariant checks, also gates every deploy
+npm run test:upgrade       # offline end-to-end tests, also gates every deploy
+npm run audit:strategy     # invariant checks, also gates every deploy
 npm run ledger:verify      # hash chain integrity
 ```
 

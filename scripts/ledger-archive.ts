@@ -58,9 +58,9 @@ async function main() {
 
   // The point of the exercise is that nothing was lost. Prove it rather than
   // asserting it: the same chain, the same event count, still verifying.
-  const after = ExecutionLedger.verify();
+  const after = ExecutionLedger.verify(undefined, before.headHash ?? undefined);
   console.log(`Ledger after:  ${after.files} file(s), ${after.events} event(s), valid=${after.valid}`);
-  if (!after.valid || after.events !== before.events || after.headHash !== before.headHash) {
+  if (!after.valid || (before.events > 0 && (after.events !== before.events || after.headHash !== before.headHash))) {
     console.error("ARCHIVE DAMAGED THE CHAIN. Event count or head hash changed.");
     for (const error of after.errors.slice(0, 5)) console.error(`  ${error}`);
     process.exit(1);

@@ -4,7 +4,15 @@ import { Logger } from '@/lib/logger';
 import { MarketService, SUPPORTED_ASSETS } from '@/lib/market';
 import { PortfolioManager } from '@/lib/portfolio';
 import { Trade, OpenPosition } from '@/lib/types';
-import { amountFromNotionalUsd, calculatePnlUsd, estimateFeeUsd } from '@/lib/trading/assetSpecs';
+import {
+  amountFromNotionalUsd,
+  calculateInstrumentPnl,
+  estimateFeeUsd,
+  instrumentFee,
+  positionInstrument,
+  positionLegIdentity,
+} from '@/lib/trading/assetSpecs';
+import { getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 import { getMarketSessionState } from '@/lib/trading/marketSession';
 
 export const dynamic = 'force-dynamic';
@@ -65,7 +73,9 @@ export async function POST(request: Request) {
         usdInvested: usdAmount, stopLoss: currentPrice * 0.95, takeProfit: currentPrice * 1.10,
         initialStopLoss: currentPrice * 0.95,
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual BUY order', entryFeePaid: entryFee,
-        direction: 'LONG'
+        direction: 'LONG',
+        // Sized above on the asset's Bybit contract, so it carries that model.
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;
@@ -73,7 +83,7 @@ export async function POST(request: Request) {
 
       await PortfolioManager.updatePortfolio(portfolio);
       const trade: Trade = {
-        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset,
+        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset, ...positionLegIdentity(pos),
         action: 'BUY', direction: 'LONG', amount: units, btcAmount: units,
         price: currentPrice, usdValue: usdAmount, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0, reasoning: 'Manual BUY order'
@@ -105,14 +115,15 @@ export async function POST(request: Request) {
         usdInvested: usdAmount, stopLoss: currentPrice * 1.05, takeProfit: currentPrice * 0.90,
         initialStopLoss: currentPrice * 1.05,
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual SHORT order', entryFeePaid: entryFee,
-        direction: 'SHORT'
+        direction: 'SHORT',
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;
 
       await PortfolioManager.updatePortfolio(portfolio);
       const trade: Trade = {
-        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset,
+        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset, ...positionLegIdentity(pos),
         action: 'SHORT', direction: 'SHORT', amount: units, btcAmount: units,
         price: currentPrice, usdValue: usdAmount, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0, reasoning: 'Manual SHORT order'
@@ -127,9 +138,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `No LONG position open in ${asset} to sell` }, { status: 400 });
       }
       const pos = currentPosition;
-      const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'LONG');
-      const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-      const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+      const instrument = positionInstrument(pos);
+      const pnl = calculateInstrumentPnl({ instrument, entryPrice: pos.entryPrice, exitPrice: currentPrice, quantity: pos.amount, direction: 'LONG' });
+      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
+      const exitFee = instrumentFee(instrument, pos.amount, currentPrice);
       const netPnl = pnl - entryFee - exitFee;
       const proceeds = pos.usdInvested + entryFee + netPnl;
       const pnlPercent = (netPnl / pos.usdInvested) * 100;
@@ -159,6 +171,7 @@ export async function POST(request: Request) {
       await PortfolioManager.updatePortfolio(portfolio);
       const trade: Trade = {
         id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset,
+        ...positionLegIdentity(pos),
         action: 'SELL', direction: 'LONG', amount: pos.amount, btcAmount: pos.amount,
         price: currentPrice, usdValue: proceeds, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0,
@@ -176,9 +189,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `No SHORT position open in ${asset} to cover` }, { status: 400 });
       }
       const pos = currentPosition;
-      const pnl = calculatePnlUsd(asset, pos.entryPrice, currentPrice, pos.amount, 'SHORT');
-      const entryFee = pos.entryFeePaid ?? estimateFeeUsd(asset, pos.amount, pos.entryPrice);
-      const exitFee = estimateFeeUsd(asset, pos.amount, currentPrice);
+      const instrument = positionInstrument(pos);
+      const pnl = calculateInstrumentPnl({ instrument, entryPrice: pos.entryPrice, exitPrice: currentPrice, quantity: pos.amount, direction: 'SHORT' });
+      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
+      const exitFee = instrumentFee(instrument, pos.amount, currentPrice);
       const netPnl = pnl - entryFee - exitFee;
       const pnlPercent = (netPnl / pos.usdInvested) * 100;
 
@@ -204,7 +218,7 @@ export async function POST(request: Request) {
 
       await PortfolioManager.updatePortfolio(portfolio);
       const trade: Trade = {
-        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset,
+        id: crypto.randomUUID(), timestamp: new Date().toISOString(), asset, ...positionLegIdentity(pos),
         action: 'COVER', direction: 'SHORT', amount: pos.amount, btcAmount: pos.amount,
         price: currentPrice, usdValue: pos.usdInvested + entryFee + netPnl, stopLoss: pos.stopLoss,
         takeProfit: pos.takeProfit, signalScore: 0,

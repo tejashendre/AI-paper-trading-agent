@@ -1,0 +1,928 @@
+{
+  "schemaVersion": 1,
+  "capturedDateUtc": "2026-10-01",
+  "scope": "Public market availability only. No authenticated account or live execution eligibility was tested.",
+  "endpoints": [
+    "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={symbol}",
+    "https://api.bybit.com/v5/market/tickers?category=linear",
+    "https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=200",
+    "wss://stream.bybit.com/v5/public/linear"
+  ],
+  "barsIncludeUnfinishedLastBar": true,
+  "candleIntervalsRequested": [
+    "15",
+    "60",
+    "240",
+    "W"
+  ],
+  "notes": [
+    "Public ticker observations are a snapshot, not execution cost estimates.",
+    "Bar counts are from a limit=200 response, not a full historical archive.",
+    "Only Bybit FX perpetuals are verified here; MT5 CFDs are a different product.",
+    "Revalidate metadata and funding intervals at implementation and at runtime."
+  ],
+  "websocketProbe": {
+    "startedAt": "2026-10-01T06:47:46.86Z",
+    "finishedAt": "2026-10-01T06:48:11.902Z",
+    "url": "wss://stream.bybit.com/v5/public/linear",
+    "expectedSymbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "EURUSDUSDT",
+      "GBPUSDUSDT",
+      "USDJPYUSDT",
+      "XAUUSDT",
+      "CLUSDT",
+      "XAGUSDT"
+    ],
+    "observed": [
+      {
+        "symbol": "BTCUSDT",
+        "snapshots": 1,
+        "deltas": 219,
+        "lastEventTimeMs": 1790837292683,
+        "receivedAt": "2026-10-01T06:48:11.857Z",
+        "lastPrice": "84160.40"
+      },
+      {
+        "symbol": "ETHUSDT",
+        "snapshots": 1,
+        "deltas": 205,
+        "lastEventTimeMs": 1790837292675,
+        "receivedAt": "2026-10-01T06:48:11.849Z",
+        "lastPrice": "2715.69"
+      },
+      {
+        "symbol": "SOLUSDT",
+        "snapshots": 1,
+        "deltas": 167,
+        "lastEventTimeMs": 1790837292280,
+        "receivedAt": "2026-10-01T06:48:11.454Z",
+        "lastPrice": "119.240"
+      },
+      {
+        "symbol": "EURUSDUSDT",
+        "snapshots": 1,
+        "deltas": 37,
+        "lastEventTimeMs": 1790837292058,
+        "receivedAt": "2026-10-01T06:48:11.234Z",
+        "lastPrice": "1.13253"
+      },
+      {
+        "symbol": "GBPUSDUSDT",
+        "snapshots": 1,
+        "deltas": 30,
+        "lastEventTimeMs": 1790837292327,
+        "receivedAt": "2026-10-01T06:48:11.501Z",
+        "lastPrice": "1.32750"
+      },
+      {
+        "symbol": "USDJPYUSDT",
+        "snapshots": 1,
+        "deltas": 31,
+        "lastEventTimeMs": 1790837292065,
+        "receivedAt": "2026-10-01T06:48:11.237Z",
+        "lastPrice": "157.996"
+      },
+      {
+        "symbol": "XAUUSDT",
+        "snapshots": 1,
+        "deltas": 120,
+        "lastEventTimeMs": 1790837292676,
+        "receivedAt": "2026-10-01T06:48:11.851Z",
+        "lastPrice": "4189.87"
+      },
+      {
+        "symbol": "CLUSDT",
+        "snapshots": 1,
+        "deltas": 114,
+        "lastEventTimeMs": 1790837292432,
+        "receivedAt": "2026-10-01T06:48:11.606Z",
+        "lastPrice": "90.430"
+      },
+      {
+        "symbol": "XAGUSDT",
+        "snapshots": 1,
+        "deltas": 98,
+        "lastEventTimeMs": 1790837292004,
+        "receivedAt": "2026-10-01T06:48:11.18Z",
+        "lastPrice": "61.12"
+      }
+    ],
+    "missingSymbols": [],
+    "error": null
+  },
+  "assets": [
+    {
+      "asset": "BTC",
+      "instrument": {
+        "requestedSymbol": "BTCUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836823487,
+        "symbol": "BTCUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1584230400000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "150.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "1500.000",
+          "minOrderQty": "0.001",
+          "qtyStep": "0.001",
+          "postOnlyMaxOrderQty": "1500.000",
+          "maxMktOrderQty": "150.000",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.10",
+          "maxPrice": "1999999.80",
+          "tickSize": "0.10"
+        },
+        "symbolType": "",
+        "displayName": "BTCUSDT"
+      },
+      "ticker": {
+        "lastPrice": "84087.00",
+        "bid": "84087.00",
+        "ask": "84087.10",
+        "spreadBps": 0.0119,
+        "markPrice": "84087.10",
+        "indexPrice": "84122.10",
+        "fundingRate": "0.00005121",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "6079538731.7804"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836890888
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836891059
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836891224
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1670198400000",
+          "serverTime": 1790836891345
+        }
+      ],
+      "websocket": {
+        "symbol": "BTCUSDT",
+        "snapshots": 1,
+        "deltas": 219,
+        "lastEventTimeMs": 1790837292683,
+        "receivedAt": "2026-10-01T06:48:11.857Z",
+        "lastPrice": "84160.40"
+      }
+    },
+    {
+      "asset": "ETH",
+      "instrument": {
+        "requestedSymbol": "ETHUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836823633,
+        "symbol": "ETHUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "ETH",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1615766400000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "150.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "10000.00",
+          "minOrderQty": "0.01",
+          "qtyStep": "0.01",
+          "postOnlyMaxOrderQty": "10000.00",
+          "maxMktOrderQty": "2000.00",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.01",
+          "maxPrice": "199999.98",
+          "tickSize": "0.01"
+        },
+        "symbolType": "",
+        "displayName": "ETHUSDT"
+      },
+      "ticker": {
+        "lastPrice": "2712.01",
+        "bid": "2712.00",
+        "ask": "2712.01",
+        "spreadBps": 0.0369,
+        "markPrice": "2712.00",
+        "indexPrice": "2712.90",
+        "fundingRate": "0.0001",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "3016256492.3856"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836891479
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836891593
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836891755
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1670198400000",
+          "serverTime": 1790836891883
+        }
+      ],
+      "websocket": {
+        "symbol": "ETHUSDT",
+        "snapshots": 1,
+        "deltas": 205,
+        "lastEventTimeMs": 1790837292675,
+        "receivedAt": "2026-10-01T06:48:11.849Z",
+        "lastPrice": "2715.69"
+      }
+    },
+    {
+      "asset": "SOL",
+      "instrument": {
+        "requestedSymbol": "SOLUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836823863,
+        "symbol": "SOLUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "SOL",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1634256000000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "96000.0",
+          "minOrderQty": "0.1",
+          "qtyStep": "0.1",
+          "postOnlyMaxOrderQty": "96000.0",
+          "maxMktOrderQty": "12000.0",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.010",
+          "maxPrice": "199999.980",
+          "tickSize": "0.010"
+        },
+        "symbolType": "",
+        "displayName": "SOLUSDT"
+      },
+      "ticker": {
+        "lastPrice": "119.020",
+        "bid": "119.020",
+        "ask": "119.030",
+        "spreadBps": 0.8402,
+        "markPrice": "119.030",
+        "indexPrice": "119.094",
+        "fundingRate": "0.00003671",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "1038203156.2100"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836892070
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836892186
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836892309
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1670198400000",
+          "serverTime": 1790836892428
+        }
+      ],
+      "websocket": {
+        "symbol": "SOLUSDT",
+        "snapshots": 1,
+        "deltas": 167,
+        "lastEventTimeMs": 1790837292280,
+        "receivedAt": "2026-10-01T06:48:11.454Z",
+        "lastPrice": "119.240"
+      }
+    },
+    {
+      "asset": "EURUSD",
+      "instrument": {
+        "requestedSymbol": "EURUSDUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836823972,
+        "symbol": "EURUSDUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "EURUSD",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1788858596000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "356000.0",
+          "minOrderQty": "0.1",
+          "qtyStep": "0.1",
+          "postOnlyMaxOrderQty": "356000.0",
+          "maxMktOrderQty": "89000.0",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.00001",
+          "maxPrice": "199.99998",
+          "tickSize": "0.00001"
+        },
+        "symbolType": "forex",
+        "displayName": "EURUSDUSDT"
+      },
+      "ticker": {
+        "lastPrice": "1.13253",
+        "bid": "1.13243",
+        "ask": "1.13292",
+        "spreadBps": 4.326,
+        "markPrice": "1.13247",
+        "indexPrice": "1.13096",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "129036.8205"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836892549
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836892672
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 138,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1788854400000",
+          "serverTime": 1790836892783
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 4,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1788739200000",
+          "serverTime": 1790836892926
+        }
+      ],
+      "websocket": {
+        "symbol": "EURUSDUSDT",
+        "snapshots": 1,
+        "deltas": 37,
+        "lastEventTimeMs": 1790837292058,
+        "receivedAt": "2026-10-01T06:48:11.234Z",
+        "lastPrice": "1.13253"
+      }
+    },
+    {
+      "asset": "GBPUSD",
+      "instrument": {
+        "requestedSymbol": "GBPUSDUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836824093,
+        "symbol": "GBPUSDUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "GBPUSD",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1788858731000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "296000.0",
+          "minOrderQty": "0.1",
+          "qtyStep": "0.1",
+          "postOnlyMaxOrderQty": "296000.0",
+          "maxMktOrderQty": "74000.0",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.00001",
+          "maxPrice": "199.99998",
+          "tickSize": "0.00001"
+        },
+        "symbolType": "forex",
+        "displayName": "GBPUSDUSDT"
+      },
+      "ticker": {
+        "lastPrice": "1.32750",
+        "bid": "1.32750",
+        "ask": "1.32751",
+        "spreadBps": 0.0753,
+        "markPrice": "1.32706",
+        "indexPrice": "1.32507",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "93542.5438"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836893068
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836893190
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 138,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1788854400000",
+          "serverTime": 1790836893320
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 4,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1788739200000",
+          "serverTime": 1790836893431
+        }
+      ],
+      "websocket": {
+        "symbol": "GBPUSDUSDT",
+        "snapshots": 1,
+        "deltas": 30,
+        "lastEventTimeMs": 1790837292327,
+        "receivedAt": "2026-10-01T06:48:11.501Z",
+        "lastPrice": "1.32750"
+      }
+    },
+    {
+      "asset": "USDJPY",
+      "instrument": {
+        "requestedSymbol": "USDJPYUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836824199,
+        "symbol": "USDJPYUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "USDJPY",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1788858440000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "2480.000",
+          "minOrderQty": "0.001",
+          "qtyStep": "0.001",
+          "postOnlyMaxOrderQty": "2480.000",
+          "maxMktOrderQty": "620.000",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.001",
+          "maxPrice": "19999.998",
+          "tickSize": "0.001"
+        },
+        "symbolType": "forex",
+        "displayName": "USDJPYUSDT"
+      },
+      "ticker": {
+        "lastPrice": "157.923",
+        "bid": "157.923",
+        "ask": "158.028",
+        "spreadBps": 6.6466,
+        "markPrice": "157.991",
+        "indexPrice": "158.228",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "130751.0359"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836893563
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836893684
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 138,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1788854400000",
+          "serverTime": 1790836893814
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 4,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1788739200000",
+          "serverTime": 1790836893943
+        }
+      ],
+      "websocket": {
+        "symbol": "USDJPYUSDT",
+        "snapshots": 1,
+        "deltas": 31,
+        "lastEventTimeMs": 1790837292065,
+        "receivedAt": "2026-10-01T06:48:11.237Z",
+        "lastPrice": "157.996"
+      }
+    },
+    {
+      "asset": "GOLD",
+      "instrument": {
+        "requestedSymbol": "XAUUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836824313,
+        "symbol": "XAUUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "XAU",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1773022440000",
+        "fundingInterval": 240,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "150.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "500.000",
+          "minOrderQty": "0.001",
+          "qtyStep": "0.001",
+          "postOnlyMaxOrderQty": "500.000",
+          "maxMktOrderQty": "250.000",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.01",
+          "maxPrice": "199999.98",
+          "tickSize": "0.01"
+        },
+        "symbolType": "commodity",
+        "displayName": "XAUUSDT"
+      },
+      "ticker": {
+        "lastPrice": "4187.36",
+        "bid": "4187.36",
+        "ask": "4187.37",
+        "spreadBps": 0.0239,
+        "markPrice": "4187.34",
+        "indexPrice": "4185.56",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "121861755.4103"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836894074
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836894187
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836894306
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 30,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1773014400000",
+          "serverTime": 1790836894420
+        }
+      ],
+      "websocket": {
+        "symbol": "XAUUSDT",
+        "snapshots": 1,
+        "deltas": 120,
+        "lastEventTimeMs": 1790837292676,
+        "receivedAt": "2026-10-01T06:48:11.851Z",
+        "lastPrice": "4189.87"
+      }
+    },
+    {
+      "asset": "OIL",
+      "instrument": {
+        "requestedSymbol": "CLUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836824424,
+        "symbol": "CLUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "CL",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1774338320000",
+        "fundingInterval": 480,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "150.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "40000.00",
+          "minOrderQty": "0.01",
+          "qtyStep": "0.01",
+          "postOnlyMaxOrderQty": "40000.00",
+          "maxMktOrderQty": "12000.00",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.010",
+          "maxPrice": "199999.980",
+          "tickSize": "0.010"
+        },
+        "symbolType": "commodity",
+        "displayName": "CLUSDT"
+      },
+      "ticker": {
+        "lastPrice": "90.360",
+        "bid": "90.360",
+        "ask": "90.370",
+        "spreadBps": 1.1066,
+        "markPrice": "90.373",
+        "indexPrice": "90.381",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "110591843.4198"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836894546
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836894660
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836894767
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 28,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1774224000000",
+          "serverTime": 1790836894892
+        }
+      ],
+      "websocket": {
+        "symbol": "CLUSDT",
+        "snapshots": 1,
+        "deltas": 114,
+        "lastEventTimeMs": 1790837292432,
+        "receivedAt": "2026-10-01T06:48:11.606Z",
+        "lastPrice": "90.430"
+      }
+    },
+    {
+      "asset": "SILVER",
+      "instrument": {
+        "requestedSymbol": "XAGUSDT",
+        "retCode": 0,
+        "retMsg": "OK",
+        "serverTime": 1790836824529,
+        "symbol": "XAGUSDT",
+        "status": "Trading",
+        "contractType": "LinearPerpetual",
+        "baseCoin": "XAG",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "launchTime": "1773024483000",
+        "fundingInterval": 240,
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "150.00",
+          "leverageStep": "0.01"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "62000.000",
+          "minOrderQty": "0.001",
+          "qtyStep": "0.001",
+          "postOnlyMaxOrderQty": "62000.000",
+          "maxMktOrderQty": "16000.000",
+          "minNotionalValue": "5"
+        },
+        "priceFilter": {
+          "minPrice": "0.01",
+          "maxPrice": "199999.98",
+          "tickSize": "0.01"
+        },
+        "symbolType": "commodity",
+        "displayName": "XAGUSDT"
+      },
+      "ticker": {
+        "lastPrice": "61.10",
+        "bid": "61.09",
+        "ask": "61.10",
+        "spreadBps": 1.6368,
+        "markPrice": "61.10",
+        "indexPrice": "61.06",
+        "fundingRate": "0",
+        "nextFundingTime": "1790841600000",
+        "turnover24hUsdt": "42266050.5614"
+      },
+      "candles": [
+        {
+          "interval": "15",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790836200000",
+          "oldestOpenMs": "1790657100000",
+          "serverTime": 1790836895021
+        },
+        {
+          "interval": "60",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790834400000",
+          "oldestOpenMs": "1790118000000",
+          "serverTime": 1790836895131
+        },
+        {
+          "interval": "240",
+          "retCode": 0,
+          "barCount": 200,
+          "latestOpenMs": "1790827200000",
+          "oldestOpenMs": "1787961600000",
+          "serverTime": 1790836895249
+        },
+        {
+          "interval": "W",
+          "retCode": 0,
+          "barCount": 30,
+          "latestOpenMs": "1790553600000",
+          "oldestOpenMs": "1773014400000",
+          "serverTime": 1790836895374
+        }
+      ],
+      "websocket": {
+        "symbol": "XAGUSDT",
+        "snapshots": 1,
+        "deltas": 98,
+        "lastEventTimeMs": 1790837292004,
+        "receivedAt": "2026-10-01T06:48:11.18Z",
+        "lastPrice": "61.12"
+      }
+    }
+  ]
+}

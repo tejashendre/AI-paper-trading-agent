@@ -1,5 +1,7 @@
 import { buildMarketFrame } from "@/lib/data/freeDataMesh";
-import { SUPPORTED_ASSETS } from "@/lib/market";
+import { closedCandles, entryInstrumentFor, liveQuoteKey, MarketService, SUPPORTED_ASSETS } from "@/lib/market";
+import { evaluateEntryEligibility, EntryEligibility } from "@/lib/trading/entryEligibility";
+import type { BybitTickerState } from "@/lib/data/bybitPublic";
 import { getRedis } from "@/lib/redis";
 import type { FeedHealthReport } from "@/lib/types";
 
@@ -18,28 +20,25 @@ export interface AssetFeedHealthSummary {
   warnings: string[];
   safeForFastExecution: boolean;
   safeForSwingExecution: boolean;
+  /** Fresh Bybit stream transports for this asset: 0 or 1. */
   freshWebsocketSources: number;
+  /** Every asset is priced by one venue; stream and REST are its two transports. */
+  independentVenues: 1;
+  /**
+   * The same data-eligibility decision the daemon applies to a new entry.
+   * Data only: strategy, cost and risk checks still decide whether a trade happens.
+   */
+  dataEligibility: Pick<EntryEligibility, "allowed" | "state" | "reasons"> & { quoteEventTimeMs?: number | null };
   updatedAt: string;
 }
 
-const WEBSOCKET_SOURCES = ["KRAKEN_SPOT_WS", "BYBIT_LINEAR_WS", "BINANCE_SPOT_WS"] as const;
-const MIN_REDUNDANT_WEBSOCKET_SOURCES = 2;
 const WEBSOCKET_FRESHNESS_MS = 45_000;
 
-function websocketTimestamp(meta: any): number {
-  const timestamp = new Date(meta?.updatedAt || 0).getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
+/** 1 when the Bybit stream delivered this asset's last price recently, else 0. */
 async function freshWebsocketSourceCount(redis: ReturnType<typeof getRedis>, asset: string) {
-  const metadata = await Promise.all(WEBSOCKET_SOURCES.map((source) => (
-    redis.get<any>(`market:liveMeta:${source}:${asset}`).catch(() => null)
-  )));
-  const now = Date.now();
-  return metadata.filter((meta) => {
-    const timestamp = websocketTimestamp(meta);
-    return timestamp > 0 && now - timestamp <= WEBSOCKET_FRESHNESS_MS;
-  }).length;
+  const state = await redis.get<BybitTickerState>(liveQuoteKey(asset)).catch(() => null);
+  const lastPriceAt = Number(state?.lastPriceEventMs);
+  return Number.isFinite(lastPriceAt) && Date.now() - lastPriceAt <= WEBSOCKET_FRESHNESS_MS ? 1 : 0;
 }
 
 export interface FeedHealthMatrix {
@@ -57,15 +56,8 @@ export interface FeedHealthMatrix {
 }
 
 /**
- * Which treatment an asset qualifies for.
- *
- * Commodities now carry live websocket ticks like crypto, but they stay on
- * SLOW_SWING deliberately. REALTIME_FAST demands two independent websocket
- * sources so that one feed printing a wrong price can be caught by
- * disagreement with another. Crypto has three venues quoting the same asset;
- * gold, crude and silver are listed as perpetuals on Bybit alone, so there is
- * nothing to cross-check them against. Faster data does not by itself make a
- * feed verifiable, and the tier is about verification rather than latency.
+ * Which treatment an asset qualifies for. The fast tier remains a crypto
+ * strategy choice; data policy is the same single venue for every asset.
  */
 function assetMode(asset: string, category: AssetFeedHealthSummary["category"], health?: FeedHealthReport | null): AssetDataMode {
   if (health?.status === "BAD") return "DISABLED";
@@ -89,34 +81,58 @@ function fallbackReport(asset: string, category: AssetFeedHealthSummary["categor
     safeForFastExecution: false,
     safeForSwingExecution: false,
     freshWebsocketSources: 0,
+    independentVenues: 1,
+    dataEligibility: { allowed: false, state: "BLOCKED_DATA", reasons: [`FEED_UNAVAILABLE: ${message}`] },
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** The entry data decision, built from the same inputs the daemon uses. */
+async function dataEligibilityFor(asset: string): Promise<AssetFeedHealthSummary["dataEligibility"]> {
+  const [quote, metadata, m15, h1, h4, w1] = await Promise.all([
+    MarketService.getCurrentPriceSnapshot(asset).catch(() => null),
+    MarketService.getInstrumentMetadata(asset).catch(() => null),
+    MarketService.getCandles("15m", 101, asset).catch(() => []),
+    MarketService.getCandles("1h", 101, asset).catch(() => []),
+    MarketService.getCandles("4h", 100, asset).catch(() => []),
+    MarketService.getWeeklyCandles(20, asset).catch(() => []),
+  ]);
+  const nowMs = Date.now();
+  const referenceMs = quote?.eventTimeMs ?? nowMs;
+  const { allowed, state, reasons } = evaluateEntryEligibility({
+    instrument: entryInstrumentFor(asset),
+    metadata,
+    quote,
+    closedBarCounts: {
+      m15: closedCandles(m15, "15m", referenceMs).length,
+      h1: closedCandles(h1, "1h", referenceMs).length,
+      h4: closedCandles(h4, "4h", referenceMs).length,
+      w1: closedCandles(w1, "1w", referenceMs).length,
+    },
+    nowMs,
+    fastExecution: false,
+    depthAvailable: true,
+  });
+  return { allowed, state, reasons, quoteEventTimeMs: quote?.eventTimeMs ?? null };
 }
 
 function summarizeReport(
   asset: string,
   category: AssetFeedHealthSummary["category"],
   health: FeedHealthReport,
-  freshWebsocketSources: number
+  freshWebsocketSources: number,
+  dataEligibility: AssetFeedHealthSummary["dataEligibility"]
 ): AssetFeedHealthSummary {
   const mode = assetMode(asset, category, health);
-  const websocketUnavailable = mode === "REALTIME_FAST" && freshWebsocketSources === 0;
-  const websocketDegraded = mode === "REALTIME_FAST" && freshWebsocketSources < MIN_REDUNDANT_WEBSOCKET_SOURCES;
-  const displayStatus = websocketUnavailable
-    ? "BAD"
-    : (health.stale || websocketDegraded) && health.status === "GOOD"
-      ? "DEGRADED"
-      : health.status;
+  // Single-venue policy: a swing entry may use a fresh REST quote, so a quiet
+  // or dropped stream degrades only the fast tier, which needs the stream.
+  const streamMissing = mode === "REALTIME_FAST" && freshWebsocketSources === 0;
+  const displayStatus = (health.stale || streamMissing) && health.status === "GOOD" ? "DEGRADED" : health.status;
   const warnings = health.warnings.slice(0, 4);
-  if (websocketUnavailable) warnings.unshift("All realtime WebSocket sources are stale or unavailable");
-  else if (websocketDegraded) warnings.unshift("Only one realtime WebSocket source is fresh");
-  const score = websocketUnavailable
-    ? Math.min(health.score, 40)
-    : websocketDegraded
-      ? Math.min(health.score, 75)
-      : health.score;
-  const safeForSwingExecution = !websocketUnavailable && health.status !== "BAD" && !health.stale && score >= 50;
-  const safeForFastExecution = mode === "REALTIME_FAST" && freshWebsocketSources >= MIN_REDUNDANT_WEBSOCKET_SOURCES && displayStatus === "GOOD" && score >= 80 && !health.stale;
+  if (streamMissing) warnings.unshift("Bybit stream quote is not fresh; swing entries use REST quotes and fast entries wait");
+  const score = streamMissing ? Math.min(health.score, 75) : health.score;
+  const safeForSwingExecution = health.status !== "BAD" && !health.stale && score >= 50;
+  const safeForFastExecution = mode === "REALTIME_FAST" && freshWebsocketSources >= 1 && displayStatus === "GOOD" && score >= 80 && !health.stale;
 
   return {
     asset,
@@ -132,6 +148,8 @@ function summarizeReport(
     safeForFastExecution,
     safeForSwingExecution,
     freshWebsocketSources,
+    independentVenues: 1,
+    dataEligibility,
     updatedAt: health.lastUpdated,
   };
 }
@@ -161,7 +179,8 @@ function buildFindings(assets: AssetFeedHealthSummary[]) {
 export class FeedHealthSummary {
   static async build(): Promise<FeedHealthMatrix> {
     const redis = getRedis();
-    const cacheKey = "feedHealth:matrix:15m";
+    // Versioned: the row shape changed when data eligibility was added.
+    const cacheKey = "feedHealth:matrix:v2:15m";
     try {
       const cached = await redis.get<FeedHealthMatrix>(cacheKey);
       if (cached?.assets?.length) return cached;
@@ -172,13 +191,12 @@ export class FeedHealthSummary {
       try {
         const frame = await buildMarketFrame(asset, "15m", 120, false);
         if (!frame) return fallbackReport(asset, config.category, "No market frame returned");
-        // Counted for anything actually streamed, not just crypto. Commodities
-        // stream on Bybit and two FX pairs stream on Kraken, so gating this on
-        // category would report zero live sources for feeds that have one.
-        const websocketSources = config.bybitLinearSymbol || config.krakenWsSymbol
-          ? await freshWebsocketSourceCount(redis, asset)
-          : 0;
-        return summarizeReport(asset, config.category, frame.feedHealth, websocketSources);
+        // Every configured asset streams from Bybit.
+        const [websocketSources, eligibility] = await Promise.all([
+          freshWebsocketSourceCount(redis, asset),
+          dataEligibilityFor(asset),
+        ]);
+        return summarizeReport(asset, config.category, frame.feedHealth, websocketSources, eligibility);
       } catch (error) {
         return fallbackReport(asset, config.category, error);
       }

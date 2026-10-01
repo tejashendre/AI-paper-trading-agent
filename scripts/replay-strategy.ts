@@ -44,72 +44,6 @@ function formatCurrency(value: number) {
   return `${sign}$${value.toFixed(2)}`;
 }
 
-function yahooInterval(timeframe: Timeframe): string {
-  switch (timeframe) {
-    case "1m": return "1m";
-    case "5m": return "5m";
-    case "15m": return "15m";
-    case "30m": return "30m";
-    case "1h": return "60m";
-    case "4h": return "60m";
-    default: return "15m";
-  }
-}
-
-function yahooRange(timeframe: Timeframe, limit: number): string {
-  if (timeframe === "1m") return "7d";
-  if (timeframe === "5m" || timeframe === "15m" || timeframe === "30m") {
-    return limit > 500 ? "1mo" : "5d";
-  }
-  return limit > 500 ? "3mo" : "1mo";
-}
-
-async function fetchYahooCandles(asset: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
-  const ticker = SUPPORTED_ASSETS[asset]?.yahooTicker;
-  if (!ticker) throw new Error(`No Yahoo ticker configured for ${asset}.`);
-
-  const interval = yahooInterval(timeframe);
-  const range = yahooRange(timeframe, limit);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-
-  const response = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=${interval}&range=${range}`,
-    {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-    }
-  );
-  clearTimeout(timeout);
-
-  if (!response.ok) throw new Error(`Yahoo HTTP ${response.status}`);
-  const data = await response.json();
-  const chart = data.chart?.result?.[0];
-  if (!chart) throw new Error("Yahoo returned no chart result.");
-
-  const timestamps = chart.timestamp || [];
-  const quote = chart.indicators?.quote?.[0] || {};
-  const candles: Candle[] = [];
-
-  for (let i = 0; i < timestamps.length; i++) {
-    const open = quote.open?.[i];
-    const close = quote.close?.[i];
-    if (open === null || open === undefined || close === null || close === undefined) continue;
-    candles.push({
-      time: Number(timestamps[i]),
-      open: Number(open),
-      high: Number(quote.high?.[i] ?? open),
-      low: Number(quote.low?.[i] ?? open),
-      close: Number(close),
-      volume: Number(quote.volume?.[i] ?? 0),
-    });
-  }
-
-  return candles.slice(-limit);
-}
-
 // Candle history is cached on disk so repeated research runs do not re-download
 // hundreds of pages. Delete the directory to force a refresh.
 const CACHE_DIR = path.join(process.cwd(), ".replay-cache");
@@ -144,10 +78,8 @@ const BYBIT_INTERVAL: Partial<Record<Timeframe, string>> = {
 };
 
 /**
- * Crypto is replayed against Bybit, the venue the daemon actually executes on,
- * and paginated so the sample can span months. Yahoo only serves a few days of
- * intraday history, which is far too short to judge a strategy that now holds
- * positions for roughly a day.
+ * Every asset is replayed against its Bybit perpetual, the venue the daemon
+ * executes on, paginated so the sample can span months.
  */
 async function fetchBybitCandles(asset: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
   const cached = readCache(asset, timeframe, limit);
@@ -212,13 +144,12 @@ async function loadCandles(assets: string[], timeframe: Timeframe, limit: number
       continue;
     }
 
-    const isCrypto = SUPPORTED_ASSETS[asset].category === "crypto";
+    // Every asset replays its own Bybit perpetual, the instrument it trades.
+    // No spot or futures proxy history is spliced in; a young contract simply
+    // has a shorter sample.
     try {
-      candlesByAsset[asset] = isCrypto
-        ? await fetchBybitCandles(asset, timeframe, limit)
-        : await fetchYahooCandles(asset, timeframe, limit);
-      const venue = isCrypto ? "Bybit" : "Yahoo";
-      console.log(`[REPLAY] Loaded ${candlesByAsset[asset].length} ${timeframe} candles for ${asset} from ${venue}.`);
+      candlesByAsset[asset] = await fetchBybitCandles(asset, timeframe, limit);
+      console.log(`[REPLAY] Loaded ${candlesByAsset[asset].length} ${timeframe} candles for ${asset} from Bybit.`);
     } catch (error: any) {
       console.warn(`[REPLAY] Failed to load ${asset}: ${error?.message || error}`);
       candlesByAsset[asset] = [];

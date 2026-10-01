@@ -1,4 +1,5 @@
 import { OpenPosition, PaperMarginMode, Portfolio } from "@/lib/types";
+import type { EntryEligibility } from "./entryEligibility";
 import {
   estimateFeeUsd,
   estimateNotionalUsd,
@@ -24,6 +25,8 @@ export interface TradeAdmissionInput {
   dataQuality?: number;
   /** Crypto can use verified public WebSocket data; other free feeds stay swing-only. */
   assetMode?: "REALTIME_FAST" | "CONDITIONAL_FAST" | "SLOW_SWING";
+  /** The shared data-eligibility decision; a blocked one refuses the entry before sizing. */
+  dataEligibility?: EntryEligibility;
 }
 
 export interface TradeAdmissionResult {
@@ -286,6 +289,10 @@ export class TradeAdmissionController {
       maxTradeMarginUsd,
       maxTotalMarginUsd,
     });
+
+    if (input.dataEligibility && !input.dataEligibility.allowed) {
+      return emptyResult(`Data not eligible (${input.dataEligibility.state}): ${input.dataEligibility.reasons.join("; ")}`);
+    }
 
     if (!Number.isFinite(equity) || equity <= 0) {
       return emptyResult("Invalid or empty portfolio equity.");

@@ -18,6 +18,7 @@ import { buildMomentumSnapshot, fetchTickers } from "../lib/data/perpUniverse";
 import { decideBook, DEFAULT_STRATEGY } from "../lib/strategy/crossSectionalMomentum";
 import {
   applyBookPlan,
+  BookPortfolio,
   bookEquityUsd,
   currentWeights,
   getEquityCurve,
@@ -27,8 +28,14 @@ import {
   recordEquityPoint,
   recordReconciliation,
   saveBookPortfolio,
-  settleFunding,
+  settleBookFunding,
+  SHADOW_BOOK_EQUITY_CURVE_KEY,
+  SHADOW_BOOK_PORTFOLIO_KEY,
 } from "../lib/execution/bookRebalancer";
+import { BOOK_RISK_POLICY_VERSION, BookRiskDecision, evaluateBookRisk, makeReduceOnlyPlan } from "../lib/execution/bookRiskPolicy";
+import { FILL_CAPACITY_POLICY } from "../lib/execution/liquidityCost";
+import type { PerpTicker } from "../lib/data/perpUniverse";
+import { liveFundingDeps } from "../lib/data/bybitPublic";
 import {
   buildCostVerdict,
   RECONCILIATION_VERDICT_KEY,
@@ -39,7 +46,8 @@ import { summariseRealisedEdge } from "../lib/research/edgeDecay";
 const CONFIG = DEFAULT_STRATEGY;
 const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
 const MARK_INTERVAL_MS = 60_000;
-const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+/** How often to look for newly published settlements; charges follow each symbol's own boundaries. */
+const FUNDING_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
 const EQUITY_KEY = "xsec:equity";
 const LOCK_KEY = "xsec:lock";
@@ -51,8 +59,11 @@ const EDGE_VERDICT_KEY = "xsec:edgeVerdict";
  */
 const EDGE_WINDOW_PERIODS = 30;
 
-/** Circuit breaker: stop opening new risk if the book bleeds this far. */
-const MAX_DRAWDOWN_PERCENT = 25;
+/**
+ * A documented release written by the owner, e.g. { authorizedBy, documentedAt,
+ * note }. Nothing in this process writes it; a halted book cannot clear itself.
+ */
+const RISK_RELEASE_KEY = "xsec:riskRelease";
 
 let rebalancing = false;
 let marking = false;
@@ -69,6 +80,98 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+/**
+ * Decide and record the book's risk state before any action. The breaker
+ * (25% lifetime drawdown) and a lost edge stop new risk; neither stops the
+ * management of risk already held.
+ */
+async function decideRiskState(portfolio: BookPortfolio, prices: Map<string, PerpTicker> | null, edgeVerdict: string): Promise<BookRiskDecision> {
+  const positions = Object.values(portfolio.positions);
+  const equity = prices ? bookEquityUsd(portfolio, prices) : null;
+  const currentDrawdownPercent = equity !== null && portfolio.peakEquityUsd > 0
+    ? Math.max(0, ((portfolio.peakEquityUsd - equity) / portfolio.peakEquityUsd) * 100)
+    : 0;
+  const release = await getRedis().get<{ authorizedBy?: string; documentedAt?: string }>(RISK_RELEASE_KEY).catch(() => null);
+  const previous = portfolio.riskState?.state ?? "ACTIVE";
+  const decision = evaluateBookRisk({
+    previous,
+    lifetimeMaxDrawdownPercent: portfolio.maxDrawdownPercent,
+    currentDrawdownPercent,
+    hasOpenPositions: positions.length > 0,
+    entryDataReady: Boolean(prices),
+    exitDataReady: Boolean(prices),
+    edgeVerdict,
+    releaseAuthorized: Boolean(release?.authorizedBy && release?.documentedAt),
+    breachAcknowledgedAtPercent: portfolio.riskState?.breachAcknowledgedAtPercent,
+  });
+  const released = previous === "SHADOW" && decision.state === "ACTIVE";
+  portfolio.riskState = {
+    ...portfolio.riskState,
+    state: decision.state,
+    reasons: decision.reasons,
+    allowEntries: decision.allowEntries,
+    allowReductions: decision.allowReductions,
+    policyVersion: BOOK_RISK_POLICY_VERSION,
+    updatedAt: new Date().toISOString(),
+    breachAcknowledgedAtPercent: released ? portfolio.maxDrawdownPercent : portfolio.riskState?.breachAcknowledgedAtPercent,
+  };
+  await saveBookPortfolio(portfolio);
+  if (decision.state !== previous) {
+    await Logger.warn(`[XSEC] risk state ${previous} -> ${decision.state}: ${decision.reasons.join(" ")}`);
+  }
+  return decision;
+}
+
+/**
+ * One staged reduce-only step, sized by the fill capacity limit. Without
+ * valid prices the blocked attempt is recorded and retried next sweep; no
+ * fill is invented to make the book look flat.
+ */
+async function reduceOnlyStep(portfolio: BookPortfolio, prices: Map<string, PerpTicker> | null, decision: BookRiskDecision) {
+  const at = new Date().toISOString();
+  if (!decision.allowReductions || !prices) {
+    portfolio.riskState = { ...portfolio.riskState!, lastUnwind: { at, executed: 0, detail: decision.reasons.join(" ") || "no valid prices" } };
+    await saveBookPortfolio(portfolio);
+    return;
+  }
+  const plan = makeReduceOnlyPlan({
+    positions: Object.values(portfolio.positions),
+    prices,
+    maxParticipation: FILL_CAPACITY_POLICY.maxTurnoverShare,
+    equityUsd: bookEquityUsd(portfolio, prices),
+  });
+  const result = applyBookPlan({ portfolio, plan, prices, config: CONFIG, reduceOnly: true });
+  portfolio.riskState = { ...portfolio.riskState!, lastUnwind: { at, executed: result.executed, detail: plan.reason } };
+  await saveBookPortfolio(portfolio);
+  await recordBookTrades(result.trades);
+  await recordReconciliation(result.reconciliation);
+  if (result.executed > 0) await logRebalance(result, plan);
+}
+
+/** Every minute: re-check the risk state and, when reducing, take one staged step. */
+async function runRiskSweep(prices: Map<string, PerpTicker>) {
+  await withLock(async () => {
+    const portfolio = await loadBookPortfolio();
+    const edge = await getRedis().get<{ verdict?: string }>(EDGE_VERDICT_KEY).catch(() => null);
+    const decision = await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
+    if (decision.state !== "REDUCE_ONLY") return;
+    await settleBookFunding(portfolio, liveFundingDeps).catch(() => undefined);
+    await reduceOnlyStep(portfolio, prices, decision);
+    // The last close moves a breached book to SHADOW at once.
+    if (Object.keys(portfolio.positions).length === 0) await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
+  });
+}
+
+/** The same plan on a capital-free book, so halted periods still produce forward evidence. */
+async function runShadowRebalance(snapshot: Awaited<ReturnType<typeof buildMomentumSnapshot>>) {
+  const shadow = await loadBookPortfolio(10_000, SHADOW_BOOK_PORTFOLIO_KEY);
+  await settleBookFunding(shadow, liveFundingDeps).catch(() => undefined);
+  await recordEquityPoint(shadow, bookEquityUsd(shadow, snapshot.prices), SHADOW_BOOK_EQUITY_CURVE_KEY);
+  const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(shadow, snapshot.prices), config: CONFIG });
+  applyBookPlan({ portfolio: shadow, plan, prices: snapshot.prices, config: CONFIG });
+  await saveBookPortfolio(shadow, SHADOW_BOOK_PORTFOLIO_KEY);
+}
+
 async function runRebalance() {
   if (rebalancing) return;
   rebalancing = true;
@@ -76,47 +179,39 @@ async function runRebalance() {
     await withLock(async () => {
       const portfolio = await loadBookPortfolio();
 
-      if (portfolio.maxDrawdownPercent >= MAX_DRAWDOWN_PERCENT) {
-        await Logger.warn(
-          `[XSEC] drawdown ${portfolio.maxDrawdownPercent.toFixed(1)}% has reached the ${MAX_DRAWDOWN_PERCENT}% circuit breaker; holding the book without adding risk.`
-        );
-        return;
-      }
-
-      const snapshot = await buildMomentumSnapshot({ lookbackHours: CONFIG.lookbackHours });
-      if (snapshot.momentum.size < 3 * CONFIG.bookSize) {
-        await Logger.warn(
-          `[XSEC] only ${snapshot.momentum.size} rankable symbols, need ${3 * CONFIG.bookSize}. Skipping this rebalance rather than trading a thin cross-section.`
-        );
-        return;
-      }
-
-      // Sample equity at the period boundary, before trading, so the return
-      // series describes what the last period's book earned rather than what
-      // this period's orders cost.
-      await recordEquityPoint(portfolio, bookEquityUsd(portfolio, snapshot.prices));
+      // Equity sampling, funding and the edge review run in every risk state,
+      // so a halted book keeps an up-to-date verdict.
+      const prices = await fetchTickers().catch(() => null);
+      if (prices) await recordEquityPoint(portfolio, bookEquityUsd(portfolio, prices));
+      await settleBookFunding(portfolio, liveFundingDeps).catch(() => undefined);
       const edge = await reviewEdge();
-      if (edge?.shouldHalt) {
-        await Logger.warn(
-          `[XSEC] edge re-validation stood the book down: ${edge.explanation} ` +
-          `Holding the existing positions and adding no new risk until a window comes back positive.`
-        );
-        // Deliberately a hold rather than an automatic liquidation. A single
-        // negative window is a weak signal on a strategy this noisy, and
-        // flattening on it would also deadlock the recovery test: a flat book
-        // produces flat returns, which can never clear the bar to resume.
-        // Unwinding is left to the owner, who can see this on the dashboard.
+      const decision = await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
+
+      if (decision.state === "REDUCE_ONLY") {
+        await reduceOnlyStep(portfolio, prices, decision);
+        await getRedis().set(LAST_REBALANCE_KEY, Date.now());
         return;
       }
 
-      const weights = currentWeights(portfolio, snapshot.prices);
-      const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: weights, config: CONFIG });
-      const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config: CONFIG });
+      const snapshot = await buildMomentumSnapshot({ lookbackHours: CONFIG.lookbackHours }).catch(() => null);
+      if (!snapshot || snapshot.momentum.size < 3 * CONFIG.bookSize) {
+        await Logger.warn(
+          `[XSEC] only ${snapshot?.momentum.size ?? 0} rankable symbols, need ${3 * CONFIG.bookSize}. Skipping this rebalance rather than trading a thin cross-section.`
+        );
+        await getRedis().set(LAST_REBALANCE_KEY, Date.now());
+        return;
+      }
 
-      await saveBookPortfolio(portfolio);
-      await recordBookTrades(result.trades);
-      await recordReconciliation(result.reconciliation);
-      await logRebalance(result, plan);
+      const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(portfolio, snapshot.prices), config: CONFIG });
+      if (decision.allowEntries || decision.allowReductions) {
+        // ENTRY_HALT keeps managing what it holds: only orders that reduce.
+        const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config: CONFIG, reduceOnly: !decision.allowEntries });
+        await saveBookPortfolio(portfolio);
+        await recordBookTrades(result.trades);
+        await recordReconciliation(result.reconciliation);
+        await logRebalance(result, plan);
+      }
+      if (decision.state !== "ACTIVE") await runShadowRebalance(snapshot);
       await getRedis().set(LAST_REBALANCE_KEY, Date.now());
     });
   } catch (error) {
@@ -212,7 +307,11 @@ async function runMark() {
       maxDrawdownPercent: portfolio.maxDrawdownPercent,
       totalRebalances: portfolio.totalRebalances,
       strategyVersion: portfolio.strategyVersion,
+      riskState: portfolio.riskState?.state ?? "ACTIVE",
     }, { ex: 300 });
+    await runRiskSweep(prices).catch((error) =>
+      Logger.warn(`[XSEC] risk sweep failed: ${error instanceof Error ? error.message : String(error)}`)
+    );
   } catch (error) {
     await Logger.warn(`[XSEC] mark failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -223,12 +322,18 @@ async function runMark() {
 async function runFunding() {
   try {
     await withLock(async () => {
-      const prices = await fetchTickers();
       const portfolio = await loadBookPortfolio();
-      if (Object.keys(portfolio.positions).length === 0) return;
-      const paid = settleFunding(portfolio, prices);
-      await saveBookPortfolio(portfolio);
-      await Logger.info(`[XSEC] funding settled: ${paid >= 0 ? "paid" : "received"} $${Math.abs(paid).toFixed(2)}.`);
+      if (Object.keys(portfolio.positions).length === 0 && !(portfolio.fundingTail?.length)) return;
+      const before = portfolio.fundingPaidUsd;
+      const outcome = await settleBookFunding(portfolio, liveFundingDeps);
+      if (outcome.booked > 0) {
+        await saveBookPortfolio(portfolio);
+        const paid = portfolio.fundingPaidUsd - before;
+        await Logger.info(`[XSEC] ${outcome.booked} funding settlement(s): ${paid >= 0 ? "paid" : "received"} $${Math.abs(paid).toFixed(2)}.`);
+      }
+      if (outcome.pending > 0 || outcome.errors.length > 0) {
+        await Logger.warn(`[XSEC] funding pending reconciliation: ${outcome.pending} boundary(ies). ${outcome.errors.join("; ")}`.trim());
+      }
     });
   } catch (error) {
     await Logger.warn(`[XSEC] funding settlement failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -251,10 +356,13 @@ async function main() {
 
   setInterval(() => { void maybeRebalance(); }, 5 * 60 * 1000);
   setInterval(() => { void runMark(); }, MARK_INTERVAL_MS);
-  setInterval(() => { void runFunding(); }, FUNDING_INTERVAL_MS);
+  await runFunding().catch(() => undefined);
+  setInterval(() => { void runFunding(); }, FUNDING_CHECK_INTERVAL_MS);
 }
 
-main().catch(async (error) => {
+export { decideRiskState, runRebalance, runRiskSweep };
+
+if (require.main === module) main().catch(async (error) => {
   await Logger.error(`[XSEC] fatal: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });

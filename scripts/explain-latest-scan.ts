@@ -152,6 +152,7 @@ async function main(): Promise<void> {
 
     console.log(`${colorForAction(action)}\x1b[1m[${asset}] - ${action}\x1b[0m`);
     console.log(`  Reason: \x1b[3m${explainReason(result)}\x1b[0m`);
+    if (getText(result.vetoCode)) console.log(`  First check that stopped it: \x1b[31m${getText(result.vetoCode)}\x1b[0m`);
 
     const gate = asRecord(result.entryGate);
     if (action === "BLOCKED" && getText(gate.primaryBlocker)) {

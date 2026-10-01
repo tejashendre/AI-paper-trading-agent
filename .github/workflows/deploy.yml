@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: quant-vps
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -30,6 +37,10 @@ jobs:
       - name: Run Type Check
         run: npx tsc --noEmit
 
+      # Offline: fake Bybit behind fetch, in-memory Redis, temp ledger. No secrets.
+      - name: Run Bybit Upgrade Tests
+        run: npm run test:upgrade
+
       - name: Run Strategy Audit
         run: npm run audit:strategy
 
@@ -39,7 +50,27 @@ jobs:
       - name: Build Runtime Source Manifest
         run: npm run source:manifest
 
+      - name: Read-only VPS and live-market release preflight
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            set -eu
+            cd /home/ubuntu/version-6
+            RELEASE_SHA='${{ github.event.pull_request.head.sha }}'
+            git fetch origin "$RELEASE_SHA"
+            PREFLIGHT_SCRIPT="data/release-preflight-${RELEASE_SHA}.sh"
+            mkdir -p data
+            git show "$RELEASE_SHA:scripts/release-preflight.sh" > "$PREFLIGHT_SCRIPT"
+            RELEASE_SHA="$RELEASE_SHA" sh "$PREFLIGHT_SCRIPT"
+
       - name: Deploy to Oracle VPS via SSH
+        if: github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -66,6 +97,9 @@ jobs:
               docker cp quant-redis:/data/dump.rdb "$BACKUP_DIR/redis-dump.rdb"
             fi
 
+            # New code starts with entries frozen; exits keep managing old positions.
+            docker exec quant-redis redis-cli SET swing:entryFreeze '{"reason":"Verified Release A rollout","setBy":"Codex"}'
+
             echo "Materializing the exact GitHub commit..."
             git fetch --prune origin main
             git reset --hard "$DEPLOY_COMMIT"
@@ -75,11 +109,8 @@ jobs:
             echo "Rebuilding and starting application containers..."
             export APP_COMMIT_SHA="$DEPLOY_COMMIT"
             export APP_DEPLOYED_AT="$DEPLOYED_AT"
-            docker compose build --pull quant-dashboard swing-daemon xsec-daemon
-            docker compose up -d --remove-orphans
-
-            echo "Cleaning unused Docker build cache older than seven days..."
-            docker builder prune -f --filter "until=168h"
+            docker compose build --pull quant-dashboard
+            docker compose up -d --no-build --remove-orphans
 
             echo "Cross-sectional daemon status (reported, not gated):"
             docker compose ps xsec-daemon || true
@@ -90,5 +121,11 @@ jobs:
             STATUS_AUTH_TOKEN=SPECTATOR \
             WAIT_SECONDS=75 \
             sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
+
+            echo "Lifting the new-entry freeze after health and scan verification..."
+            docker exec quant-redis redis-cli DEL swing:entryFreeze
+
+            echo "Compressing historical ledger and reclaiming unused build artifacts..."
+            PRUNE_UNTIL=all sh scripts/vps-maintenance.sh --apply
 
             echo "Deployment completed successfully at $DEPLOY_COMMIT"

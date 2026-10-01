@@ -1,357 +1,334 @@
-import { Candle, Timeframe } from "@/lib/types";
+import { Candle, Timeframe, TIMEFRAME_MS } from "@/lib/types";
 import { getRedis } from "@/lib/redis";
+import {
+  BybitInstrumentMetadata,
+  CONFIGURED_ASSETS,
+  CONFIGURED_INSTRUMENTS,
+  getConfiguredInstrument,
+  InstrumentRef,
+  isConfiguredAsset,
+} from "@/lib/trading/instrumentRegistry";
+import { BybitTickerState, bybitPublicGet, getBybitInstrumentMetadata } from "@/lib/data/bybitPublic";
+import type { LiquiditySnapshot } from "@/lib/execution/liquidityCost";
 
 interface AssetConfig {
   name: string;
   category: "crypto" | "forex" | "commodity";
+  /** The Bybit USDT linear perpetual every market path for this asset uses. */
   bybitLinearSymbol: string;
-  /** Kraken REST pair code, e.g. XBTUSD or ZEURZUSD. */
-  krakenPair: string;
-  /**
-   * Kraken websocket v2 symbol, e.g. "BTC/USD" or "EUR/USD". Distinct from
-   * krakenPair on purpose: the two APIs name the same market differently, and
-   * deriving one from the other works for crypto and breaks on FX.
-   */
-  krakenWsSymbol?: string;
-  yahooTicker: string;
-  coingeckoId: string;
 }
 
 interface CandleRequestOptions {
   allowStale?: boolean;
 }
 
-export const SUPPORTED_ASSETS: Record<string, AssetConfig> = {
-  BTC: { name: "Bitcoin", category: "crypto", bybitLinearSymbol: "BTCUSDT", krakenPair: "XBTUSD", krakenWsSymbol: "BTC/USD", yahooTicker: "BTC-USD", coingeckoId: "bitcoin" },
-  ETH: { name: "Ethereum", category: "crypto", bybitLinearSymbol: "ETHUSDT", krakenPair: "ETHUSD", krakenWsSymbol: "ETH/USD", yahooTicker: "ETH-USD", coingeckoId: "ethereum" },
-  SOL: { name: "Solana", category: "crypto", bybitLinearSymbol: "SOLUSDT", krakenPair: "SOLUSD", krakenWsSymbol: "SOL/USD", yahooTicker: "SOL-USD", coingeckoId: "solana" },
-  // EUR/USD and GBP/USD read from Kraken rather than Yahoo. Kraken quotes them
-  // as real fiat pairs on a venue this system already holds a websocket to, and
-  // its data is better on every axis measured 2026-09-08: 721 bars at every
-  // interval against Yahoo's 514, a native 4h series instead of one downsampled
-  // from 1h, no gaps, and real volume where Yahoo reports none at all. Quotes
-  // agree with Yahoo to within 0.06%.
-  EURUSD: { name: "EUR/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZEURZUSD", krakenWsSymbol: "EUR/USD", yahooTicker: "EURUSD=X", coingeckoId: "" },
-  GBPUSD: { name: "GBP/USD", category: "forex", bybitLinearSymbol: "", krakenPair: "ZGBPZUSD", krakenWsSymbol: "GBP/USD", yahooTicker: "GBPUSD=X", coingeckoId: "" },
-  // USD/JPY deliberately stays on Yahoo. Kraken lists it, but the book is thin:
-  // bid 152.57 against ask 155.64 is a ~100bps half-spread on 19k of daily
-  // volume, which would cost more than any edge the strategy is looking for.
-  // Faster data on an untradeable quote is worse than slower data on a real one.
-  USDJPY: { name: "USD/JPY", category: "forex", bybitLinearSymbol: "", krakenPair: "", yahooTicker: "USDJPY=X", coingeckoId: "" },
-  // Commodities are quoted from Bybit perpetuals rather than Yahoo futures.
-  // Yahoo's intraday candles for CME contracts run about ten hours behind while
-  // its quote stays current, which left signals computed on stale bars and the
-  // whole sleeve failing closed. The Bybit contracts trade continuously, return
-  // complete 15m/1h/4h series with no gaps and no zero-volume bars, and sit on
-  // the same venue as the crypto feed, so one outage story covers everything.
-  //
-  // The yahooTicker is kept as the reference the price was validated against:
-  // Bybit XAU 4410 vs Yahoo GC=F 4477, CL 92.47 vs CL=F 91.48, XAG 66.03 vs
-  // SI=F 66.75. The gaps are the ordinary spot-versus-futures basis, so these
-  // track the same underlying without being the same contract.
-  GOLD: { name: "Gold", category: "commodity", bybitLinearSymbol: "XAUUSDT", krakenPair: "", yahooTicker: "GC=F", coingeckoId: "" },
-  // WTI, not Brent. Bybit lists both; WTI turns over $34.7M a day against
-  // Brent's $10.2M, and WTI is what this system has always meant by OIL.
-  OIL: { name: "Crude Oil", category: "commodity", bybitLinearSymbol: "CLUSDT", krakenPair: "", yahooTicker: "CL=F", coingeckoId: "" },
-  SILVER: { name: "Silver", category: "commodity", bybitLinearSymbol: "XAGUSDT", krakenPair: "", yahooTicker: "SI=F", coingeckoId: "" }
-};
+// Every configured asset is priced, charted and traded on its Bybit USDT
+// linear perpetual (verified 2026-10-01), so one venue story covers all nine.
+// OIL is WTI (CLUSDT), not Brent; FX perpetuals are not MT5 CFDs or spot FX.
+// Kraken, Yahoo, Binance and CoinGecko are not requested on any active path;
+// their names survive only as historical DataSource values.
+export const SUPPORTED_ASSETS: Record<string, AssetConfig> = Object.fromEntries(
+  CONFIGURED_ASSETS.map((asset) => [
+    asset,
+    {
+      name: CONFIGURED_INSTRUMENTS[asset].name,
+      category: CONFIGURED_INSTRUMENTS[asset].riskClass,
+      bybitLinearSymbol: CONFIGURED_INSTRUMENTS[asset].symbol,
+    },
+  ])
+);
 
 export const CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR" as const;
 export const CRYPTO_EXECUTION_SOURCE = "BYBIT_LINEAR_WS" as const;
 
-export type PrimaryMarketDataProvider = typeof CRYPTO_EXECUTION_PROVIDER | "KRAKEN" | "YAHOO";
+export type PrimaryMarketDataProvider = typeof CRYPTO_EXECUTION_PROVIDER;
+
+/** How candles, quotes and sensors are fetched and cleaned; part of every cache key. */
+export const MARKET_DATA_SCHEMA_VERSION = "bybit-data-v1";
+/** A streamed last price older than this is not the current quote. */
+const WS_QUOTE_MAX_AGE_MS = 5_000;
+/** Exchange times this far ahead of the local clock are still accepted. */
+const CLOCK_TOLERANCE_MS = 2_000;
+const REST_QUOTE_CACHE_MS = 5_000;
+const DEPTH_CACHE_MS = 15_000;
+const SENSOR_MAX_AGE_MS = 60_000;
 
 export interface MarketPriceSnapshot {
+  /** Last traded price. */
   price: number;
   provider: string;
+  /** Legacy alias of `transport`. */
   source: "WEBSOCKET" | "HTTP";
+  /** WS and REST are two transports from one venue, not two sources. */
+  transport: "WS" | "REST";
   venue: string;
   instrument: string;
+  instrumentVersion: string;
+  /** Exchange time of the last price, ISO. */
   updatedAt: string;
+  eventTimeMs: number;
+  receivedAtMs: number;
   bid?: number;
   ask?: number;
+  markPrice?: number;
+  indexPrice?: number;
+  /** Exchange time of each field group; null when that group was not observed. */
+  quoteTimes: { lastPriceMs: number; bidAskMs: number | null; markMs: number | null };
 }
 
-export function marketLivePriceKey(source: string, assetKey: string): string {
-  return `market:live:${source}:${assetKey}`;
+export interface MarketCache {
+  get<T>(key: string): Promise<T | null>;
+  set(key: string, value: unknown, options?: { ex?: number }): Promise<unknown>;
 }
 
-export function marketLiveMetaKey(source: string, assetKey: string): string {
-  return `market:liveMeta:${source}:${assetKey}`;
+export interface MarketServiceDeps {
+  bybitGet: <T>(path: string) => Promise<{ result: T; serverTimeMs: number }>;
+  cache: MarketCache;
+  nowMs: () => number;
+  metadata: (symbol: string) => Promise<BybitInstrumentMetadata>;
 }
 
-export function marketImbalanceKey(source: string, assetKey: string): string {
-  return `market:imbalance:${source}:${assetKey}`;
+// Redis is reached lazily so importing this module never opens a connection.
+const lazyRedis: MarketCache = {
+  get: (key) => getRedis().get(key),
+  set: (key, value, options) => getRedis().set(key, value, options),
+};
+
+let deps: MarketServiceDeps = {
+  bybitGet: (path) => bybitPublicGet(path),
+  cache: lazyRedis,
+  nowMs: () => Date.now(),
+  metadata: (symbol) => getBybitInstrumentMetadata(symbol),
+};
+
+/** Swap the transport, cache or clock (tests, offline tools). Returns a restore function. */
+export function setMarketServiceDeps(overrides: Partial<MarketServiceDeps>): () => void {
+  const previous = deps;
+  deps = { ...previous, ...overrides };
+  return () => {
+    deps = previous;
+  };
+}
+
+/** The instrument a new entry in this asset trades, frozen onto the position at entry. */
+export function entryInstrumentFor(assetKey: string): InstrumentRef {
+  return getConfiguredInstrument(assetKey);
+}
+
+/** Where the stream daemon keeps the current session's ticker state for an asset. */
+export function liveQuoteKey(assetKey: string): string {
+  return `market:liveQuote:${MARKET_DATA_SCHEMA_VERSION}:${getConfiguredInstrument(assetKey).instrumentVersion}`;
 }
 
 /**
- * Whether this asset is quoted from a continuously traded perpetual.
- *
- * Data routing, staleness tolerance and session hours all follow the
- * *instrument* rather than the asset's category. Gold is a commodity, but a
- * gold perpetual trades through the weekend and publishes a bar every minute,
- * so applying commodity session rules to it would wrongly mark it closed and
- * applying the eight-times staleness allowance would let genuinely stale data
- * through. Category still governs risk treatment, where "is this a commodity"
- * remains the right question.
+ * Whether this asset is quoted from a continuously traded perpetual. True for
+ * every configured asset. Session liquidity for the TradFi underlyings is a
+ * separate question answered by marketSession, and risk treatment still
+ * follows the asset's class.
  */
 export function tradesContinuously(assetKey: string): boolean {
-  return Boolean(SUPPORTED_ASSETS[assetKey]?.bybitLinearSymbol);
+  return isConfiguredAsset(assetKey);
 }
 
 export function primaryMarketDataProvider(assetKey: string): PrimaryMarketDataProvider {
-  const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-  if (config.bybitLinearSymbol) return CRYPTO_EXECUTION_PROVIDER;
-  // Crypto carries a krakenPair as a comparison source but executes on Bybit,
-  // so the Bybit check has to come first or it would be silently overridden.
-  if (config.krakenPair) return "KRAKEN";
-  return "YAHOO";
+  getConfiguredInstrument(assetKey);
+  return CRYPTO_EXECUTION_PROVIDER;
 }
 
-export function marketPriceCacheKey(assetKey: string): string {
-  return `cache:price:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
+type CandleInterval = Timeframe | "1w";
+
+const BYBIT_INTERVAL: Record<CandleInterval, string> = {
+  "1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1w": "W",
+};
+const INTERVAL_MS: Record<CandleInterval, number> = { ...TIMEFRAME_MS, "1w": 7 * 24 * 3_600_000 };
+/** Bybit weekly bars open on Monday 00:00 UTC; 1970-01-05 was a Monday. */
+const WEEK_ANCHOR_MS = Date.UTC(1970, 0, 5);
+/** Higher-timeframe features read only completed bars. */
+const CLOSED_BARS_ONLY = new Set<CandleInterval>(["4h", "1w"]);
+
+function barOpenMs(interval: CandleInterval, atMs: number): number {
+  const ms = INTERVAL_MS[interval];
+  if (interval === "1w") return WEEK_ANCHOR_MS + Math.floor((atMs - WEEK_ANCHOR_MS) / ms) * ms;
+  return Math.floor(atMs / ms) * ms;
 }
 
-function marketPriceMetaCacheKey(assetKey: string): string {
-  return `cache:priceMeta:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
+/**
+ * Bars whose period has ended by exchange time. A forming bar still changes,
+ * so a feature computed from it would not reproduce on a later run.
+ */
+export function closedCandles(candles: Candle[], timeframe: CandleInterval, serverTimeMs: number): Candle[] {
+  const ms = INTERVAL_MS[timeframe];
+  return candles.filter((candle) => candle.time * 1000 + ms <= serverTimeMs);
 }
 
-function marketCandleCacheKey(assetKey: string, timeframe: Timeframe): string {
-  return `cache:candles:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}:${timeframe}`;
+/**
+ * Structurally valid bars, oldest first, one per open time. Invalid bars are
+ * dropped and show up as gaps; no value is ever repaired, clipped or invented,
+ * and a bar never depends on the bar after it.
+ */
+function validCandles(candles: Candle[]): Candle[] {
+  const byTime = new Map<number, Candle>();
+  candles
+    .filter((c) =>
+      [c.time, c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite) &&
+      c.time > 0 && c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.volume >= 0 &&
+      c.high >= Math.max(c.open, c.close) && c.low <= Math.min(c.open, c.close)
+    )
+    .sort((a, b) => a.time - b.time)
+    .forEach((candle) => byTime.set(candle.time, candle));
+  return [...byTime.values()];
+}
+
+function missingBarCount(candles: Candle[], interval: CandleInterval): number {
+  const ms = INTERVAL_MS[interval];
+  let missing = 0;
+  for (let index = 1; index < candles.length; index += 1) {
+    missing += Math.max(0, Math.round(((candles[index].time - candles[index - 1].time) * 1000) / ms) - 1);
+  }
+  return missing;
+}
+
+function candleCacheKey(instrument: InstrumentRef, interval: CandleInterval, nowMs: number): string {
+  // The bar cutoff in the key means a series cached during one bar is never
+  // served once that bar has closed.
+  return `cache:candles:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}:${BYBIT_INTERVAL[interval]}:${barOpenMs(interval, nowMs)}`;
+}
+
+function candleTtlSeconds(interval: CandleInterval): number {
+  if (interval === "1m") return 10;
+  if (interval === "5m") return 30;
+  if (interval === "15m") return 60;
+  if (interval === "1w") return 3_600;
+  return 300;
+}
+
+function positive(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function finite(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+type BybitTickerRow = Record<string, string | undefined>;
+
+async function fetchTicker(symbol: string): Promise<{ row: BybitTickerRow; serverTimeMs: number }> {
+  const { result, serverTimeMs } = await deps.bybitGet<{ list?: BybitTickerRow[] }>(
+    `/v5/market/tickers?category=linear&symbol=${encodeURIComponent(symbol)}`
+  );
+  const row = result.list?.find((entry) => entry?.symbol === symbol);
+  if (!row) throw new Error(`Bybit returned no ticker for ${symbol}`);
+  return { row, serverTimeMs };
+}
+
+async function fetchCandles(symbol: string, interval: CandleInterval, limit: number) {
+  const bounded = Math.max(1, Math.min(1_000, limit));
+  const { result, serverTimeMs } = await deps.bybitGet<{ list?: unknown[][] }>(
+    `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${BYBIT_INTERVAL[interval]}&limit=${bounded}`
+  );
+  const candles = validCandles((result.list ?? []).map((row) => ({
+    time: Math.floor(Number(row?.[0]) / 1_000),
+    open: Number(row?.[1]),
+    high: Number(row?.[2]),
+    low: Number(row?.[3]),
+    close: Number(row?.[4]),
+    volume: Number(row?.[5]),
+  })));
+  return { candles, serverTimeMs };
+}
+
+function snapshotFromTickerState(instrument: InstrumentRef, state: BybitTickerState, nowMs: number): MarketPriceSnapshot | null {
+  const price = positive(state.lastPrice);
+  const lastAt = state.lastPriceEventMs;
+  if (state.symbol !== instrument.symbol || price === undefined || lastAt === undefined) return null;
+  const age = nowMs - lastAt;
+  if (age < -CLOCK_TOLERANCE_MS || age > WS_QUOTE_MAX_AGE_MS) return null;
+  const hasBook = state.bidAskEventMs !== undefined && positive(state.bid) && positive(state.ask);
+  return {
+    price,
+    provider: CRYPTO_EXECUTION_SOURCE,
+    source: "WEBSOCKET",
+    transport: "WS",
+    venue: CRYPTO_EXECUTION_PROVIDER,
+    instrument: instrument.symbol,
+    instrumentVersion: instrument.instrumentVersion,
+    updatedAt: new Date(lastAt).toISOString(),
+    eventTimeMs: lastAt,
+    receivedAtMs: state.receivedAtMs,
+    ...(hasBook ? { bid: state.bid, ask: state.ask } : {}),
+    ...(positive(state.markPrice) ? { markPrice: state.markPrice } : {}),
+    ...(positive(state.indexPrice) ? { indexPrice: state.indexPrice } : {}),
+    quoteTimes: {
+      lastPriceMs: lastAt,
+      bidAskMs: hasBook ? state.bidAskEventMs! : null,
+      markMs: state.markEventMs ?? null,
+    },
+  };
 }
 
 export class MarketService {
-  private static normalizeCandles(assetKey: string, timeframe: Timeframe, candles: Candle[]): Candle[] {
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const ordered = candles
-      .filter((c) => (
-        Number.isFinite(c.time) &&
-        Number.isFinite(c.open) &&
-        Number.isFinite(c.high) &&
-        Number.isFinite(c.low) &&
-        Number.isFinite(c.close) &&
-        c.time > 0 &&
-        c.open > 0 &&
-        c.high > 0 &&
-        c.low > 0 &&
-        c.close > 0
-      ))
-      .sort((a, b) => a.time - b.time);
-
-    const deduped = new Map<number, Candle>();
-    for (const candle of ordered) {
-      deduped.set(candle.time, candle);
-    }
-
-    const unique = Array.from(deduped.values());
-    const maxRangePercent =
-      config.category === "forex" ? 0.035 :
-      config.category === "commodity" ? 0.08 :
-      timeframe === "1m" || timeframe === "5m" ? 0.08 : 0.16;
-
-    return unique.map((candle, index) => {
-      const repaired: Candle = {
-        ...candle,
-        volume: Number.isFinite(candle.volume) && candle.volume >= 0 ? candle.volume : 0,
-      };
-
-      const previousClose = unique[index - 1]?.close;
-      const nextOpen = unique[index + 1]?.open;
-      const anchors = [repaired.open, repaired.close, previousClose, nextOpen].filter(
-        (value): value is number => Number.isFinite(value) && value > 0
-      );
-      const reference = anchors.reduce((sum, value) => sum + value, 0) / Math.max(anchors.length, 1);
-      const upperLimit = reference * (1 + maxRangePercent);
-      const lowerLimit = reference * (1 - maxRangePercent);
-
-      const bodyHigh = Math.max(repaired.open, repaired.close);
-      const bodyLow = Math.min(repaired.open, repaired.close);
-
-      if (repaired.high < bodyHigh) repaired.high = bodyHigh;
-      if (repaired.low > bodyLow) repaired.low = bodyLow;
-
-      if (repaired.high > upperLimit && bodyHigh <= upperLimit) {
-        repaired.high = bodyHigh;
-      }
-      if (repaired.low < lowerLimit && bodyLow >= lowerLimit) {
-        repaired.low = bodyLow;
-      }
-
-      return repaired;
-    });
+  private static maxCandleAgeMs(timeframe: CandleInterval): number {
+    // Every instrument is a continuously quoted perpetual: a bar older than
+    // two and a half periods is stale. A closed-only series lags by up to two
+    // periods by construction, which this allowance still covers.
+    return INTERVAL_MS[timeframe] * 2.5;
   }
 
-  private static maxCandleAgeMs(assetKey: string, timeframe: Timeframe): number {
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const timeframeMs: Record<Timeframe, number> = {
-      "1m": 60_000,
-      "5m": 5 * 60_000,
-      "15m": 15 * 60_000,
-      "30m": 30 * 60_000,
-      "1h": 60 * 60_000,
-      "4h": 4 * 60 * 60_000,
-    };
-    // Tolerance follows the instrument: a continuously quoted perp has no
-    // excuse for an old bar, whereas a market that closes legitimately does.
-    const ageMultiplier = config.bybitLinearSymbol ? 2.5 : 8.0;
-    return (timeframeMs[timeframe] || 60 * 60_000) * ageMultiplier;
-  }
-
-  private static candlesAreFresh(assetKey: string, timeframe: Timeframe, candles: Candle[]): boolean {
+  private static candlesAreFresh(timeframe: CandleInterval, candles: Candle[], nowMs: number): boolean {
     const latest = candles[candles.length - 1]?.time;
     if (!latest) return false;
-    return Date.now() - latest * 1000 <= this.maxCandleAgeMs(assetKey, timeframe);
+    return nowMs - latest * 1000 <= this.maxCandleAgeMs(timeframe);
   }
 
   static getCandleSeriesStatus(assetKey: string, timeframe: Timeframe, candles: Candle[]) {
+    getConfiguredInstrument(assetKey);
     const latest = candles[candles.length - 1]?.time;
     return {
-      fresh: this.candlesAreFresh(assetKey, timeframe, candles),
+      fresh: this.candlesAreFresh(timeframe, candles, deps.nowMs()),
       asOf: latest ? new Date(latest * 1000).toISOString() : null,
+      missingBars: missingBarCount(candles, timeframe),
     };
+  }
+
+  static async getInstrumentMetadata(assetKey: string): Promise<BybitInstrumentMetadata> {
+    return deps.metadata(getConfiguredInstrument(assetKey).symbol);
   }
 
   /**
-   * Kraken OHLC. Returns up to 721 candles per interval and, unlike Yahoo's FX
-   * series, carries real volume and a native 4h bucket.
+   * Funding and open interest from the mapped perpetual. A value Bybit did not
+   * report is absent, never zero.
    */
-  private static async fetchKrakenCandles(pair: string, timeframe: Timeframe, timeoutMs = 10_000): Promise<Candle[]> {
-    const minutes: Record<Timeframe, number> = {
-      "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240,
+  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number; openInterest?: number; nextFundingTimeMs?: number }> {
+    const instrument = getConfiguredInstrument(assetKey);
+    const now = deps.nowMs();
+    const pick = (source: { fundingRate?: unknown; openInterest?: unknown; nextFundingTimeMs?: unknown }) => {
+      const fundingRate = finite(source.fundingRate);
+      const openInterest = positive(source.openInterest);
+      const nextFundingTimeMs = positive(source.nextFundingTimeMs);
+      return {
+        ...(fundingRate !== undefined ? { fundingRate } : {}),
+        ...(openInterest !== undefined ? { openInterest } : {}),
+        ...(nextFundingTimeMs !== undefined ? { nextFundingTimeMs } : {}),
+      };
     };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const response = await fetch(
-        `https://api.kraken.com/0/public/OHLC?pair=${encodeURIComponent(pair)}&interval=${minutes[timeframe] || 60}`,
-        { signal: controller.signal, headers: { "User-Agent": "quant-paper-trader/1.0" } }
-      );
-      if (!response.ok) throw new Error(`Kraken HTTP ${response.status}`);
-      const payload = await response.json();
-      if (Array.isArray(payload?.error) && payload.error.length > 0) {
-        throw new Error(`Kraken error: ${payload.error.join(", ")}`);
+      const state = await deps.cache.get<BybitTickerState>(liveQuoteKey(assetKey));
+      if (state?.symbol === instrument.symbol && state.sensorEventMs !== undefined && now - state.sensorEventMs <= SENSOR_MAX_AGE_MS) {
+        const sensors = pick(state);
+        if (Object.keys(sensors).length > 0) return sensors;
       }
-      // The result is keyed by Kraken's own pair name, which does not always
-      // match what was requested, so take the first non-"last" key rather than
-      // assuming the request echoes back.
-      const key = Object.keys(payload?.result || {}).find((k) => k !== "last");
-      if (!key) throw new Error(`Kraken returned no series for ${pair}`);
-      return (payload.result[key] as any[][])
-        .map((row) => ({
-          time: Number(row[0]),
-          open: Number(row[1]),
-          high: Number(row[2]),
-          low: Number(row[3]),
-          close: Number(row[4]),
-          volume: Number(row[6]),
-        }))
-        .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0)
-        .sort((a, b) => a.time - b.time);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private static async fetchKrakenTicker(pair: string, timeoutMs = 8_000): Promise<{ price: number; bid?: number; ask?: number }> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(
-        `https://api.kraken.com/0/public/Ticker?pair=${encodeURIComponent(pair)}`,
-        { signal: controller.signal, headers: { "User-Agent": "quant-paper-trader/1.0" } }
-      );
-      if (!response.ok) throw new Error(`Kraken HTTP ${response.status}`);
-      const payload = await response.json();
-      if (Array.isArray(payload?.error) && payload.error.length > 0) {
-        throw new Error(`Kraken error: ${payload.error.join(", ")}`);
-      }
-      const key = Object.keys(payload?.result || {})[0];
-      const row = key ? payload.result[key] : null;
-      const price = Number(row?.c?.[0]);
-      if (!Number.isFinite(price) || price <= 0) throw new Error(`Kraken returned no price for ${pair}`);
-      return { price, bid: Number(row?.b?.[0]) || undefined, ask: Number(row?.a?.[0]) || undefined };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private static async fetchBybitJson(path: string, timeoutMs = 8_000): Promise<any> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(`https://api.bybit.com${path}`, { signal: controller.signal });
-      if (!response.ok) throw new Error(`Bybit API HTTP error: ${response.status}`);
-      const data = await response.json();
-      if (Number(data?.retCode) !== 0) {
-        throw new Error(`Bybit API error ${data?.retCode}: ${data?.retMsg || "unknown error"}`);
-      }
-      return data;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  private static async fetchBybitTicker(symbol: string): Promise<any> {
-    const data = await this.fetchBybitJson(
-      `/v5/market/tickers?category=linear&symbol=${encodeURIComponent(symbol)}`,
-      5_000
-    );
-    const ticker = data?.result?.list?.[0];
-    if (!ticker) throw new Error(`Bybit returned no ticker for ${symbol}`);
-    return { ...ticker, serverTime: Number(data?.time) || Date.now() };
-  }
-
-  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number, openInterest?: number }> {
-    const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || !config.bybitLinearSymbol) return {};
-
-    const redis = getRedis();
-    const cacheKey = `cache:deep_sensors:v2:${CRYPTO_EXECUTION_PROVIDER}:${assetKey}`;
-    try {
-      const cached = await redis.get<string>(cacheKey);
-      if (cached) return typeof cached === "string" ? JSON.parse(cached) : cached;
     } catch {}
 
     try {
-      const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
-      const fundingRate = Number(ticker.fundingRate);
-      const openInterest = Number(ticker.openInterest);
-      const sensors = {
-        ...(Number.isFinite(fundingRate) ? { fundingRate } : {}),
-        ...(Number.isFinite(openInterest) ? { openInterest } : {}),
-      };
-      if (Object.keys(sensors).length > 0) {
-        await redis.set(cacheKey, JSON.stringify(sensors), { ex: 60 });
-      }
-      return sensors;
-    } catch (err) {
-      console.warn(`[MarketService] Failed to fetch Bybit sensors for ${assetKey}:`, err);
+      const { row } = await fetchTicker(instrument.symbol);
+      return pick({ fundingRate: row.fundingRate, openInterest: row.openInterest, nextFundingTimeMs: row.nextFundingTime });
+    } catch (error) {
+      console.warn(`[MarketService] Bybit sensors unavailable for ${assetKey}:`, error);
       return {};
-    }
-  }
-
-  private static getBybitInterval(timeframe: Timeframe | "1w"): string {
-    switch (timeframe) {
-      case "1m": return "1";
-      case "5m": return "5";
-      case "15m": return "15";
-      case "30m": return "30";
-      case "1h": return "60";
-      case "4h": return "240";
-      case "1w": return "W";
-      default: return "60";
-    }
-  }
-
-  private static getYahooInterval(timeframe: Timeframe): string {
-    switch (timeframe) {
-      case "1m": return "1m";
-      case "5m": return "5m";
-      case "15m": return "15m";
-      case "30m": return "30m";
-      case "1h": return "60m";
-      case "4h": return "60m"; // Yahoo doesn't support 4h directly on open widgets, so fetch 1h and downsample or use 1h as proxy
-      default: return "60m";
     }
   }
 
@@ -361,393 +338,104 @@ export class MarketService {
     assetKey: string = "BTC",
     options: CandleRequestOptions = {}
   ): Promise<Candle[]> {
-    const redis = getRedis();
-    const cacheKey = marketCandleCacheKey(assetKey, timeframe);
+    const instrument = getConfiguredInstrument(assetKey);
+    const now = deps.nowMs();
+    const cacheKey = candleCacheKey(instrument, timeframe, now);
     let staleCandidate: Candle[] | null = null;
-    
-    // Attempt cache check first
-    try {
-      const cached = await redis.get<string>(cacheKey);
-      if (cached) {
-        const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const normalized = this.normalizeCandles(assetKey, timeframe, parsed);
-          if (this.candlesAreFresh(assetKey, timeframe, normalized)) {
-            return normalized.slice(-limit);
-          }
-          staleCandidate = normalized;
-        }
-      }
-    } catch {}
-
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const fetchLimit = Math.max(720, limit); // Always fetch at least 720 candles to keep the cache rich
-
-    // Crypto signals, entries, and lifecycle prices must all describe the same
-    // Bybit USDT perpetual instrument. Comparison venues never become hidden
-    // execution fallbacks.
-    if (config.bybitLinearSymbol) {
-      try {
-        const candles = this.normalizeCandles(
-          assetKey,
-          timeframe,
-          await this.fetchBybitLinearCandles(config.bybitLinearSymbol, timeframe, fetchLimit)
-        );
-        if (candles && candles.length > 0) {
-          if (this.candlesAreFresh(assetKey, timeframe, candles)) {
-            const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
-            await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
-            return candles.slice(-limit);
-          }
-          staleCandidate = candles;
-        }
-      } catch (bybitError) {
-        console.warn(`Bybit linear candle feed failed for ${assetKey}.`, bybitError);
-      }
-
-      if (staleCandidate && staleCandidate.length > 0 && options.allowStale) {
-        return staleCandidate.slice(-limit);
-      }
-      throw new Error(`Selected Bybit linear candle feed is unavailable or stale for ${assetKey}/${timeframe}.`);
-    }
-
-    // Kraken serves the FX pairs it quotes deeply enough to trade.
-    if (config.krakenPair) {
-      try {
-        const candles = this.normalizeCandles(
-          assetKey,
-          timeframe,
-          await this.fetchKrakenCandles(config.krakenPair, timeframe)
-        );
-        if (candles && candles.length > 0) {
-          if (this.candlesAreFresh(assetKey, timeframe, candles)) {
-            const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
-            await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
-            return candles.slice(-limit);
-          }
-          staleCandidate = candles;
-        }
-      } catch (krakenError) {
-        console.error(`Selected Kraken instrument feed failed for ${assetKey}:`, krakenError);
-      }
-
-      if (staleCandidate && staleCandidate.length > 0 && options.allowStale) {
-        return staleCandidate.slice(-limit);
-      }
-      throw new Error(`Selected Kraken feed is unavailable or stale for ${assetKey}/${timeframe}.`);
-    }
-
-    // Yahoo is the selected instrument family for whatever is left.
-    try {
-      // Fix 3: For 4h timeframe, fetch 4× as many 1h candles then downsample to real 4h OHLCV.
-      // This gives ~17 days of true 4h history instead of just ~4 days.
-      const yahooFetchLimit = timeframe === "4h" ? fetchLimit * 4 : fetchLimit;
-      const yahooTimeframe: Timeframe = timeframe === "4h" ? "1h" : timeframe;
-      let candles = await this.fetchYahooCandles(config.yahooTicker, yahooTimeframe, yahooFetchLimit);
-      if (timeframe === "4h" && candles.length > 0) {
-        candles = this.downsampleTo4h(candles);
-      }
-      candles = this.normalizeCandles(assetKey, timeframe, candles);
-      if (candles && candles.length > 0) {
-        if (this.candlesAreFresh(assetKey, timeframe, candles)) {
-          const ttl = timeframe === "1m" ? 10 : timeframe === "5m" ? 30 : timeframe === "15m" ? 60 : 300;
-          await redis.set(cacheKey, JSON.stringify(candles), { ex: ttl });
-          return candles.slice(-limit);
-        }
-        staleCandidate = candles;
-      }
-    } catch (yahooError) {
-      console.error(`Selected Yahoo instrument feed failed for ${assetKey}:`, yahooError);
-    }
-
-    // Trading callers fail closed by default. Read-only callers may explicitly
-    // request the latest historical series for a closed market.
-    if (staleCandidate && staleCandidate.length > 0) {
-      if (options.allowStale) return staleCandidate.slice(-limit);
-      throw new Error(`Market data for ${assetKey}/${timeframe} is stale after all feed attempts.`);
-    }
-
-    throw new Error(`Failed to fetch candles for asset ${assetKey} from all data feeds.`);
-  }
-
-  private static async fetchBybitLinearCandles(
-    symbol: string,
-    timeframe: Timeframe | "1w",
-    limit: number
-  ): Promise<Candle[]> {
-    const boundedLimit = Math.max(1, Math.min(1_000, limit));
-    const interval = this.getBybitInterval(timeframe);
-    const data = await this.fetchBybitJson(
-      `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${boundedLimit}`
-    );
-    const rows = Array.isArray(data?.result?.list) ? data.result.list : [];
-    return rows
-      .map((row: any[]) => ({
-        time: Math.floor(Number(row?.[0]) / 1_000),
-        open: Number(row?.[1]),
-        high: Number(row?.[2]),
-        low: Number(row?.[3]),
-        close: Number(row?.[4]),
-        volume: Number(row?.[5] || 0),
-      }))
-      .sort((a: Candle, b: Candle) => a.time - b.time)
-      .slice(-boundedLimit);
-  }
-
-  private static async fetchYahooCandles(ticker: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
-    const interval = this.getYahooInterval(timeframe);
-    
-    // Yahoo API restrictions: 1m max is 7d, 5m/15m/30m max is 60d
-    let range = "5d";
-    if (interval === "1m") {
-      range = "7d"; // Max allowed for 1m
-    } else if (interval === "5m" || interval === "15m" || interval === "30m") {
-      range = limit > 500 ? "1mo" : "5d";
-    } else {
-      // 1h or higher
-      range = limit > 500 ? "3mo" : "1mo";
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=${interval}&range=${range}`,
-      {
-        signal: controller.signal,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        }
-      }
-    );
-    clearTimeout(timeoutId);
-
-    if (!res.ok) throw new Error(`Yahoo HTTP error: ${res.status}`);
-    const data = await res.json();
-
-    const chartResult = data.chart?.result?.[0];
-    if (!chartResult) throw new Error("Yahoo returned empty chart result");
-
-    const timestamps = chartResult.timestamp || [];
-    const quote = chartResult.indicators?.quote?.[0] || {};
-    const opens = quote.open || [];
-    const highs = quote.high || [];
-    const lows = quote.low || [];
-    const closes = quote.close || [];
-    const volumes = quote.volume || [];
-
-    const candles: Candle[] = [];
-    for (let i = 0; i < timestamps.length; i++) {
-      if (
-        opens[i] !== null && opens[i] !== undefined &&
-        closes[i] !== null && closes[i] !== undefined
-      ) {
-        candles.push({
-          time: timestamps[i],
-          open: parseFloat(opens[i]),
-          high: parseFloat(highs[i] ?? opens[i]),
-          low: parseFloat(lows[i] ?? opens[i]),
-          close: parseFloat(closes[i]),
-          volume: parseFloat(volumes[i] ?? 0)
-        });
-      }
-    }
-
-    return candles.slice(-limit);
-  }
-
-  // Fix 3: Downsample consecutive 1h candles into true 4h OHLCV candles.
-  // Groups candles by strict UTC 4-hour buckets (00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
-  private static downsampleTo4h(candles1h: Candle[]): Candle[] {
-    const buckets = new Map<number, Candle[]>();
-    
-    for (const c of candles1h) {
-      // 4 hours = 14400 seconds. Floor to nearest 4h bucket.
-      const bucketTime = Math.floor(c.time / 14400) * 14400;
-      if (!buckets.has(bucketTime)) buckets.set(bucketTime, []);
-      buckets.get(bucketTime)!.push(c);
-    }
-
-    const result: Candle[] = [];
-    // Sort buckets chronologically
-    const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
-    
-    for (const [bucketTime, group] of sortedBuckets) {
-      if (group.length === 0) continue;
-      // Sort group chronologically just in case
-      group.sort((a, b) => a.time - b.time);
-      result.push({
-        time:   bucketTime,
-        open:   group[0].open,
-        high:   Math.max(...group.map((c) => c.high)),
-        low:    Math.min(...group.map((c) => c.low)),
-        close:  group[group.length - 1].close,
-        volume: group.reduce((sum, c) => sum + (c.volume || 0), 0),
-      });
-    }
-    return result;
-  }
-
-  static async getCurrentPriceSnapshot(assetKey: string = "BTC"): Promise<MarketPriceSnapshot> {
-    const redis = getRedis();
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const cacheKey = marketPriceCacheKey(assetKey);
-    const cacheMetaKey = marketPriceMetaCacheKey(assetKey);
-
-    // Commodities reach the Bybit branch too. They are not on the websocket
-    // mesh, so the live-price lookup simply misses and the HTTP ticker below
-    // serves them, which is the same path crypto uses when its socket is cold.
-    if (config.bybitLinearSymbol) {
-      try {
-        const [livePrice, liveMeta] = await Promise.all([
-          redis.get<number | string>(marketLivePriceKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
-          redis.get<any>(marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
-        ]);
-        const price = Number(livePrice);
-        const updatedAt = String(liveMeta?.providerEventTime || liveMeta?.updatedAt || "");
-        const timestamp = new Date(updatedAt).getTime();
-        const ageMs = Date.now() - timestamp;
-        if (Number.isFinite(price) && price > 0 && Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 5_000) {
-          return {
-            price,
-            provider: CRYPTO_EXECUTION_SOURCE,
-            source: "WEBSOCKET",
-            venue: CRYPTO_EXECUTION_PROVIDER,
-            instrument: config.bybitLinearSymbol,
-            updatedAt: new Date(timestamp).toISOString(),
-            ...(Number.isFinite(Number(liveMeta?.bid)) ? { bid: Number(liveMeta.bid) } : {}),
-            ...(Number.isFinite(Number(liveMeta?.ask)) ? { ask: Number(liveMeta.ask) } : {}),
-          };
-        }
-      } catch {}
-
-      try {
-        const [cachedPrice, cachedMeta] = await Promise.all([
-          redis.get<number | string>(cacheKey),
-          redis.get<MarketPriceSnapshot>(cacheMetaKey),
-        ]);
-        const price = Number(cachedPrice);
-        const timestamp = new Date(cachedMeta?.updatedAt || 0).getTime();
-        const ageMs = Date.now() - timestamp;
-        if (
-          Number.isFinite(price) && price > 0 &&
-          cachedMeta?.venue === CRYPTO_EXECUTION_PROVIDER &&
-          cachedMeta?.instrument === config.bybitLinearSymbol &&
-          Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 5_000
-        ) {
-          return { ...cachedMeta, price };
-        }
-      } catch {}
-
-      try {
-        const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
-        const price = Number(ticker.lastPrice);
-        if (!Number.isFinite(price) || price <= 0) throw new Error("Bybit returned an invalid last price");
-        const updatedAt = new Date(Number(ticker.serverTime) || Date.now()).toISOString();
-        const snapshot: MarketPriceSnapshot = {
-          price,
-          provider: `${CRYPTO_EXECUTION_PROVIDER}_HTTP`,
-          source: "HTTP",
-          venue: CRYPTO_EXECUTION_PROVIDER,
-          instrument: config.bybitLinearSymbol,
-          updatedAt,
-          ...(Number.isFinite(Number(ticker.bid1Price)) ? { bid: Number(ticker.bid1Price) } : {}),
-          ...(Number.isFinite(Number(ticker.ask1Price)) ? { ask: Number(ticker.ask1Price) } : {}),
-        };
-        await Promise.all([
-          redis.set(cacheKey, price, { ex: 10 }),
-          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
-        ]);
-        return snapshot;
-      } catch (error) {
-        throw new Error(`Selected Bybit linear price feed failed for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    if (config.krakenPair) {
-      // Live websocket tick first, then cache, then REST. Same ladder the
-      // Bybit path uses, so a cold socket degrades to HTTP rather than failing.
-      try {
-        const [livePrice, liveMeta] = await Promise.all([
-          redis.get<number | string>(marketLivePriceKey("KRAKEN_SPOT_WS", assetKey)),
-          redis.get<any>(marketLiveMetaKey("KRAKEN_SPOT_WS", assetKey)),
-        ]);
-        const price = Number(livePrice);
-        const timestamp = new Date(String(liveMeta?.providerEventTime || liveMeta?.updatedAt || "")).getTime();
-        const ageMs = Date.now() - timestamp;
-        if (Number.isFinite(price) && price > 0 && Number.isFinite(timestamp) && ageMs >= 0 && ageMs <= 10_000) {
-          return {
-            price,
-            provider: "KRAKEN_SPOT_WS",
-            source: "WEBSOCKET",
-            venue: "KRAKEN",
-            instrument: config.krakenPair,
-            updatedAt: new Date(timestamp).toISOString(),
-            ...(Number.isFinite(Number(liveMeta?.bid)) ? { bid: Number(liveMeta.bid) } : {}),
-            ...(Number.isFinite(Number(liveMeta?.ask)) ? { ask: Number(liveMeta.ask) } : {}),
-          };
-        }
-      } catch {}
-
-      try {
-        const ticker = await this.fetchKrakenTicker(config.krakenPair);
-        const snapshot: MarketPriceSnapshot = {
-          price: ticker.price,
-          provider: "KRAKEN_HTTP",
-          source: "HTTP",
-          venue: "KRAKEN",
-          instrument: config.krakenPair,
-          updatedAt: new Date().toISOString(),
-          ...(ticker.bid ? { bid: ticker.bid } : {}),
-          ...(ticker.ask ? { ask: ticker.ask } : {}),
-        };
-        await Promise.all([
-          redis.set(cacheKey, ticker.price, { ex: 10 }),
-          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
-        ]);
-        return snapshot;
-      } catch (error) {
-        throw new Error(`Selected Kraken price feed failed for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
 
     try {
-      const [cachedPrice, cachedMeta] = await Promise.all([
-        redis.get<number | string>(cacheKey),
-        redis.get<MarketPriceSnapshot>(cacheMetaKey),
-      ]);
-      const price = Number(cachedPrice);
-      if (
-        Number.isFinite(price) && price > 0 &&
-        cachedMeta?.venue === "YAHOO" &&
-        cachedMeta?.instrument === config.yahooTicker
-      ) {
-        return { ...cachedMeta, price };
+      const cached = await deps.cache.get<Candle[]>(cacheKey);
+      if (Array.isArray(cached) && cached.length > 0) {
+        if (this.candlesAreFresh(timeframe, cached, now)) return cached.slice(-limit);
+        staleCandidate = cached;
       }
     } catch {}
 
     try {
-      const candles = await this.fetchYahooCandles(config.yahooTicker, "15m", 1);
-      if (candles.length > 0) {
-        const candle = candles[candles.length - 1];
-        const price = candle.close;
-        const snapshot: MarketPriceSnapshot = {
-          price,
-          provider: "YAHOO",
-          source: "HTTP",
-          venue: "YAHOO",
-          instrument: config.yahooTicker,
-          updatedAt: new Date(candle.time * 1_000).toISOString(),
-        };
-        await Promise.all([
-          redis.set(cacheKey, price, { ex: 10 }),
-          redis.set(cacheMetaKey, snapshot, { ex: 10 }),
-        ]);
-        return snapshot;
+      const { candles, serverTimeMs } = await fetchCandles(instrument.symbol, timeframe, Math.max(720, limit));
+      const usable = CLOSED_BARS_ONLY.has(timeframe) ? closedCandles(candles, timeframe, serverTimeMs) : candles;
+      if (usable.length > 0) {
+        if (this.candlesAreFresh(timeframe, usable, now)) {
+          await deps.cache.set(cacheKey, usable, { ex: candleTtlSeconds(timeframe) }).catch(() => undefined);
+          return usable.slice(-limit);
+        }
+        staleCandidate = usable;
       }
+    } catch (error) {
+      console.warn(`[MarketService] Bybit ${instrument.symbol} ${timeframe} candles failed.`, error);
+    }
+
+    // Trading callers fail closed; read-only callers may ask for the latest
+    // series even if it is old.
+    if (staleCandidate && options.allowStale) return staleCandidate.slice(-limit);
+    throw new Error(`Bybit ${instrument.symbol} ${timeframe} candles are unavailable or stale for ${assetKey}.`);
+  }
+
+  /**
+   * Current quote for the mapped perpetual: the streamed quote when its last
+   * price is fresh, otherwise REST. `transport` pins one of the two, which is
+   * how transport consistency is checked.
+   */
+  static async getCurrentPriceSnapshot(
+    assetKey: string = "BTC",
+    options: { transport?: "WS" | "REST" } = {}
+  ): Promise<MarketPriceSnapshot> {
+    const instrument = getConfiguredInstrument(assetKey);
+    const now = deps.nowMs();
+
+    // Streamed quote first, judged on the last price's own event time.
+    if (options.transport !== "REST") {
+      try {
+        const state = await deps.cache.get<BybitTickerState>(liveQuoteKey(assetKey));
+        const streamed = state ? snapshotFromTickerState(instrument, state, now) : null;
+        if (streamed) return streamed;
+      } catch {}
+      if (options.transport === "WS") {
+        throw new Error(`No fresh Bybit stream quote for ${assetKey}`);
+      }
+    }
+
+    // A quiet market refreshes over REST and says so.
+    const restKey = `cache:quote:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}`;
+    try {
+      const cached = await deps.cache.get<MarketPriceSnapshot>(restKey);
+      const age = cached ? now - cached.receivedAtMs : Number.POSITIVE_INFINITY;
+      if (cached?.instrumentVersion === instrument.instrumentVersion && age >= 0 && age <= REST_QUOTE_CACHE_MS) return cached;
     } catch {}
 
-    throw new Error(`Failed to retrieve selected-instrument price for ${assetKey}`);
+    try {
+      const { row, serverTimeMs } = await fetchTicker(instrument.symbol);
+      const price = positive(row.lastPrice);
+      if (price === undefined) throw new Error("Bybit returned an invalid last price");
+      const bid = positive(row.bid1Price);
+      const ask = positive(row.ask1Price);
+      const markPrice = positive(row.markPrice);
+      const indexPrice = positive(row.indexPrice);
+      const snapshot: MarketPriceSnapshot = {
+        price,
+        provider: `${CRYPTO_EXECUTION_PROVIDER}_HTTP`,
+        source: "HTTP",
+        transport: "REST",
+        venue: CRYPTO_EXECUTION_PROVIDER,
+        instrument: instrument.symbol,
+        instrumentVersion: instrument.instrumentVersion,
+        updatedAt: new Date(serverTimeMs).toISOString(),
+        eventTimeMs: serverTimeMs,
+        receivedAtMs: now,
+        ...(bid !== undefined && ask !== undefined ? { bid, ask } : {}),
+        ...(markPrice !== undefined ? { markPrice } : {}),
+        ...(indexPrice !== undefined ? { indexPrice } : {}),
+        quoteTimes: {
+          lastPriceMs: serverTimeMs,
+          bidAskMs: bid !== undefined && ask !== undefined ? serverTimeMs : null,
+          markMs: markPrice !== undefined ? serverTimeMs : null,
+        },
+      };
+      await deps.cache.set(restKey, snapshot, { ex: 10 }).catch(() => undefined);
+      return snapshot;
+    } catch (error) {
+      throw new Error(`Bybit ${instrument.symbol} quote unavailable for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   static async getCurrentPrice(assetKey: string = "BTC"): Promise<number> {
@@ -761,191 +449,111 @@ export class MarketService {
     high: number;
     low: number;
   }> {
-    const redis = getRedis();
-    const cacheKey = `cache:stats24h:v2:${primaryMarketDataProvider(assetKey)}:${assetKey}`;
-
+    const instrument = getConfiguredInstrument(assetKey);
+    const cacheKey = `cache:stats24h:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}`;
     try {
-      const cached = await redis.get<string>(cacheKey);
-      if (cached) return typeof cached === "string" ? JSON.parse(cached) : cached;
+      const cached = await deps.cache.get<{ priceChange: number; priceChangePercent: number; volume: number; high: number; low: number }>(cacheKey);
+      if (cached) return cached;
     } catch {}
 
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-
-    if (config.bybitLinearSymbol) {
-      try {
-        const ticker = await this.fetchBybitTicker(config.bybitLinearSymbol);
-        const close = Number(ticker.lastPrice);
-        const open = Number(ticker.prevPrice24h);
-        const stats = {
-          priceChange: close - open,
-          priceChangePercent: Number(ticker.price24hPcnt) * 100,
-          volume: Number(ticker.volume24h),
-          high: Number(ticker.highPrice24h),
-          low: Number(ticker.lowPrice24h),
-        };
-        if (Object.values(stats).every(Number.isFinite)) {
-          await redis.set(cacheKey, JSON.stringify(stats), { ex: 60 });
-          return stats;
-        }
-      } catch {}
-
-      return { priceChange: 0, priceChangePercent: 0, volume: 0, high: 0, low: 0 };
+    const { row } = await fetchTicker(instrument.symbol);
+    const stats = {
+      priceChange: Number(row.lastPrice) - Number(row.prevPrice24h),
+      priceChangePercent: Number(row.price24hPcnt) * 100,
+      volume: Number(row.volume24h),
+      high: Number(row.highPrice24h),
+      low: Number(row.lowPrice24h),
+    };
+    if (!Object.values(stats).every(Number.isFinite)) {
+      throw new Error(`Bybit ${instrument.symbol} returned incomplete 24h statistics`);
     }
+    await deps.cache.set(cacheKey, stats, { ex: 60 }).catch(() => undefined);
+    return stats;
+  }
 
-    // FX and commodity statistics stay in the same Yahoo instrument family.
+  /**
+   * Fifty-level book imbalance for the mapped perpetual. Throws when depth is
+   * unavailable rather than reporting a neutral book that was never observed.
+   */
+  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean }> {
+    const instrument = getConfiguredInstrument(assetKey);
+    const now = deps.nowMs();
+    const cacheKey = `cache:depth:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}`;
+    type Depth = { bidVolume: number; askVolume: number; observedAtMs: number };
+    const shape = (depth: Depth) => {
+      const ratio = depth.bidVolume / depth.askVolume;
+      return { bidVolume: depth.bidVolume, askVolume: depth.askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 };
+    };
+
     try {
-      const candles = await this.fetchYahooCandles(config.yahooTicker, "1h", 24);
-      if (candles.length > 0) {
-        const open = candles[0].open;
-        const close = candles[candles.length - 1].close;
-        const highs = candles.map(c => c.high);
-        const lows = candles.map(c => c.low);
-        const volumeSum = candles.reduce((sum, c) => sum + c.volume, 0);
-
-        const stats = {
-          priceChange: close - open,
-          priceChangePercent: open > 0 ? ((close - open) / open) * 100 : 0,
-          volume: volumeSum,
-          high: Math.max(...highs),
-          low: Math.min(...lows)
-        };
-
-        await redis.set(cacheKey, JSON.stringify(stats), { ex: 60 });
-        return stats;
-      }
+      const cached = await deps.cache.get<Depth>(cacheKey);
+      if (cached && now - cached.observedAtMs >= 0 && now - cached.observedAtMs <= DEPTH_CACHE_MS) return shape(cached);
     } catch {}
 
+    const { result, serverTimeMs } = await deps.bybitGet<{ b?: unknown[][]; a?: unknown[][] }>(
+      `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(instrument.symbol)}&limit=50`
+    );
+    const sum = (levels: unknown[][] | undefined) =>
+      (levels ?? []).reduce((total, level) => total + (positive(level?.[1]) ?? 0), 0);
+    const depth: Depth = { bidVolume: sum(result.b), askVolume: sum(result.a), observedAtMs: serverTimeMs };
+    if (depth.bidVolume <= 0 || depth.askVolume <= 0) {
+      throw new Error(`Bybit ${instrument.symbol} order book depth is unavailable`);
+    }
+    await deps.cache.set(cacheKey, depth, { ex: 30 }).catch(() => undefined);
+    return shape(depth);
+  }
+
+  /**
+   * Fifty levels each side plus 24h turnover, for per-fill capacity checks.
+   * Levels are kept as observed; an empty side stays empty.
+   */
+  static async getLiquiditySnapshot(assetKey: string): Promise<LiquiditySnapshot> {
+    const instrument = getConfiguredInstrument(assetKey);
+    const [book, ticker] = await Promise.all([
+      deps.bybitGet<{ b?: unknown[][]; a?: unknown[][] }>(
+        `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(instrument.symbol)}&limit=50`
+      ),
+      fetchTicker(instrument.symbol),
+    ]);
+    const levels = (rows: unknown[][] | undefined): Array<[number, number]> =>
+      (rows ?? [])
+        .map((level): [number, number] => [Number(level?.[0]), Number(level?.[1])])
+        .filter(([price, qty]) => price > 0 && qty > 0);
+    const bids = levels(book.result.b);
+    const asks = levels(book.result.a);
     return {
-      priceChange: 0,
-      priceChangePercent: 0,
-      volume: 0,
-      high: 0,
-      low: 0
+      bestBid: bids[0]?.[0] ?? Number.NaN,
+      bestAsk: asks[0]?.[0] ?? Number.NaN,
+      bids,
+      asks,
+      turnover24hUsdt: Number(ticker.row.turnover24h),
+      observedAtMs: book.serverTimeMs,
     };
   }
 
-  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean }> {
-    const redis = getRedis();
-    try {
-      const [liveImbalanceStr, liveMeta] = await Promise.all([
-        redis.get<string>(marketImbalanceKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
-        redis.get<any>(marketLiveMetaKey(CRYPTO_EXECUTION_SOURCE, assetKey)),
-      ]);
-      const providerTimestamp = new Date(liveMeta?.providerEventTime || liveMeta?.updatedAt || 0).getTime();
-      const ageMs = Date.now() - providerTimestamp;
-      if (liveImbalanceStr && Number.isFinite(providerTimestamp) && ageMs >= 0 && ageMs <= 5_000) {
-        const imbalance = parseFloat(liveImbalanceStr);
-        // Ratio = Bids / Asks. Since imbalance = (B - A)/(B + A) => B/A = (1 + imbalance)/(1 - imbalance)
-        const ratio = (1 - imbalance) !== 0 ? (1 + imbalance) / (1 - imbalance) : 1;
-        return {
-          bidVolume: imbalance > 0 ? 100 * (1 + imbalance) : 100,
-          askVolume: imbalance < 0 ? 100 * (1 - imbalance) : 100,
-          imbalanceRatio: ratio,
-          isBullish: ratio >= 1.5,
-          isBearish: ratio <= 0.66
-        };
-      }
-    } catch (e) {
-      console.warn("Failed to retrieve live imbalance from Redis:", e);
-    }
-
-    const config = SUPPORTED_ASSETS[assetKey];
-    if (!config || !config.bybitLinearSymbol) {
-      return { bidVolume: 0, askVolume: 0, imbalanceRatio: 1, isBullish: false, isBearish: false };
-    }
-
-    try {
-      const data = await this.fetchBybitJson(
-        `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(config.bybitLinearSymbol)}&limit=50`,
-        5_000
-      );
-      const bids = Array.isArray(data?.result?.b) ? data.result.b : [];
-      const asks = Array.isArray(data?.result?.a) ? data.result.a : [];
-      const bidVolume = bids.reduce((sum: number, bid: any[]) => sum + Number(bid?.[1] || 0), 0);
-      const askVolume = asks.reduce((sum: number, ask: any[]) => sum + Number(ask?.[1] || 0), 0);
-      const ratio = askVolume > 0 ? bidVolume / askVolume : 1;
-
-      return {
-        bidVolume,
-        askVolume,
-        imbalanceRatio: ratio,
-        isBullish: ratio >= 1.5,
-        isBearish: ratio <= 0.66
-      };
-    } catch (err) {
-      return { bidVolume: 0, askVolume: 0, imbalanceRatio: 1, isBullish: false, isBearish: false };
-    }
-  }
-
-  // Upgrade 3: Fetch weekly candles from Yahoo Finance (1wk interval, 6-month range).
-  // Used by SwingEngine for the weekly trend bias gate.
-  // Cached in Redis for 1 hour — weekly data changes very slowly.
+  /**
+   * Completed weekly bars from the mapped perpetual, for every asset class.
+   * A new contract simply has few bars; an empty result means the weekly
+   * feature is unavailable, never a fabricated or spliced history.
+   */
   static async getWeeklyCandles(limit: number = 20, assetKey: string = "BTC"): Promise<Candle[]> {
-    const config = SUPPORTED_ASSETS[assetKey] || SUPPORTED_ASSETS.BTC;
-    const redis = getRedis();
-    const cacheKey = `cache:candles:instrument-v3:${primaryMarketDataProvider(assetKey)}:${assetKey}:1w`;
-
+    const instrument = getConfiguredInstrument(assetKey);
+    const now = deps.nowMs();
+    const cacheKey = candleCacheKey(instrument, "1w", now);
     try {
-      const cached = await redis.get<string>(cacheKey);
-      if (cached) {
-        const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(-limit);
-      }
+      const cached = await deps.cache.get<Candle[]>(cacheKey);
+      if (Array.isArray(cached) && cached.length > 0) return cached.slice(-limit);
     } catch {}
 
-    if (config.category === "crypto" && config.bybitLinearSymbol) {
-      try {
-        const candles = await this.fetchBybitLinearCandles(config.bybitLinearSymbol, "1w", Math.max(limit, 26));
-        if (candles.length > 0) {
-          await redis.set(cacheKey, JSON.stringify(candles), { ex: 3600 });
-          return candles.slice(-limit);
-        }
-      } catch {}
-      return [];
-    }
-
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(
-        `https://query1.finance.yahoo.com/v8/finance/chart/${config.yahooTicker}?interval=1wk&range=6mo`,
-        {
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-          }
-        }
-      );
-      clearTimeout(timeoutId);
-      if (!res.ok) return [];
-
-      const data = await res.json();
-      const chartResult = data.chart?.result?.[0];
-      if (!chartResult) return [];
-
-      const timestamps = chartResult.timestamp || [];
-      const quote = chartResult.indicators?.quote?.[0] || {};
-      const candles: Candle[] = [];
-
-      for (let i = 0; i < timestamps.length; i++) {
-        if (quote.open?.[i] != null && quote.close?.[i] != null) {
-          candles.push({
-            time:   timestamps[i],
-            open:   parseFloat(quote.open[i]),
-            high:   parseFloat(quote.high?.[i] ?? quote.open[i]),
-            low:    parseFloat(quote.low?.[i]  ?? quote.open[i]),
-            close:  parseFloat(quote.close[i]),
-            volume: parseFloat(quote.volume?.[i] ?? 0),
-          });
-        }
+      const { candles, serverTimeMs } = await fetchCandles(instrument.symbol, "1w", Math.max(limit + 1, 26));
+      const closed = closedCandles(candles, "1w", serverTimeMs);
+      if (closed.length > 0) {
+        await deps.cache.set(cacheKey, closed, { ex: candleTtlSeconds("1w") }).catch(() => undefined);
       }
-
-      if (candles.length > 0) {
-        // 1-hour TTL — weekly candles barely change intraday
-        await redis.set(cacheKey, JSON.stringify(candles), { ex: 3600 });
-      }
-      return candles.slice(-limit);
-    } catch {
+      return closed.slice(-limit);
+    } catch (error) {
+      console.warn(`[MarketService] Bybit ${instrument.symbol} weekly candles failed.`, error);
       return [];
     }
   }

@@ -3,6 +3,9 @@
 // Single source of truth for all modules.
 // ================================================================
 
+// Type-only: keeps the registry's runtime code out of client bundles.
+import type { EconomicsModel, InstrumentRef } from "@/lib/trading/instrumentRegistry";
+
 // ======================== Market Data ============================
 
 export interface Candle {
@@ -234,6 +237,71 @@ export interface OpenPosition {
   expectedNetRewardUsd?: number;
   expectedNetLossUsd?: number;
   carryCostPaid?: number;
+  /** Stable identity shared by the entry, scale-ins and every exit leg. */
+  positionId?: string;
+  /**
+   * Contract and economic model frozen when the position opened. Absent on
+   * pre-upgrade records, which read as their legacy model; never rewritten
+   * from today's registry.
+   */
+  instrument?: InstrumentRef;
+  economicsModel?: EconomicsModel;
+  /** Modeled net loss at the initial stop, fixed at entry. */
+  initialRiskUsdt?: number;
+  costModelVersion?: string;
+  riskPolicyVersion?: string;
+  /** Fields added by a state migration; deleting them restores the original record. */
+  migrationAddedFields?: string[];
+  /** Order book and turnover observed for the entry fill, with the capacity policy version. */
+  fillLiquidity?: Record<string, unknown>;
+  /** Fee schedule version the entry was costed with. */
+  feeScheduleVersion?: string;
+  /** Fills that changed the held quantity, for funding at each boundary. */
+  quantityLegs?: Array<{ atMs: number; quantityDelta: number }>;
+  /** Signed funding already booked to cash (positive received). */
+  fundingBookedUsdt?: number;
+  /** Booked funding already attributed to exit legs. */
+  fundingAllocatedUsdt?: number;
+  /** Settlement boundaries already booked; the idempotency key with positionId. */
+  fundingSettledTimes?: number[];
+  /** Boundaries held through whose settlement data is not yet available. */
+  fundingPendingTimes?: number[];
+}
+
+/** A ledger event already reflected in persisted state and waiting to be appended. */
+export interface PendingLedgerEvent {
+  id: string;
+  type: "FUNDING_SETTLED";
+  source: string;
+  asset: string;
+  positionId: string;
+  timestamp: string;
+  payload: unknown;
+}
+
+/** A closed position whose funding boundaries are still awaiting settlement data. */
+export interface FundingTail {
+  positionId: string;
+  asset: string;
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  quantityLegs: Array<{ atMs: number; quantityDelta: number }>;
+  settledTimes: number[];
+  pendingTimes: number[];
+  closedAtMs: number;
+}
+
+export interface InstrumentMigrationMarker {
+  version: string;
+  appliedAtMs: number;
+  /** Hash of every migrated record with migration-added fields removed. */
+  originalHash: string;
+  previousAccountingCurrency: "USD_PROXY";
+  accountingAssumption: string;
+  /** Account fields this migration added. */
+  addedFields: string[];
+  /** Assets whose new entries wait until a provenance conflict is resolved. */
+  blockedAssets: Record<string, string>;
 }
 
 export interface Portfolio {
@@ -261,6 +329,16 @@ export interface Portfolio {
   totalFeesPaid?: number;     // Accumulated transaction fees paid
   totalExecutionCostsPaid?: number; // Fees + spread/slippage/gap/carry assumptions
   totalCarryPaid?: number;
+  /**
+   * Unit of the cash fields. Absent means the historical nominal USD proxy.
+   * "USDT" after migration is a labeled paper-account assumption, not an
+   * executed currency conversion.
+   */
+  accountingCurrency?: "USD_PROXY" | "USDT";
+  instrumentMigration?: InstrumentMigrationMarker;
+  /** Written in the same object as the cash they describe, then drained to the ledger. */
+  pendingLedgerEvents?: PendingLedgerEvent[];
+  fundingTail?: FundingTail[];
   lastUpdated: string;
 }
 
@@ -330,6 +408,20 @@ export interface Trade {
   gapCostUsd?: number;
   reasoning: string;
   isPartialExit?: boolean;
+  /** Position this leg belongs to; shared by entry, scale-in and exit legs. */
+  positionId?: string;
+  instrument?: InstrumentRef;
+  economicsModel?: EconomicsModel;
+  /** The position's initial risk, repeated on each leg so outcomes survive history trimming. */
+  initialRiskUsdt?: number;
+  riskPolicyVersion?: string;
+  migrationAddedFields?: string[];
+  fillLiquidity?: Record<string, unknown>;
+  feeScheduleVersion?: string;
+  /** Booked funding attributed to this exit leg (positive received). */
+  fundingCashflowUsdt?: number;
+  /** PENDING_RECONCILIATION when some boundaries still await settlement data. */
+  fundingStatus?: "SETTLED" | "PENDING_RECONCILIATION";
   // Filled when position is closed:
   pnl?: number;
   pnlPercent?: number;
