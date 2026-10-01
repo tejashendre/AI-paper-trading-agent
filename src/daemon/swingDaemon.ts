@@ -33,6 +33,7 @@ import {
 } from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
+import { ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -48,6 +49,7 @@ const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
 const EQUITY_SAMPLE_INTERVAL_MS = 30 * 60 * 1000;
 let lastEquitySampleAt = 0;
 let lastRealizedEquity: number | null = null;
+let lastResearchReviewAt = 0;
 const SCAN_SNAPSHOT_KEY = "swing:lastScan:ai";
 const LIFETIME_STATS_KEY = "swing:lifetimeStats:ai";
 /** Set by an operator to stop new swing entries; exits are unaffected. */
@@ -513,6 +515,7 @@ async function runEntryScan() {
 
   try {
     await bootstrapLocalLearningRules();
+    await ensureResearchBaselines().catch(error=>Logger.error('Research registration deferred: '+String(error)));
     const redis = getRedis();
     const portfolio = await getAIPortfolio();
     ensurePortfolioShape(portfolio);
@@ -641,12 +644,18 @@ async function runEntryScan() {
         const strategyProvenance = { strategyFamily: swingSignal.family, strategyConfigHash: swingSignal.configHash,
           strategyDataSchemaVersion: STRATEGY_DATA_SCHEMA_VERSION, strategyRegime: swingSignal.familyRegime,
           candidateId: swingSignal.candidateId, featureCutoffMs: swingSignal.featureCutoffMs };
+        const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
+        await getRedis().set(`research:archive:${asset}`, { ...swingSignal.researchCapture,
+          observedAt:timestamp, familyRegime:swingSignal.familyRegime, candidates:swingSignal.strategyCandidates?.length??0 });
         // Research continues during entry freezes and while the live book is flat.
         // This journal is hypothetical evidence, never a portfolio order.
         await OpportunityJournal.recordMany((swingSignal.strategyCandidates || []).map(candidate => ({
           ...candidate, asset, action: "WATCH", decisionState: candidate.direction === "LONG" ? "WATCH_LONG" : "WATCH_SHORT",
           instrumentVersion: candidate.instrument.instrumentVersion,
           featureStartMs: candidate.featureCutoffMs - 100 * 4 * 3600000,
+          fundingIntervalMinutes:researchMetadata?.fundingIntervalMinutes,
+          halfSpreadBps:swingSignal.marketDataBid && swingSignal.marketDataAsk ?
+            (swingSignal.marketDataAsk-swingSignal.marketDataBid)/swingSignal.livePrice*5000:undefined,
           price: candidate.entryPrice, stopLoss: candidate.stopPrice, takeProfit: candidate.targetPrice,
           timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
           dataQuality: swingSignal.dataQuality, direction: candidate.direction,
@@ -1440,6 +1449,13 @@ async function runEntryScan() {
       }
     }
 
+    if (!lastResearchReviewAt || Date.now()<lastResearchReviewAt || Date.now()-lastResearchReviewAt>=3600000) {
+      try {
+        await ensureResearchBaselines();
+        await reviewRegisteredCandidates();
+        lastResearchReviewAt=Date.now();
+      } catch (error) { await Logger.error('Research review deferred: '+String(error)); }
+    }
     await OpportunityJournal.recordMany(results);
     const opportunitySweep = await OpportunityJournal.evaluateDue();
     if ((opportunitySweep?.evaluated || 0) > 0) {

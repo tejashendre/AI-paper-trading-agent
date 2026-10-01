@@ -1,5 +1,12 @@
 # Active work
 
+## Remaining release checkpoint
+- [x] Task 8: closed-bar trend and shadow range families across all nine assets.
+- [x] Task 9: exact economic learning cohorts, independent completed positions and capped risk adjustments.
+- [x] Task 10: bounded preregistration, research gates, compressed archive and descriptive offline replay.
+- [ ] Finish fast browser quotes and evidence/status display, integration checks, independent branch review and authorized deployment.
+- [ ] Market evidence required before activation: untouched holdout, verified FX fees, complete historical costs and 15 independent forward completions across at least 14 days.
+
 - [x] Audit asset coverage, decision gates, execution, and learning with current runtime evidence.
 - [x] Produce an evidence-linked strategy improvement plan prioritizing all configured asset classes and no mandatory LLM cost.
 ## 2026-10-01 audit checkpoint

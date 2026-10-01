@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 1,
+  "dataHash": "c8e78183331f5b7afad6ef8dc804e465a8909ecc37d95f6830036bc24eb8e385",
+  "reportHash": "43de5c605d21b8d1c0a709f28c99bbc0693a80ad0fe95054a03c33c6e9f00e94",
+  "captures": [
+    {
+      "asset": "BTC",
+      "status": "CAPTURED",
+      "recordHash": "c2d146252ed42b575a02636e042260fce31a6f4cfa34c2b947158fadaf7ff332",
+      "bytes": 206973,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 340
+      }
+    },
+    {
+      "asset": "ETH",
+      "status": "CAPTURED",
+      "recordHash": "691990020a3a1476c72f32645fa80fb1f7299ae562a27eca4b90ec4c41e3560d",
+      "bytes": 405734,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 289
+      }
+    },
+    {
+      "asset": "SOL",
+      "status": "CAPTURED",
+      "recordHash": "c1c96b02540ebca5acbfaa2b6080e62b08506b833034ffd034bbb009518105b6",
+      "bytes": 578926,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 259
+      }
+    },
+    {
+      "asset": "EURUSD",
+      "status": "CAPTURED",
+      "recordHash": "b5d2f6e1b86beba828485bc2a83d6d2ffdb696efe67c596b290ed800412a5e0e",
+      "bytes": 640955,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 554,
+        "4h": 139,
+        "1w": 3
+      }
+    },
+    {
+      "asset": "GBPUSD",
+      "status": "CAPTURED",
+      "recordHash": "e9a8d58aa0c6349b6211308257e4ce9e27c56f4161a2a4f0f20b93a62b91418f",
+      "bytes": 700125,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 555,
+        "4h": 139,
+        "1w": 3
+      }
+    },
+    {
+      "asset": "USDJPY",
+      "status": "CAPTURED",
+      "recordHash": "1711955250c33a21c7f669ceae0bbf02dc296c32f802bb36171f100f1f2dfb60",
+      "bytes": 763642,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 555,
+        "4h": 139,
+        "1w": 3
+      }
+    },
+    {
+      "asset": "GOLD",
+      "status": "CAPTURED",
+      "recordHash": "8e2e547d658445f58036bad21c5e078edcbea20dcfbaa13554350e3882922091",
+      "bytes": 939722,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 29
+      }
+    },
+    {
+      "asset": "OIL",
+      "status": "CAPTURED",
+      "recordHash": "e2b49bb51525bd1baddb01a030ea01bed305c3cf5a9f71590fec417671aba01d",
+      "bytes": 1095196,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 27
+      }
+    },
+    {
+      "asset": "SILVER",
+      "status": "CAPTURED",
+      "recordHash": "762edc789391f2ffb3c1b2745a4f6251ec308fbb7eaf281762885ea0569f1ecd",
+      "bytes": 1250484,
+      "maxBytes": 1073741824,
+      "closedBarCounts": {
+        "15m": 999,
+        "1h": 999,
+        "4h": 999,
+        "1w": 29
+      }
+    }
+  ],
+  "replays": [
+    {
+      "asset": "BTC",
+      "symbol": "BTCUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 340
+      },
+      "attempted": 117,
+      "completed": 117,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "ETH",
+      "symbol": "ETHUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 289
+      },
+      "attempted": 106,
+      "completed": 106,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "SOL",
+      "symbol": "SOLUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 259
+      },
+      "attempted": 200,
+      "completed": 200,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "EURUSD",
+      "symbol": "EURUSDUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 554,
+        "h4": 139,
+        "w1": 3
+      },
+      "attempted": 26,
+      "completed": 26,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "GBPUSD",
+      "symbol": "GBPUSDUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 555,
+        "h4": 139,
+        "w1": 3
+      },
+      "attempted": 0,
+      "completed": 0,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "USDJPY",
+      "symbol": "USDJPYUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 555,
+        "h4": 139,
+        "w1": 3
+      },
+      "attempted": 15,
+      "completed": 15,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "GOLD",
+      "symbol": "XAUUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 29
+      },
+      "attempted": 93,
+      "completed": 93,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "OIL",
+      "symbol": "CLUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 27
+      },
+      "attempted": 117,
+      "completed": 117,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    },
+    {
+      "asset": "SILVER",
+      "symbol": "XAGUSDT",
+      "range": {
+        "from": "2026-09-21T02:45:00Z",
+        "to": "2026-10-01T12:30:00Z"
+      },
+      "counts": {
+        "m15": 999,
+        "h1": 999,
+        "h4": 999,
+        "w1": 29
+      },
+      "attempted": 101,
+      "completed": 101,
+      "blocked": {},
+      "promotionEligible": false,
+      "limitations": [
+        "15m bar resolution",
+        "Modeled spread, impact and one-bar latency",
+        "Historical funding mark prices and order-book evidence unavailable in this capture",
+        "No dynamic scale-ins or baseline signal reversals; descriptive family replay only"
+      ]
+    }
+  ]
+}

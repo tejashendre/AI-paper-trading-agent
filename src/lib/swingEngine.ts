@@ -13,6 +13,8 @@ import { calculateInstrumentPnl, RISK_POLICY_VERSION } from "./trading/assetSpec
 import { estimatePaperFill, getExecutionCostProfile } from "./trading/executionCostModel";
 import { getMarketSessionState } from "./trading/marketSession";
 import { TRADING_STRATEGY_VERSION } from "./trading/executionLedger";
+import { appendResearchEvidence, DEFAULT_RESEARCH_ARCHIVE_BYTES } from "./research/researchArchive";
+import path from "node:path";
 
 export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION";
 export interface StrategyCandidate {
@@ -191,6 +193,7 @@ export interface SwingSignal {
   featureCutoffMs?: number;
   strategyCandidates?: StrategyCandidate[];
   familyRegime?: "TREND" | "RANGE" | "NEUTRAL";
+  researchCapture?: { status: string; bytes?: number; maxBytes?: number };
   asset: string;
   action: 'SWING_BUY' | 'SWING_SHORT' | 'HOLD';
   entryPrice: number;
@@ -1447,7 +1450,7 @@ export class SwingEngine {
         MarketService.getCandles("4h", 100, assetKey),
         MarketService.getWeeklyCandles(20, assetKey).catch(() => [] as Candle[]),
         MarketService.getCurrentPriceSnapshot(assetKey),
-        assetMode === "REALTIME_FAST" ? MarketService.getOrderbookImbalance(assetKey).catch(() => null) : Promise.resolve(null),
+        MarketService.getOrderbookImbalance(assetKey).catch(() => null),
         // Funding and open interest exist for every perpetual and are recorded
         // whatever the strategy speed; only the fast tier scores them.
         MarketService.getDeepSensors(assetKey).catch(() => null),
@@ -1458,11 +1461,28 @@ export class SwingEngine {
         return emptySignal(assetKey, "Insufficient historical data");
       }
 
-      return evaluateSwingSignal({
+      const signal = evaluateSwingSignal({
         assetKey, assetMode, candles1mResult, candles5mResult,
         candles15m, candles1h, candles4h, candles1w,
         livePriceSnapshot, orderbookResult, deepSensors, learningRules,
       });
+      try {
+        const metadata = await MarketService.getInstrumentMetadata(assetKey);
+        signal.researchCapture = appendResearchEvidence({
+          directory: path.join(process.cwd(), "data", "research"),
+          maxBytes: Number(process.env.RESEARCH_ARCHIVE_MAX_BYTES || DEFAULT_RESEARCH_ARCHIVE_BYTES),
+          record: { asset: assetKey, recordedAtMs: livePriceSnapshot.eventTimeMs,
+            candles: { "15m": closedCandles(candles15m, "15m", livePriceSnapshot.eventTimeMs),
+              "1h": closedCandles(candles1h, "1h", livePriceSnapshot.eventTimeMs),
+              "4h": closedCandles(candles4h, "4h", livePriceSnapshot.eventTimeMs),
+              "1w": closedCandles(candles1w, "1w", livePriceSnapshot.eventTimeMs) },
+            quote: livePriceSnapshot, metadata, funding: deepSensors, depth: orderbookResult },
+        });
+      } catch {
+        // Research storage cannot prevent current risk management or a valid signal.
+        signal.researchCapture = { status: "CAPTURE_ERROR" };
+      }
+      return signal;
     } catch (err) {
       return emptySignal(assetKey, `Swing scan failed: ${err instanceof Error ? err.message : String(err)}`);
     }

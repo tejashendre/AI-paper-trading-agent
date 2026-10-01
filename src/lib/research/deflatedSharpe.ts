@@ -13,10 +13,11 @@
  * observed Sharpe exceeds it.
  *
  * The honest caveat, stated here because it materially affects the answer:
- * parameter combinations drawn from a plateau are *not* independent. Neighbouring
- * settings share data and produce correlated results, so the effective number
- * of trials is smaller than the number run. `effectiveTrials` below applies a
- * conservative discount rather than pretending the trials were independent.
+ * parameter trials can be correlated. Without measured trial covariance the
+ * default counts every attempted configuration; it applies no trial discount.
+ * The null Sharpe variance uses 1/(observations-1), an approximation rather
+ * than an empirical variance across trial Sharpe ratios. The result is a
+ * research screening statistic, not a probability of future profit.
  */
 
 /** Standard normal CDF, via a numerical error function. */
@@ -71,9 +72,8 @@ export interface DeflatedSharpeInput {
   trials: number;
   /**
    * Fraction of trials treated as independent. Parameter plateaus produce
-   * heavily correlated results, so counting every combination as a fresh test
-   * would over-penalise. 0.25 is deliberately conservative in the other
-   * direction than simply using `trials`.
+   * correlated results. Defaults to 1. Candidate promotion always passes 1;
+   * a discount requires separate empirical covariance evidence.
    */
   independenceFactor?: number;
 }
@@ -105,7 +105,7 @@ export function expectedMaxSharpeUnderNull(effectiveTrials: number, periods: num
 }
 
 export function deflatedSharpeRatio(input: DeflatedSharpeInput): DeflatedSharpeResult {
-  const independence = input.independenceFactor ?? 0.25;
+  const independence = input.independenceFactor ?? 1;
   const effectiveTrials = Math.max(1, Math.round(input.trials * independence));
   const benchmark = expectedMaxSharpeUnderNull(effectiveTrials, input.periods);
 

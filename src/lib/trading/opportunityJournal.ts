@@ -6,6 +6,11 @@ import { Candle, Timeframe } from "@/lib/types";
 import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import { getConfiguredInstrument } from './instrumentRegistry';
+import { fetchFundingSettlements } from '@/lib/data/bybitPublic';
+import { replayStrategyCandidate } from '@/lib/research/familyReplay';
+import { storeResearchOutcome } from '@/lib/research/researchLoop';
+import type { StrategyCandidate } from '@/lib/swingEngine';
 
 // Derived learning is strategy-version scoped. Earlier observations remain in
 // Redis for audit, but cannot quarantine a materially different strategy.
@@ -33,6 +38,9 @@ export interface OpportunityRecord {
   vetoCode?: string;
   instrumentVersion?: string;
   featureStartMs?: number;
+  fundingIntervalMinutes?: number;
+  halfSpreadBps?: number;
+  regime?: string;
   id: string;
   asset: string;
   timestamp: string;
@@ -104,7 +112,7 @@ function timeframeForHorizon(horizon: EvaluationHorizon): Timeframe {
   if (horizon === "15m") return "1m";
   if (horizon === "1h") return "5m";
   if (horizon === "4h") return "15m";
-  return "1h";
+  return "5m";
 }
 
 function dataPath(filename: string) {
@@ -324,6 +332,13 @@ function simulatedNetOutcome(
   }
 }
 
+export function selectLabelPath(candles:Candle[], startMs:number,endMs:number,intervalMs:number) {
+  const path=candles.filter(c=>c.time*1000>=startMs && (c.time*1000+intervalMs)<=endMs).sort((a,b)=>a.time-b.time);
+  if (!path.length || path[0].time*1000>startMs+intervalMs ||
+    path[path.length-1].time*1000+intervalMs<endMs-intervalMs ||
+    path.some((c,i)=>i>0 && (c.time-path[i-1].time)*1000!==intervalMs)) return null;
+  return path;
+}
 async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizon, currentPrice: number) {
   if (record.direction === "NEUTRAL") {
     return evaluateCandles(record, [], currentPrice);
@@ -333,14 +348,28 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
     const startMs = new Date(record.timestamp).getTime();
     const endMs = startMs + HORIZON_MS[horizon];
     const timeframe = timeframeForHorizon(horizon);
-    const candles = await MarketService.getCandles(timeframe, 120, record.asset);
-    const pathCandles = candles.filter((candle) => {
-      const candleMs = candle.time * 1000;
-      return candleMs >= startMs && candleMs <= endMs + 5 * 60_000;
-    });
-    return evaluateCandles(record, pathCandles, currentPrice);
+    const intervalMs=({ '1m':60000,'5m':300000,'15m':900000 } as Record<string,number>)[timeframe];
+    const candles = await MarketService.getCandles(timeframe, horizon==='24h'?1000:120, record.asset);
+    const pathCandles=selectLabelPath(candles,startMs,endMs,intervalMs);
+    if (!pathCandles) return null;
+    const labelPrice=pathCandles[pathCandles.length-1].close;
+    const result=evaluateCandles(record,pathCandles,labelPrice);
+    if (horizon==='24h' && record.candidateId && record.configHash) {
+      const instrument=getConfiguredInstrument(record.asset);
+      const funding=await fetchFundingSettlements(instrument.symbol,startMs,endMs).catch(()=>[]);
+      const replay=replayStrategyCandidate({candidate:{candidateId:record.candidateId,asset:instrument.asset,
+        instrument,family:record.family as StrategyCandidate['family'],configHash:record.configHash,
+        regime:record.regime as StrategyCandidate['regime'],direction:record.direction,entryPrice:record.entryPrice,
+        stopPrice:record.stopLoss!,targetPrice:record.takeProfit!,featureCutoffMs:startMs,
+        initialRiskUsdt:Math.abs(record.entryPrice-record.stopLoss!),mode:'SHADOW',reasons:[],netRewardRisk:0},
+        bars:pathCandles,barIntervalMs:intervalMs,featureStartMs:record.featureStartMs??startMs,
+        labelEndMs:endMs,funding,fundingIntervalMinutes:record.fundingIntervalMinutes??480,
+        halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:false,researchOrigin:'SHADOW'});
+      if (replay.status==='COMPLETED') await storeResearchOutcome(replay.outcome);
+    }
+    return {...result,currentPrice:labelPrice};
   } catch {
-    return evaluateCandles(record, [], currentPrice);
+    return null;
   }
 }
 
@@ -381,6 +410,7 @@ export class OpportunityJournal {
       vetoCode: result.vetoCode,
       instrumentVersion: result.instrumentVersion,
       featureStartMs: result.featureStartMs,
+      fundingIntervalMinutes:result.fundingIntervalMinutes, halfSpreadBps:result.halfSpreadBps, regime:result.regime,
       asset: result.asset,
       timestamp: result.timestamp || new Date().toISOString(),
       direction: inferDirection(result),
@@ -449,9 +479,12 @@ export class OpportunityJournal {
         continue;
       }
 
+      if (evaluations.length >= 12) {keep.push(record);continue;}
       for (const horizon of due) {
         const path = await evaluatePath(record, horizon, currentPrice);
-        const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice }, currentPrice);
+        if (!path) continue;
+        const labelPrice='currentPrice' in path ? Number(path.currentPrice) : currentPrice;
+        const netOutcome = simulatedNetOutcome(record, { ...path, currentPrice:labelPrice }, labelPrice);
         evaluations.push({
           candidateId: record.candidateId, family: record.family, configHash: record.configHash,
           featureStartMs: record.featureStartMs, featureCutoffMs: record.featureCutoffMs,
@@ -464,7 +497,7 @@ export class OpportunityJournal {
           entryPrice: record.entryPrice,
           stopLoss: record.stopLoss,
           takeProfit: record.takeProfit,
-          currentPrice,
+          currentPrice:labelPrice,
           movePercent: path.movePercent,
           maxFavorableExcursion: path.maxFavorableExcursion,
           maxAdverseExcursion: path.maxAdverseExcursion,
