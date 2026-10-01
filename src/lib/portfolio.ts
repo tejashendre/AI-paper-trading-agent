@@ -1,6 +1,7 @@
 import { getRedis } from "./redis";
 import { Logger } from "./logger";
 import { Portfolio, Trade, CompositeSignal } from "./types";
+import { CompletedPositionOutcome, outcomeSourceHash } from "./trading/positionOutcomes";
 import crypto from "crypto";
 
 function isValidPortfolio(value: unknown): value is Portfolio {
@@ -220,6 +221,34 @@ export class PortfolioManager {
         } catch (e) {
             console.error("Failed to save trades backup:", e);
         }
+    }
+
+    /**
+     * Persist a completed-position outcome once, with its schema version and
+     * the hash of the legs it was built from. Returns false when that
+     * position's outcome is already stored, so completion is emitted once.
+     */
+    static async recordPositionOutcome(outcome: CompletedPositionOutcome, type: "user" | "ai" = "user"): Promise<boolean> {
+        const redis = getRedis();
+        const key = `${type}:positionOutcomes`;
+        const existing = await redis.lrange(key, 0, 999);
+        const already = existing.some((raw) => {
+            try {
+                return (JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as { outcome?: { positionId?: string } })
+                    .outcome?.positionId === outcome.positionId;
+            } catch {
+                return false;
+            }
+        });
+        if (already) return false;
+        await redis.lpush(key, JSON.stringify({
+            schemaVersion: 1,
+            recordedAt: new Date().toISOString(),
+            sourceEventHash: outcomeSourceHash(outcome),
+            outcome,
+        }));
+        await redis.ltrim(key, 0, 999);
+        return true;
     }
 
     static async getTrades(type: "user" | "ai" = "user"): Promise<Trade[]> {

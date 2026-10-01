@@ -182,6 +182,8 @@ test("new_autonomous_positions_carry_complete_identity", () => {
     positionId: identity.positionId,
     instrument: identity.instrument,
     economicsModel: identity.economicsModel,
+    initialRiskUsdt: identity.initialRiskUsdt,
+    riskPolicyVersion: identity.riskPolicyVersion,
   });
 });
 

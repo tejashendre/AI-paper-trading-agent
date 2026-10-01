@@ -18,6 +18,7 @@ export type ExecutionLedgerEventType =
   | "SCALE_IN_FILLED"
   | "PARTIAL_EXIT_FILLED"
   | "FUNDING_SETTLED"
+  | "POSITION_COMPLETED"
   | "RISK_CIRCUIT_BREAKER"
   | "SYSTEM_ERROR";
 

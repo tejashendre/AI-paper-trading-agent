@@ -5,6 +5,7 @@ import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
 import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from "@/lib/trading/assetSpecs";
+import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/trading/positionOutcomes";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -120,53 +121,34 @@ function buildEquityCurveTrades(trades: any[]) {
         }));
 }
 
-function buildClosedTradeStats(trades: any[], initialCapital = 10_000) {
-    const closedTrades = (trades || [])
-        .filter((trade) => typeof trade?.pnl === "number" && Number.isFinite(Number(trade.pnl)))
-        .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
-
-    const totalTrades = closedTrades.length;
-    const winningTrades = closedTrades.filter((trade) => Number(trade.pnl) >= 0).length;
-    const losingTrades = totalTrades - winningTrades;
-    const grossProfit = closedTrades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl || 0)), 0);
-    const grossLoss = closedTrades.reduce((sum, trade) => sum + Math.abs(Math.min(0, Number(trade.pnl || 0))), 0);
-    const totalPnl = grossProfit - grossLoss;
-    const winRate = totalTrades > 0 ? winningTrades / totalTrades : 0;
-    const averageWin = winningTrades > 0 ? grossProfit / winningTrades : 0;
-    const averageLoss = losingTrades > 0 ? grossLoss / losingTrades : 0;
-    const expectancy = totalTrades > 0 ? totalPnl / totalTrades : 0;
-    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0;
-
-    let equity = initialCapital;
-    let peak = initialCapital;
-    let maxDrawdown = 0;
-    let maxDrawdownPercent = 0;
-
-    for (const trade of closedTrades) {
-        equity += Number(trade.pnl || 0);
-        if (equity > peak) peak = equity;
-        const drawdown = Math.max(0, peak - equity);
-        const drawdownPercent = peak > 0 ? (drawdown / peak) * 100 : 0;
-        maxDrawdown = Math.max(maxDrawdown, drawdown);
-        maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdownPercent);
-    }
-
+/**
+ * Position-level statistics: win rate, profit factor and expectancy count
+ * completed positions, with partial exits inside their position. Realized
+ * cash from every exit leg is reported separately and labeled as cash.
+ */
+function buildClosedTradeStats(trades: any[], initialCapital = 10_000, openPositions: any[] = []) {
+    const { completed, conflicts } = buildPositionOutcomes({ trades: trades || [], openPositions });
+    const summary = summarizeCompletedPositions({ outcomes: completed, trades: trades || [], initialCapital });
     return {
-        source: "closed_trade_history",
-        totalTrades,
-        winningTrades,
-        losingTrades,
-        winRate,
-        grossProfit,
-        grossLoss,
-        profitFactor,
-        totalPnl,
-        averageWin,
-        averageLoss,
-        expectancy,
-        maxDrawdown,
-        maxDrawdownPercent,
-        latestClosedAt: closedTrades[closedTrades.length - 1]?.timestamp || null,
+        source: summary.source,
+        unit: "completed_position" as const,
+        totalTrades: summary.completedPositions,
+        winningTrades: summary.winningPositions,
+        losingTrades: summary.losingPositions,
+        winRate: summary.winRate,
+        grossProfit: summary.grossProfit,
+        grossLoss: summary.grossLoss,
+        profitFactor: summary.profitFactor,
+        totalPnl: summary.totalPnl,
+        averageWin: summary.averageWin,
+        averageLoss: summary.averageLoss,
+        expectancy: summary.expectancy,
+        maxDrawdown: summary.maxDrawdown,
+        maxDrawdownPercent: summary.maxDrawdownPercent,
+        latestClosedAt: summary.latestClosedAt,
+        exitLegs: summary.exitLegs,
+        realizedCashFromExitLegs: summary.realizedCashFromExitLegs,
+        positionConflicts: conflicts.length,
     };
 }
 
@@ -454,8 +436,8 @@ export async function GET(request: Request) {
         const learningDigest = buildLearningDigest(localLearningRules, opportunitySummary, setupPerformance);
         const userEquityTrades = buildEquityCurveTrades(userTrades);
         const aiEquityTrades = buildEquityCurveTrades(aiTrades);
-        const userClosedStats = buildClosedTradeStats(userTrades, Number(userPortfolio?.initialCapital || 10_000));
-        const aiClosedStats = buildClosedTradeStats(aiTrades, Number(aiPortfolio?.initialCapital || 10_000));
+        const userClosedStats = buildClosedTradeStats(userTrades, Number(userPortfolio?.initialCapital || 10_000), Object.values(userPortfolio?.openPositions || {}));
+        const aiClosedStats = buildClosedTradeStats(aiTrades, Number(aiPortfolio?.initialCapital || 10_000), Object.values(aiPortfolio?.openPositions || {}));
         const userPortfolioDisplay = portfolioWithClosedStats(userPortfolio, userClosedStats);
         const aiPortfolioDisplay = portfolioWithClosedStats(aiPortfolio, aiClosedStats);
         const aiAssetBookDigest = buildAssetBookDigest({

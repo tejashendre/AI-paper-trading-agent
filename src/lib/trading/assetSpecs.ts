@@ -457,7 +457,13 @@ export function autonomousPositionIdentity(input: {
 /** Identity copied from a position onto each of its entry, scale-in and exit legs. */
 export function positionLegIdentity(position: OpenPosition) {
   const instrument = positionInstrument(position);
-  return { positionId: position.positionId, instrument, economicsModel: instrument.economicsModel };
+  return {
+    positionId: position.positionId,
+    instrument,
+    economicsModel: instrument.economicsModel,
+    initialRiskUsdt: position.initialRiskUsdt,
+    riskPolicyVersion: position.riskPolicyVersion,
+  };
 }
 
 /** Why a migration conflict blocks new entries in this asset, or null. */
