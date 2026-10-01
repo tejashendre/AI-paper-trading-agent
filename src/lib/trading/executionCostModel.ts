@@ -8,7 +8,9 @@ import {
 } from "./assetSpecs";
 import type { InstrumentRef } from "./instrumentRegistry";
 
-export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v2-2026-07-19";
+// v3: versioned public fee schedules for Bybit contracts, taker-only paper
+// fills, and observed-spread entry profiles.
+export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v3-2026-10-01";
 
 export type PaperExecutionAction = "BUY" | "SELL" | "SHORT" | "COVER";
 export type PaperExecutionReason =
@@ -85,6 +87,8 @@ export interface PaperExecutionPlanInput {
   takeProfit: number;
   amount: number;
   context?: Omit<PaperExecutionContext, "reason">;
+  /** Cost profile override, e.g. the catalogue profile widened to the observed spread. */
+  profile?: ExecutionCostProfile;
 }
 
 const PROFILES: Record<string, ExecutionCostProfile> = {
@@ -245,6 +249,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.entryPrice,
     amount: input.amount,
     context: { ...context, reason: "ENTRY" },
+    profile: input.profile,
   });
   const targetExit = estimatePaperFill({
     asset: input.asset,
@@ -252,6 +257,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.takeProfit,
     amount: input.amount,
     context: { ...context, reason: "TAKE_PROFIT" },
+    profile: input.profile,
   });
   const stopExit = estimatePaperFill({
     asset: input.asset,
@@ -259,6 +265,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     requestedPrice: input.stopLoss,
     amount: input.amount,
     context: { ...context, reason: "STOP_LOSS" },
+    profile: input.profile,
   });
 
   const grossRewardUsd = calculatePnlUsd(

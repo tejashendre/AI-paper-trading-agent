@@ -46,10 +46,9 @@ export interface LiquidityCostConfig {
 }
 
 export const DEFAULT_LIQUIDITY_COST: LiquidityCostConfig = {
-  // Assumes limit orders that mostly rest. A book rebalancing every 12 hours
-  // has no urgency, so paying taker on every leg would be a pessimistic and
-  // unrealistic assumption in the other direction.
-  feeBps: 2.0,
+  // Taker. Maker status is earned only by simulating a resting order, and no
+  // replay here does; a scheduled rebalance is not evidence of a maker fill.
+  feeBps: 5.5,
   slippageMultiple: 1.0,
 };
 
@@ -82,4 +81,121 @@ export function estimateOneWayCostBps(
 ): number {
   const halfSpread = estimateHalfSpreadBps(turnover24hUsd);
   return config.feeBps + halfSpread * (1 + config.slippageMultiple);
+}
+
+// ---------------------------------------------------------------------------
+// Per-fill capacity. Initial conservative limits, versioned as part of the
+// risk policy; they are not claims of optimal parameters.
+// ---------------------------------------------------------------------------
+
+export const FILL_CAPACITY_POLICY = {
+  version: "fill-capacity-v1-2026-10-01",
+  /** A fill may be at most this share of 24h turnover. */
+  maxTurnoverShare: 0.01,
+  /** ...and at most this share of opposing depth within the band. */
+  maxDepthShare: 0.1,
+  depthBandBps: 10,
+  /** One-way spread plus impact may use at most this share of the stop distance. */
+  maxCostToStopShare: 0.1,
+} as const;
+
+export interface LiquiditySnapshot {
+  bestBid: number;
+  bestAsk: number;
+  /** [price, quantity], best first. */
+  bids: Array<[number, number]>;
+  asks: Array<[number, number]>;
+  turnover24hUsdt: number;
+  observedAtMs: number;
+}
+
+type Side = "BUY" | "SELL";
+
+function bookProblem(liquidity: LiquiditySnapshot | null, side: Side): string | null {
+  if (!liquidity) return "no order book observation";
+  const { bestBid, bestAsk } = liquidity;
+  if (!(Number.isFinite(bestBid) && Number.isFinite(bestAsk) && bestBid > 0 && bestAsk > 0)) return "best bid or ask is missing";
+  if (bestBid >= bestAsk) return `book is crossed or locked (bid ${bestBid}, ask ${bestAsk})`;
+  if ((side === "BUY" ? liquidity.asks : liquidity.bids).length === 0) return "no opposing depth";
+  if (!(liquidity.turnover24hUsdt > 0)) return "24h turnover is unavailable";
+  return null;
+}
+
+/** Opposing notional resting within the depth band of the touch. */
+function depthWithinBand(side: Side, liquidity: LiquiditySnapshot): number {
+  const band = FILL_CAPACITY_POLICY.depthBandBps / 10_000;
+  const levels = side === "BUY" ? liquidity.asks : liquidity.bids;
+  const limit = side === "BUY" ? liquidity.bestAsk * (1 + band) : liquidity.bestBid * (1 - band);
+  return levels
+    .filter(([price, qty]) => price > 0 && qty > 0 && (side === "BUY" ? price <= limit : price >= limit))
+    .reduce((sum, [price, qty]) => sum + price * qty, 0);
+}
+
+/** The largest notional the capacity limits allow, or null when liquidity is unobserved. */
+export function capacityNotionalCap(input: { side: Side; liquidity: LiquiditySnapshot | null }): number | null {
+  if (bookProblem(input.liquidity, input.side)) return null;
+  const liquidity = input.liquidity!;
+  return Math.min(
+    FILL_CAPACITY_POLICY.maxTurnoverShare * liquidity.turnover24hUsdt,
+    FILL_CAPACITY_POLICY.maxDepthShare * depthWithinBand(input.side, liquidity)
+  );
+}
+
+/**
+ * Whether a proposed fill fits observed liquidity. An outage or a broken
+ * book is never treated as a free fill at the last price.
+ */
+export function evaluateFillCapacity(input: {
+  side: Side;
+  quantity: number;
+  entryPrice: number;
+  stopPrice: number;
+  impactBps: number;
+  liquidity: LiquiditySnapshot | null;
+}) {
+  const problem = bookProblem(input.liquidity, input.side);
+  const notionalUsdt = input.quantity * input.entryPrice;
+  if (problem) {
+    return {
+      allowed: false,
+      reasons: [`LIQUIDITY_UNAVAILABLE: ${problem}`],
+      snapshot: { policyVersion: FILL_CAPACITY_POLICY.version, notionalUsdt, observedAtMs: input.liquidity?.observedAtMs ?? null },
+    };
+  }
+  const liquidity = input.liquidity!;
+  const mid = (liquidity.bestBid + liquidity.bestAsk) / 2;
+  const spreadBps = ((liquidity.bestAsk - liquidity.bestBid) / mid) * 10_000;
+  const halfSpreadBps = spreadBps / 2;
+  const depth = depthWithinBand(input.side, liquidity);
+  const stopDistanceBps = (Math.abs(input.entryPrice - input.stopPrice) / input.entryPrice) * 10_000;
+  const costBps = halfSpreadBps + Math.max(0, input.impactBps);
+  const costToStopShare = stopDistanceBps > 0 ? costBps / stopDistanceBps : Number.POSITIVE_INFINITY;
+
+  const reasons: string[] = [];
+  const turnoverCap = FILL_CAPACITY_POLICY.maxTurnoverShare * liquidity.turnover24hUsdt;
+  if (notionalUsdt > turnoverCap) {
+    reasons.push(`TURNOVER_CAPACITY: ${notionalUsdt.toFixed(2)} USDT exceeds ${(FILL_CAPACITY_POLICY.maxTurnoverShare * 100).toFixed(0)}% of 24h turnover (${turnoverCap.toFixed(2)})`);
+  }
+  if (notionalUsdt > FILL_CAPACITY_POLICY.maxDepthShare * depth) {
+    reasons.push(`DEPTH_CAPACITY: ${notionalUsdt.toFixed(2)} USDT exceeds ${(FILL_CAPACITY_POLICY.maxDepthShare * 100).toFixed(0)}% of ${depth.toFixed(2)} USDT resting within ${FILL_CAPACITY_POLICY.depthBandBps} bps`);
+  }
+  if (costToStopShare > FILL_CAPACITY_POLICY.maxCostToStopShare) {
+    reasons.push(`COST_TO_STOP: ${costBps.toFixed(2)} bps of spread and impact is ${(costToStopShare * 100).toFixed(0)}% of a ${stopDistanceBps.toFixed(2)} bps stop`);
+  }
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    snapshot: {
+      policyVersion: FILL_CAPACITY_POLICY.version,
+      observedAtMs: liquidity.observedAtMs,
+      bestBid: liquidity.bestBid,
+      bestAsk: liquidity.bestAsk,
+      spreadBps,
+      halfSpreadBps,
+      depthWithinBandUsdt: depth,
+      turnover24hUsdt: liquidity.turnover24hUsdt,
+      notionalUsdt,
+      costToStopShare,
+    },
+  };
 }

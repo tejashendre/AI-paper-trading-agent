@@ -15,10 +15,21 @@ import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
-import { fitPaperExecutionPlanToRiskBudget } from "../lib/trading/executionCostModel";
+import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile } from "../lib/trading/executionCostModel";
+import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
-import { autonomousPositionIdentity, getAssetSpec, migrationEntryBlock, positionLegIdentity } from "../lib/trading/assetSpecs";
+import {
+  alignStopTowardEntry,
+  autonomousPositionIdentity,
+  decimalString,
+  feeScheduleFor,
+  floorOrderQty,
+  getAssetSpec,
+  migrationEntryBlock,
+  positionLegIdentity,
+  validateOrderSize,
+} from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
 
@@ -661,9 +672,10 @@ async function runEntryScan() {
 
         // One data decision for every asset: provenance, per-field freshness,
         // metadata and warm-up. The same object is handed to admission.
+        const venueMetadata = await MarketService.getInstrumentMetadata(asset).catch(() => null);
         const dataEligibility = evaluateEntryEligibility({
           instrument: entryInstrumentFor(asset),
-          metadata: await MarketService.getInstrumentMetadata(asset).catch(() => null),
+          metadata: venueMetadata,
           quote: swingSignal.marketQuote ?? null,
           closedBarCounts: swingSignal.closedBarCounts ?? { m15: 0, h1: 0, h4: 0, w1: 0 },
           nowMs: Date.now(),
@@ -690,6 +702,13 @@ async function runEntryScan() {
           await Logger.warn(`[SWING BLOCK] ${asset} data eligibility: ${reason}`);
           continue;
         }
+        // Eligibility guarantees usable metadata here. A stop or target that
+        // is not on the venue tick could not be placed, so both move onto it
+        // toward entry, which can only reduce risk and promised reward. Every
+        // later step (admission, plan, position, trades, ledger) uses these.
+        const metadata = venueMetadata!;
+        swingSignal.stopLoss = alignStopTowardEntry({ price: swingSignal.stopLoss, entryPrice: swingSignal.entryPrice, metadata });
+        swingSignal.takeProfit = alignStopTowardEntry({ price: swingSignal.takeProfit, entryPrice: swingSignal.entryPrice, metadata });
 
         const isShort = swingSignal.action === "SWING_SHORT";
         const portfolioGuard = PortfolioGuards.evaluateNewSwing({
@@ -834,14 +853,39 @@ async function runEntryScan() {
           continue;
         }
 
-        const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+        // Observed liquidity: no observation means no entry. The capacity cap
+        // can only shrink the size, and the modeled spread is widened to what
+        // the book actually shows.
+        const side = isShort ? "SELL" : "BUY";
+        const liquidity = await MarketService.getLiquiditySnapshot(asset).catch(() => null);
+        const capacityCapUsdt = capacityNotionalCap({ side, liquidity });
+        const blockVenue = async (reason: string, decisionState: string) => {
+          results.push({
+            asset,
+            action: "BLOCKED",
+            reason,
+            simpleStatus: "Venue liquidity or size rules blocked this trade",
+            simpleReason: reason,
+            nextStep: "The bot will retry when the order fits the venue's size rules and observed liquidity.",
+            decisionState,
+            dataQuality: swingSignal.dataQuality,
+            finalConviction: swingSignal.finalConviction,
+            timestamp,
+          });
+          await Logger.warn(`[SWING BLOCK] ${asset} ${reason}`);
+        };
+        if (capacityCapUsdt === null || !liquidity) {
+          await blockVenue("LIQUIDITY_UNAVAILABLE: no usable order book or turnover observation for this instrument.", "BLOCKED_LIQUIDITY");
+          continue;
+        }
+        const catalogProfile = getExecutionCostProfile(asset);
+        const observedHalfSpreadBps = ((liquidity.bestAsk - liquidity.bestBid) / ((liquidity.bestAsk + liquidity.bestBid) / 2)) * 5_000;
+        const planInput = {
           asset,
-          direction: isShort ? "SHORT" : "LONG",
+          direction: (isShort ? "SHORT" : "LONG") as "SHORT" | "LONG",
           entryPrice: swingSignal.entryPrice,
           stopLoss: swingSignal.stopLoss,
           takeProfit: swingSignal.takeProfit,
-          amount: admission.amount,
-          riskBudgetUsd: admission.riskAmountUsd,
           context: {
             assetMode: swingSignal.assetMode,
             dataQuality: swingSignal.dataQuality,
@@ -849,8 +893,43 @@ async function runEntryScan() {
             liquidityState: swingSignal.liquidityState,
             orderbookImbalanceRatio: swingSignal.orderbookImbalanceRatio,
           },
+          profile: { ...catalogProfile, halfSpreadBps: Math.max(catalogProfile.halfSpreadBps, observedHalfSpreadBps) },
+        };
+        const fittedExecution = fitPaperExecutionPlanToRiskBudget({
+          ...planInput,
+          amount: Math.min(admission.amount, capacityCapUsdt / swingSignal.entryPrice),
+          riskBudgetUsd: admission.riskAmountUsd,
         });
-        const executionPlan = fittedExecution.plan;
+
+        // Venue lot rules on the final size: floor to the step, never round up.
+        const venueQuantity = floorOrderQty(decimalString(fittedExecution.plan.entry.amount), metadata);
+        const sizeCheck = validateOrderSize({
+          quantity: venueQuantity,
+          price: fittedExecution.plan.entry.fillPrice,
+          metadata,
+          maxNotionalUsdt: admission.notionalUsd * 1.01,
+          stopPrice: swingSignal.stopLoss,
+          maxLossUsdt: admission.riskAmountUsd,
+        });
+        if (!sizeCheck.allowed) {
+          await blockVenue(sizeCheck.reasons.join("; "), "BLOCKED_VENUE_SIZE");
+          continue;
+        }
+        const executionPlan = Number(venueQuantity) === fittedExecution.plan.entry.amount
+          ? fittedExecution.plan
+          : buildPaperExecutionPlan({ ...planInput, amount: Number(venueQuantity) });
+        const capacity = evaluateFillCapacity({
+          side,
+          quantity: executionPlan.entry.amount,
+          entryPrice: executionPlan.entry.fillPrice,
+          stopPrice: swingSignal.stopLoss,
+          impactBps: executionPlan.entry.slippageBps,
+          liquidity,
+        });
+        if (!capacity.allowed) {
+          await blockVenue(capacity.reasons.join("; "), "BLOCKED_LIQUIDITY");
+          continue;
+        }
         const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
         const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
         const executionFailure = executionPlan.netRewardUsd <= 0
@@ -1085,6 +1164,8 @@ async function runEntryScan() {
           expectedNetRewardUsd: executionPlan.netRewardUsd,
           expectedNetLossUsd: executionPlan.netLossUsd,
           carryCostPaid: 0,
+          fillLiquidity: capacity.snapshot,
+          feeScheduleVersion: feeScheduleFor(identity.instrument).version,
           ...identity,
         };
 
@@ -1150,6 +1231,8 @@ async function runEntryScan() {
           spreadCostUsd: executionPlan.entry.spreadCostUsd,
           slippageCostUsd: executionPlan.entry.slippageCostUsd,
           gapCostUsd: executionPlan.entry.gapCostUsd,
+          fillLiquidity: capacity.snapshot,
+          feeScheduleVersion: newPos.feeScheduleVersion,
           reasoning: newPos.reasoning,
         };
 
