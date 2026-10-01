@@ -99,7 +99,8 @@ const fixture = [
   { ...seed, id: "audit-final", pnl: -5, isPartialExit: false },
 ];
 const fixtureResult = SetupPerformance.build(fixture as Trade[], {}).byAsset[0];
-assert.equal(fixtureResult.realizedPnl, -5, "Accounting behavior changed; refresh audit conclusions");
+// Corrected economics: the +15 partial and -5 final are one +10 position.
+assert.equal(fixtureResult.realizedPnl, 10, "Learning must count partial exits inside their position");
 
 const report = {
   auditLabel: "2026-10-01 strategy coverage and learning audit",

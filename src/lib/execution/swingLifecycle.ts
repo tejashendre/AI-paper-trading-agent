@@ -33,6 +33,7 @@ import {
   expectedFundingTimes,
 } from "@/lib/trading/executionCostModel";
 import { liveFundingDeps } from "@/lib/data/bybitPublic";
+import { buildPositionOutcomes, CompletedPositionOutcome, outcomeSourceHash } from "@/lib/trading/positionOutcomes";
 import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
 import {
@@ -677,8 +678,9 @@ async function closePosition(
     await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType))
       .catch((error) => console.warn(`[${source}] funding ledger drain deferred:`, error));
   }
+  const outcome = await completePositionOutcome(portfolio, portfolioType, closeTrade, source);
   if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
-    await TradeReviewJournal.recordSwingClose(closeTrade, pos).catch((error) => {
+    await TradeReviewJournal.recordSwingClose(closeTrade, pos, outcome).catch((error) => {
       console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
     });
   }
@@ -698,6 +700,45 @@ async function closePosition(
 
   result.closed++;
   if (reason === "SIGNAL_REVERSAL") result.signalReversals++;
+}
+
+/**
+ * The closed position's single economic outcome, built from all of its legs
+ * (partial exits included), persisted once with its source-event hash and
+ * announced once in the ledger. Returns null when the legs cannot be
+ * reconciled; the conflict is then visible in learning summaries.
+ */
+async function completePositionOutcome(
+  portfolio: Portfolio,
+  portfolioType: "ai" | "user",
+  closeTrade: Trade,
+  source: string
+): Promise<CompletedPositionOutcome | null> {
+  try {
+    const trades = await PortfolioManager.getTrades(portfolioType);
+    const { completed } = buildPositionOutcomes({
+      trades: [closeTrade, ...trades],
+      openPositions: Object.values(portfolio.openPositions || {}),
+    });
+    const outcome = completed.find((candidate) => candidate.legIds.includes(closeTrade.id)) ?? null;
+    if (!outcome) return null;
+    const firstRecord = await PortfolioManager.recordPositionOutcome(outcome, portfolioType);
+    const eventId = `position-completed:${outcome.positionId}`;
+    if (firstRecord && portfolioType === "ai" && !ExecutionLedger.hasEvent(eventId, new Date(outcome.openedAtMs).toISOString())) {
+      await ExecutionLedger.recordBestEffort({
+        id: eventId,
+        type: "POSITION_COMPLETED",
+        source,
+        asset: outcome.asset,
+        positionId: outcome.positionId,
+        payload: { outcome, sourceEventHash: outcomeSourceHash(outcome) },
+      });
+    }
+    return outcome;
+  } catch (error) {
+    console.warn(`[${source}] position outcome not recorded:`, error);
+    return null;
+  }
 }
 
 async function scaleIntoWinner(

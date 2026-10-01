@@ -412,6 +412,9 @@ export interface Trade {
   positionId?: string;
   instrument?: InstrumentRef;
   economicsModel?: EconomicsModel;
+  /** The position's initial risk, repeated on each leg so outcomes survive history trimming. */
+  initialRiskUsdt?: number;
+  riskPolicyVersion?: string;
   migrationAddedFields?: string[];
   fillLiquidity?: Record<string, unknown>;
   feeScheduleVersion?: string;

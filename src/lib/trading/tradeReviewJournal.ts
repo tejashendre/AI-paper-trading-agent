@@ -3,6 +3,7 @@ import path from "path";
 import { getRedis } from "@/lib/redis";
 import { OpenPosition, Trade } from "@/lib/types";
 import { TRADING_STRATEGY_VERSION } from "./executionLedger";
+import type { CompletedPositionOutcome } from "./positionOutcomes";
 
 const REVIEW_KEY = `tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing`;
 const DIGEST_KEY = `tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing:digest`;
@@ -20,6 +21,8 @@ export type TradeReviewOutcome =
 export interface TradeReviewRecord {
   id: string;
   tradeId: string;
+  /** The reviewed position; null for reviews written before position identity. */
+  positionId?: string | null;
   asset: string;
   direction: "LONG" | "SHORT";
   entryTime?: string;
@@ -185,14 +188,19 @@ export function classifyTradeReview(input: {
   };
 }
 
-function buildReview(trade: Trade, position: OpenPosition): TradeReviewRecord | null {
+/**
+ * Review of a closed position. With its completed outcome, the result and R
+ * multiple are the whole position's, partial exits included; without one,
+ * only the closing leg is known.
+ */
+export function buildTradeReview(trade: Trade, position: OpenPosition, outcome?: CompletedPositionOutcome | null): TradeReviewRecord | null {
   if (typeof trade.pnl !== "number" || !trade.exitReason || !trade.exitPrice) return null;
-  const pnl = Number(trade.pnl);
-  const pnlPercent = Number(trade.pnlPercent || 0);
+  const pnl = outcome ? outcome.netPnlUsdt : Number(trade.pnl);
+  const pnlPercent = outcome ? outcome.returnOnInitialMargin * 100 : Number(trade.pnlPercent || 0);
   const peakOpenPnl = Math.max(0, Number(position.maxUnrealizedPnlUsd || 0), pnl);
-  const plannedRiskUsd = finiteOrNull(position.maxLossUsd);
+  const plannedRiskUsd = outcome?.initialRiskUsdt ?? finiteOrNull(position.maxLossUsd);
   const retained = retainedPeakPercent(pnl, peakOpenPnl);
-  const multiple = riskMultiple(pnl, plannedRiskUsd);
+  const multiple = outcome?.netR ?? riskMultiple(pnl, plannedRiskUsd);
   const classification = classifyTradeReview({
     pnl,
     peakOpenPnl,
@@ -204,6 +212,7 @@ function buildReview(trade: Trade, position: OpenPosition): TradeReviewRecord | 
   return {
     id: `${trade.id}:review`,
     tradeId: trade.id,
+    positionId: outcome?.positionId ?? trade.positionId ?? null,
     asset: trade.asset,
     direction: trade.direction || position.direction,
     entryTime: trade.entryTime || position.entryTime,
@@ -377,8 +386,8 @@ export class TradeReviewJournal {
     writeJsonBackup("trade_review_digest.json", digest);
   }
 
-  static async recordSwingClose(trade: Trade, position: OpenPosition): Promise<TradeReviewRecord | null> {
-    const review = buildReview(trade, position);
+  static async recordSwingClose(trade: Trade, position: OpenPosition, outcome?: CompletedPositionOutcome | null): Promise<TradeReviewRecord | null> {
+    const review = buildTradeReview(trade, position, outcome);
     if (!review) return null;
 
     const redis = getRedis();

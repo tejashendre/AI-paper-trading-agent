@@ -25,6 +25,8 @@ import {
   legacyInstrument,
 } from "@/lib/trading/instrumentRegistry";
 import { positionInstrument } from "@/lib/trading/assetSpecs";
+// One definition of legacy identity, shared with the outcome builder.
+import { legacyPositionId } from "@/lib/trading/positionOutcomes";
 
 export const INSTRUMENT_MIGRATION_VERSION = "instrument-migration-v1-2026-10-01";
 const ACCOUNTING_ASSUMPTION =
@@ -119,11 +121,6 @@ function tradeDirection(trade: Trade): Direction {
 const isExitLeg = (trade: Trade) => /SELL|COVER/.test(trade.action);
 const isScaleIn = (trade: Trade) => !isExitLeg(trade) && /^Scaled into/i.test(trade.reasoning || "");
 const lineageKey = (asset: string, direction: Direction, entryTime: string) => `${asset}|${direction}|${entryTime}`;
-
-export function legacyPositionId(asset: string, direction: Direction, entryTime: string): string {
-  const digest = crypto.createHash("sha256").update(lineageKey(asset, direction, entryTime)).digest("hex");
-  return `legacy:${digest.slice(0, 24)}`;
-}
 
 /**
  * Plan the migration without touching any store. Pure: the same input gives

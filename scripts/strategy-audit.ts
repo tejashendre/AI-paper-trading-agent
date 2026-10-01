@@ -393,6 +393,7 @@ function auditTradingRevivalCalibration(): AuditResult[] {
     signalScore: 10,
     reasoning: "probe",
     pnl: -5,
+    positionId: "audit:probe-close",
     entryMode: "CONTROLLED_PROBE",
     decisionState: "PROBE_ENTRY",
     setupTags: ["HTF_TREND_BREAKOUT"],
@@ -480,8 +481,15 @@ function auditSignalEconomics(): AuditResult[] {
 }
 
 function minimalTrade(overrides: Partial<Trade> = {}): Trade {
+  const id = overrides.id || crypto.randomUUID();
+  // A real exit leg always records its position's lineage. Unless a fixture
+  // groups legs itself, each synthetic exit is its own single-leg position.
+  const lineage = overrides.pnl !== undefined && !overrides.positionId && !overrides.entryTime
+    ? { positionId: `audit:${id}` }
+    : {};
   return {
-    id: overrides.id || crypto.randomUUID(),
+    ...lineage,
+    id,
     timestamp: overrides.timestamp || new Date().toISOString(),
     asset: overrides.asset || "BTC",
     action: overrides.action || "BUY",
@@ -1212,8 +1220,12 @@ function auditLearningConnections(): AuditResult[] {
       : "Trade-review rules may collide with existing learning rule ids."
   ));
 
+  // Each synthetic close is a complete single-leg position, shaped like a real exit leg.
   const syntheticTrade = (index: number, pnl: number) => ({
     id: `oos-${index}`,
+    positionId: `audit:oos-${index}`,
+    action: "SELL",
+    direction: "LONG",
     timestamp: new Date(1_725_000_000_000 + index * 60_000).toISOString(),
     exitTime: new Date(1_725_000_000_000 + index * 60_000).toISOString(),
     asset: "BTC",
