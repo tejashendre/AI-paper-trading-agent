@@ -4,6 +4,8 @@ import CrossSectionalBook from "@/components/CrossSectionalBook";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
+import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
+import { describeResearchCapture } from '@/lib/research/researchDisplay';
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
@@ -557,38 +559,14 @@ function DashboardContent({ secret }: { secret: string }) {
   }, [refresh]);
 
   useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-
-    const refreshLivePrices = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const res = await fetcher("/api/live-prices");
-        if (!cancelled && res.ok) {
-          const liveJson = await res.json();
-          setLiveFeed(liveJson);
-          const positiveLivePrices = Object.fromEntries(
-            Object.entries(liveJson.prices || {}).filter(([, snapshot]: [string, any]) => Number(snapshot?.price || 0) > 0)
-          );
-          setLivePrices((previous: any) => ({
-            ...(previous || {}),
-            ...positiveLivePrices,
-          }));
-        }
-      } catch {
-        // Keep the slower /api/prices snapshot if the live tick endpoint misses once.
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    refreshLivePrices();
-    const interval = setInterval(refreshLivePrices, 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    const start=()=>createBrowserQuoteStream({symbols:{BTC:'BTCUSDT',ETH:'ETHUSDT',SOL:'SOLUSDT',
+      EURUSD:'EURUSDUSDT',GBPUSD:'GBPUSDUSDT',USDJPY:'USDJPYUSDT',GOLD:'XAUUSDT',OIL:'CLUSDT',SILVER:'XAGUSDT'},
+      fetchFallback:async()=>{const response=await fetcher('/api/live-prices');if(!response.ok)throw new Error('Quote recovery unavailable');return response.json();},
+      onUpdate:json=>{setLiveFeed(json);setLivePrices((previous:any)=>({...previous,...json.prices}));}});
+    let stream:ReturnType<typeof start>|null=document.hidden?null:start();
+    const visibility=()=>{stream?.stop();stream=document.hidden?null:start();};
+    document.addEventListener('visibilitychange',visibility);
+    return ()=>{document.removeEventListener('visibilitychange',visibility);stream?.stop();};
   }, [fetcher]);
 
   // Bind pointers dynamically based on selected view mode
@@ -978,7 +956,7 @@ function DashboardContent({ secret }: { secret: string }) {
             <div>
               <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Live Price Layer</div>
               <div className={`text-xs font-bold font-mono ${textPrimary}`}>
-                {liveFeed?.refreshMode === "live-price-only" ? "Updating every 1s" : "Starting live feed"}
+                {liveFeed?.refreshMode === 'browser-stream' ? 'Bybit stream | up to 10 updates/s' : 'Starting live feed'}
               </div>
             </div>
           </div>
@@ -1009,7 +987,7 @@ function DashboardContent({ secret }: { secret: string }) {
           <div className={`rounded-xl border p-3 ${bgSubCard}`}>
             <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Data Coverage</div>
             <div className={`text-xs font-bold font-mono mt-1 ${textPrimary}`}>
-              {liveFeed?.summary?.websocket || 0} live, {liveFeed?.summary?.cached || 0} slow, {liveFeed?.summary?.missing || 0} missing
+              {liveFeed?.summary?.websocket || 0} streamed, {liveFeed?.summary?.rest || 0} recovered, {liveFeed?.summary?.missing || 0} stale or missing
             </div>
           </div>
         </div>
@@ -1532,10 +1510,10 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div>
                         <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Market Data Health</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
-                          {data.feedHealthMatrix.summary?.good || 0} feeds healthy, {((data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0))} need attention.
+                          {data.feedHealthMatrix.summary?.good || 0} assets pass all data quality checks; {((data.feedHealthMatrix.summary?.degraded || 0) + (data.feedHealthMatrix.summary?.bad || 0))} have quality limitations.
                         </p>
                         <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
-                          Updated {formatAge(data.feedHealthMatrix.generatedAt)}
+                          Updated {formatAge(data.feedHealthMatrix.generatedAt)}. Quote delivery and closed-bar quality are separate checks.
                         </p>
                       </div>
                       <button
@@ -1671,6 +1649,27 @@ function DashboardContent({ secret }: { secret: string }) {
                         <span>Cautions: <b className={textPrimary}>{data?.learningDigest?.cautionCount || 0}</b></span>
                         <span>Updated: <b className={textPrimary}>{formatAge(data?.learningDigest?.lastUpdated)}</b></span>
                       </div>
+                    </div>
+
+                    <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
+                      <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Strategy research</div>
+                      <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>
+                        {data?.research?.trialCount || 0} registered configurations. New range setups collect shadow evidence before trading permissions.
+                        Review eligibility still requires human release approval.
+                      </p>
+                      <div className={`mt-2 space-y-1 text-[9px] font-mono ${textMuted}`}>
+                        {(data?.research?.candidates || []).map((candidate:any)=>(
+                          <div key={candidate.candidateId} className="flex flex-wrap justify-between gap-1">
+                            <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
+                            <span>{candidate.mode} | {candidate.metrics?.forwardPositions||0} independent shadow completions</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className={`text-[9px] mt-2 ${textMuted}`}>
+                        Research archive: {describeResearchCapture(data?.researchArchive||[])}
+                        {' '}Missing fees, funding or historical execution evidence keeps promotion blocked.
+                        {data?.researchQueue?.status==='CAPACITY_LIMIT' && ' Label queue full; new observations paused while unfinished labels remain protected.'}
+                      </p>
                     </div>
 
                     {data?.tradeReviewDigest?.latestLessons?.length > 0 && (
@@ -2485,7 +2484,10 @@ function DashboardContent({ secret }: { secret: string }) {
                       <span>Score: <b className={textPrimary}>{feed.score}</b></span>
                       <span>Source: <b className={textPrimary}>{feed.source}</b></span>
                       <span>Mode: <b className={textPrimary}>{feed.mode === "REALTIME_FAST" ? "Fast" : feed.mode === "SLOW_SWING" ? "Swing" : "Disabled"}</b></span>
-                      <span>Age: <b className={textPrimary}>{Math.round((feed.cacheAgeSeconds || 0) / 60)}m</b></span>
+                      <span>Closed bar age: <b className={textPrimary}>{Math.round((feed.cacheAgeSeconds || 0) / 60)}m</b></span>
+                      <span>Live quote: <b className={textPrimary}>{livePrices?.[feed.asset]?.ageSeconds != null ?
+                        `${Number(livePrices[feed.asset].ageSeconds).toFixed(1)}s`:'Unavailable'}</b></span>
+                      <span>Delivery: <b className={textPrimary}>{liveSourceText(livePrices?.[feed.asset])}</b></span>
                     </div>
                     {feed.warnings?.[0] && (
                       <p className={`text-[9px] leading-relaxed mt-1.5 ${textMuted}`}>{feed.warnings[0]}</p>

@@ -1,5 +1,13 @@
 # Active work
 
+## Remaining release checkpoint
+- [x] Task 8: closed-bar trend and shadow range families across all nine assets.
+- [x] Task 9: exact economic learning cohorts, independent completed positions and capped risk adjustments.
+- [x] Task 10: bounded preregistration, research gates, compressed archive and descriptive offline replay.
+- [x] Task 11: browser stream, REST recovery, distinct quote/bar quality labels and research status display.
+- [ ] Task 12: final integration checks, independent branch review and authorized deployment.
+- [ ] Market evidence required before activation: untouched holdout, verified FX fees, complete historical costs and 15 independent forward completions across at least 14 days.
+
 - [x] Audit asset coverage, decision gates, execution, and learning with current runtime evidence.
 - [x] Produce an evidence-linked strategy improvement plan prioritizing all configured asset classes and no mandatory LLM cost.
 ## 2026-10-01 audit checkpoint
@@ -48,11 +56,28 @@ Next: Tejas reviews the branch and the runbook. Release B (plan Tasks 8-10) only
 - [x] Independent review, Node 20 regression suite (197/197), type check, lint, offline strategy audit, fixture research/ledger checks.
 - [x] Record explicit acceptance of XSEC risk reductions and preservation of manual BTC/history.
 - [x] Remove confirmed unused execution/writer dependencies; automate compression and unused Docker cleanup; share one runtime image.
-- [ ] Finish production build, commit reviewed changes, and run pull-request CI plus private VPS migration/public-market preflight.
-- [ ] Merge verified result, deploy, compare live account/history and feeds, inspect rendered dashboard, and record final evidence.
+- [x] Finish production build, commit reviewed changes, and run pull-request CI plus private VPS migration/public-market preflight.
+- [x] Merge verified result, deploy, compare live account/history and feeds, inspect rendered dashboard, and record final evidence.
 Prior planning-only and Claude no-deploy boundaries above are historical checkpoints. Tejas's current request authorizes completion and deployment.
 
 ## Deployment recovery
 - [x] PR #8 cloud preflight and deployment reached image/source/account validation; manual history preserved and approved XSEC unwind completed.
 - [x] Diagnose restart lease delay and reset scan IDs; reproduce and repair current-commit scan health and persistent numbering.
-- [ ] Verify and deploy the restart fix, lift release freeze after real scan advancement, complete storage/UI proof.
+- [x] Verify and deploy the restart fix, lift release freeze after real scan advancement, complete storage/UI proof.
+
+## Shipped release checkpoint
+- [x] Verify and deploy restart fix; final run 36854097722 successful at commit 191761f.
+- [x] Lift release freeze after real scan advancement; verify normal nine-asset scan, account/history preservation and XSEC SHADOW state.
+- [x] Reclaim 1782.2 MB by lossless ledger compression plus unused Docker artifacts; verify about 37 GB free and scheduled maintenance.
+- [x] Complete rendered desktop/mobile coverage checks and save docs/BYBIT_RELEASE_VERIFICATION_2026-10-01.md.
+Next optional slice: implement the documented subsecond quote display with separate connection/quote/candle-quality indicators. Release B strategy learning remains pending. The current release is deployed and operational.
+
+## Complete remaining upgrade (authorized 2026-10-01)
+- [x] Task 8: class-aware trend and shadow range strategy families evaluated across all nine (212/212 suite, TypeScript clean).
+- [x] Task 9: independent, instrument-scoped learning with bounded adjustments and explicit units (221/221 suite, TypeScript clean).
+- [x] Task 10: reproducible candidate registry, cost stress, untouched evaluation and forward promotion gates.
+- [x] Extend real-daemon integration, coverage funnels and research visibility for the complete path.
+- [x] Subsecond browser quotes with reconnect/fallback and separate transport/candle-quality indicators.
+- [x] Whole-branch review and single regression/fix pass; 238/238 tests, TypeScript/lint/build/audit/fixtures.
+- [ ] State-preserving cloud release and deployed runtime/UI verification.
+Authorization continues the existing end-to-end deployment request. New family activation and XSEC risk release remain separately evidence-gated. Profit is an evaluation result, not a feature promise.

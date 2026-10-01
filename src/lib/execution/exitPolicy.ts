@@ -2,6 +2,7 @@ import { OpenPosition } from "@/lib/types";
 import { SwingSignal } from "@/lib/swingEngine";
 
 export const EXIT_POLICY_VERSION = "r-multiple-exit-v1-2026-08-25";
+export const PARTIAL_PROFIT_POLICY = { activationR: 1.2, fraction: 0.35 } as const;
 
 /**
  * Every threshold here is expressed in R — multiples of the trade's own

@@ -153,6 +153,29 @@ function outcomes(memory: MemoryRedis) {
 }
 
 describe("Bybit all-assets upgrade, offline end to end", () => {
+  for (const restriction of ['COOLDOWN','ACTIVE_POSITION','EVENT_BLACKOUT','OPERATOR_FREEZE'] as const) {
+    it(`shadow research continues under ${restriction} without adding an order`, async () => {
+      const asset=restriction==='EVENT_BLACKOUT'?'OIL':'BTC';
+      const world=await openWorld(asset);
+      try {
+        if (restriction==='COOLDOWN') await world.memory.set(`swing:cooldown:${asset}`,true,{ex:3600});
+        if (restriction==='OPERATOR_FREEZE') await world.memory.set('swing:entryFreeze',{reason:'test'});
+        if (restriction==='ACTIVE_POSITION') {await m.daemon.runEntryScan();world.advanceTo(T+15*60000);}
+        if (restriction==='EVENT_BLACKOUT') {
+          const at=Date.UTC(2026,8,30,14,30);
+          world.venue.series.set(CONFIGURED_INSTRUMENTS[asset].symbol,minuteBars(START_PRICE[asset],TREND_DRIFT,at,TREND_BARS));
+          world.advanceTo(at);
+        }
+        const fillsBefore=ledgerEvents(world.ledgerDir).filter(e=>e.type==='ENTRY_FILLED').length;
+        await m.daemon.runEntryScan();
+        assert.equal((await scanRow(world.memory,asset)).vetoCode,restriction);
+        const history=world.memory.listRows(`opportunity:${m.ledger.TRADING_STRATEGY_VERSION}:v3:history`).map(raw=>JSON.parse(raw));
+        assert.ok(history.some(row=>row.asset===asset && row.candidateId && row.mode==='SHADOW' &&
+          Date.parse(row.timestamp)===Date.now()),'entry veto suppressed the shadow observation');
+        assert.equal(ledgerEvents(world.ledgerDir).filter(e=>e.type==='ENTRY_FILLED').length,fillsBefore);
+      } finally {world.close();}
+    });
+  }
   it("covers exactly the nine configured assets", () => {
     assert.deepEqual([...CONFIGURED_ASSETS].sort(), Object.keys(START_PRICE).sort());
   });

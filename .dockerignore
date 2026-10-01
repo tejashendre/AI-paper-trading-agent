@@ -28,6 +28,7 @@ data
 .codex
 .agents
 .playwright-cli
+.superpowers
 .vscode
 .idea
 

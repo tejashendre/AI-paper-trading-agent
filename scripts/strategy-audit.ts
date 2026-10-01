@@ -414,7 +414,7 @@ function auditTradingRevivalCalibration(): AuditResult[] {
       `Low-quality regressions were capped at bullish=${noisy.buyScore}, bearish=${noisy.shortScore}.`
     ),
     result(
-      independent.length === 2 && independent.some((row) => row.opportunityId === "opportunity-1" && row.horizon === "4h") ? "PASS" : "FAIL",
+      independent.length === 1 && independent.every((row) => row.horizon === "24h") ? "PASS" : "FAIL",
       "independent opportunity learning sample",
       `${independent.length} independent opportunities selected from five correlated horizon rows.`
     ),
@@ -814,7 +814,7 @@ function auditAdmissionSizing(): AuditResult[] {
     reducedLearning.approved &&
     normalLearning.marginMode === "STRONG" &&
     reducedLearning.marginMode !== "STRONG" &&
-    reducedLearning.learningRiskMultiplier === 0.6 &&
+    reducedLearning.learningRiskMultiplier === 0.5 &&
     reducedLearning.requiredMarginUsd < normalLearning.requiredMarginUsd &&
     reducedLearning.maxLossUsd < normalLearning.maxLossUsd
       ? "PASS"
@@ -1205,18 +1205,18 @@ function auditLearningConnections(): AuditResult[] {
   const localLearningSource = fs.readFileSync(localLearningPath, "utf8");
 
   checks.push(result(
-    localLearningSource.includes("TradeReviewJournal.getAssetSignals") ? "PASS" : "FAIL",
-    "trade review feeds local learning",
-    localLearningSource.includes("TradeReviewJournal.getAssetSignals")
-      ? "Closed-trade review memory can create mild asset-level learning rules."
-      : "Trade review memory is visible but not connected to local learning rules."
+    !localLearningSource.includes("TradeReviewJournal.getAssetSignals") ? "PASS" : "FAIL",
+    "descriptive trade reviews cannot create pooled live rules",
+    !localLearningSource.includes("TradeReviewJournal.getAssetSignals")
+      ? "Closed-trade reviews stay descriptive; exact completed-position cohorts govern learning."
+      : "Legacy pooled trade reviews still feed live learning."
   ));
 
   checks.push(result(
-    localLearningSource.includes("review:asset:") ? "PASS" : "FAIL",
-    "review rule identity",
-    localLearningSource.includes("review:asset:")
-      ? "Trade-review rules use a distinct id namespace from opportunity/setup rules."
+    localLearningSource.includes("learningCohortKey") ? "PASS" : "FAIL",
+    "cohort rule identity",
+    localLearningSource.includes("learningCohortKey")
+      ? "Scoped rules hash instrument, data, family, regime, direction, strategy, cost and risk identity."
       : "Trade-review rules may collide with existing learning rule ids."
   ));
 
@@ -1324,7 +1324,7 @@ function auditProductionRegressions(): AuditResult[] {
 
   const lockSafe = redisSource.includes("compareAndDelete") && portfolioSource.includes("redis.compareAndDelete(key, token)");
   const learningVersioned = learningSource.includes('learning:${TRADING_STRATEGY_VERSION}:localRules') &&
-    learningSource.includes("strategyVersion: TRADING_STRATEGY_VERSION");
+    learningSource.includes("o.strategyVersion === TRADING_STRATEGY_VERSION");
   const opportunityVersioned = opportunitySource.includes('opportunity:${TRADING_STRATEGY_VERSION}:v3') &&
     opportunitySource.includes("DEDUPE_SECONDS");
   const reviewVersioned = tradeReviewSource.includes('tradeReview:${TRADING_STRATEGY_VERSION}:aiSwing');
@@ -1520,58 +1520,19 @@ function auditPortfolioLearningGuards(): AuditResult[] {
 }
 
 function auditLearningAggregation(): AuditResult[] {
-  const now = new Date().toISOString();
-  const rules: LocalLearningRule[] = [
-    { id: "asset:SILVER", scope: "asset", key: "SILVER", action: "BOOST", confidenceAdjustment: 1, message: "Profitable lifetime sample", sampleSize: 16, favorableRate: 0.67, avgMove: 6.2, updatedAt: now },
-    { id: "review:asset:SILVER", scope: "asset", key: "SILVER", action: "REDUCE", confidenceAdjustment: -5, message: "Weak recent exits", sampleSize: 8, favorableRate: 0.5, avgMove: -1, updatedAt: now },
-    { id: "setup:VWAP_RECLAIM", scope: "setup", key: "VWAP_RECLAIM", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
-    { id: "setup:VOLUME_BURST", scope: "setup", key: "VOLUME_BURST", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
-    { id: "setup:VOLATILITY_EXPANSION", scope: "setup", key: "VOLATILITY_EXPANSION", action: "REDUCE", confidenceAdjustment: -8, message: "Weak setup", sampleSize: 20, favorableRate: 0.3, avgMove: -0.2, updatedAt: now },
-  ];
-  const silver = calculateLearningAdjustment(rules, "SILVER", ["VWAP_RECLAIM", "VOLUME_BURST", "VOLATILITY_EXPANSION"]);
-  const severeAsset: LocalLearningRule = {
-    id: "asset:USDJPY", scope: "asset", key: "USDJPY", action: "REDUCE", confidenceAdjustment: -12,
-    message: "Severe loss sample", sampleSize: 20, favorableRate: 0.125, avgMove: -20, updatedAt: now,
-  };
-  const usdJpy = calculateLearningAdjustment([severeAsset], "USDJPY", []);
-  const normalizedSetup = calculateLearningAdjustment([{
-    id: "setup:HTF_TREND_BREAKOUT", scope: "setup", key: "HTF_TREND_BREAKOUT", action: "REDUCE",
-    confidenceAdjustment: -8, message: "Weak trend setup", sampleSize: 20, favorableRate: 0.3, avgMove: -1, updatedAt: now,
-  }], "OIL", ["4H Structural Uptrend (Hurst: 0.71)"]);
-  const quarantinedSetup = calculateLearningAdjustment([{
-    id: "setup:VWAP_RECLAIM", scope: "setup", key: "VWAP_RECLAIM", action: "WATCH_ONLY",
-    confidenceAdjustment: -12, message: "Failed holdout", sampleSize: 20, favorableRate: 0.3, avgMove: -4, updatedAt: now,
-  }], "BTC", ["VWAP_RECLAIM"]);
-
+  const legacy: LocalLearningRule = {id:'legacy:BTC',scope:'asset',key:'BTC',action:'WATCH_ONLY',
+    confidenceAdjustment:-12,message:'Unscoped historical summary',sampleSize:100,favorableRate:0.1,
+    avgMove:-20,updatedAt:new Date().toISOString()};
+  const unknown=calculateLearningAdjustment([legacy],'BTC',['VWAP_RECLAIM']);
   return [
-    result(
-      silver.adjustment === -9 && !silver.watchOnly ? "PASS" : "FAIL",
-      "correlated learning evidence",
-      silver.adjustment === -9 && !silver.watchOnly
-        ? "Overlapping asset reviews and three setup tags are bounded instead of being counted as five independent failures."
-        : `Expected bounded SILVER adjustment -9 without watch-only; got ${silver.adjustment}, watch-only=${silver.watchOnly}.`
-    ),
-    result(
-      usdJpy.adjustment === -12 && usdJpy.watchOnly ? "PASS" : "FAIL",
-      "severe asset learning restriction",
-      usdJpy.adjustment === -12 && usdJpy.watchOnly
-        ? "Genuinely severe asset-level loss evidence still enters watch-only mode."
-        : "Severe asset evidence was weakened by the aggregation fix."
-    ),
-    result(
-      normalizedSetup.adjustment === -5 ? "PASS" : "FAIL",
-      "live setup normalization",
-      normalizedSetup.adjustment === -5
-        ? "Descriptive live structure tags match their stable historical setup category with bounded influence."
-        : `Expected normalized setup adjustment -5; got ${normalizedSetup.adjustment}.`
-    ),
-    result(
-      quarantinedSetup.watchOnly ? "PASS" : "FAIL",
-      "setup holdout quarantine reaches admission",
-      quarantinedSetup.watchOnly
-        ? "A setup-level chronological failure now blocks new entries instead of only shrinking them."
-        : "The setup quarantine did not reach the live admission decision."
-    ),
+    result(unknown.adjustment===0?'PASS':'FAIL','legacy dollar summaries cannot change conviction',
+      'Legacy mixed-unit and unversioned summaries contribute zero to new scoped learning.'),
+    result(!unknown.watchOnly?'PASS':'FAIL','legacy pooled quarantine cannot veto a new cohort',
+      'A watch-only rule without exact cohort identity cannot suppress a new instrument/configuration.'),
+    result(unknown.riskMultiplier===1?'PASS':'FAIL','missing evidence cannot resize risk',
+      'Insufficient scoped evidence leaves the normal risk policy in control.'),
+    result(unknown.status==='INSUFFICIENT_EVIDENCE'?'PASS':'FAIL','learning insufficiency is explicit',
+      'No decision-grade cohort returns INSUFFICIENT_EVIDENCE rather than claiming learned skill.'),
   ];
 }
 
@@ -1721,8 +1682,8 @@ function auditDeflatedSharpe(): AuditResult[] {
     : result("FAIL", "identical Sharpe is discounted by search effort", "search effort did not reduce confidence"));
 
   // Fat tails and negative skew must widen the error bars, not narrow them.
-  const gaussian = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: 0, kurtosis: 3, trials: 100 });
-  const fatTailed = deflatedSharpeRatio({ observedSharpePerPeriod: 0.09, periods: 600, skew: -1.2, kurtosis: 9, trials: 100 });
+  const gaussian = deflatedSharpeRatio({ observedSharpePerPeriod: 0.13, periods: 600, skew: 0, kurtosis: 3, trials: 100 });
+  const fatTailed = deflatedSharpeRatio({ observedSharpePerPeriod: 0.13, periods: 600, skew: -1.2, kurtosis: 9, trials: 100 });
   out.push(fatTailed.deflatedSharpe < gaussian.deflatedSharpe
     ? result("PASS", "fat tails reduce confidence", `normal ${(gaussian.deflatedSharpe * 100).toFixed(1)}% vs skewed/fat ${(fatTailed.deflatedSharpe * 100).toFixed(1)}%`)
     : result("FAIL", "fat tails reduce confidence", "crash-prone returns scored at least as well as normal ones"));

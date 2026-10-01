@@ -160,10 +160,7 @@ function riskMultiplierFromConviction(finalConviction: number | undefined, margi
 
 function learningRiskMultiplier(learningAdjustment?: number): number {
   const adjustment = learningAdjustment ?? 0;
-  if (adjustment <= -12) return 0.45;
-  if (adjustment <= -8) return 0.6;
-  if (adjustment <= -4) return 0.8;
-  return 1;
+  return Math.max(0.5, Math.min(1, 1 + adjustment / 8));
 }
 
 function setupRiskProfile(input: TradeAdmissionInput): { multiplier: number; reason: string } {
@@ -241,6 +238,10 @@ function paperMarginMode(
 
 export class TradeAdmissionController {
   static evaluate(input: TradeAdmissionInput): TradeAdmissionResult {
+    // Learning may change selectivity, but sizing uses the unboosted evidence.
+    input = { ...input, finalConviction: input.finalConviction === undefined ? undefined
+      : Math.max(0, input.finalConviction - Math.max(0, input.learningAdjustment ?? 0)),
+      learningAdjustment: Math.min(0, input.learningAdjustment ?? 0) };
     const spec = getAssetSpec(input.asset);
     const equity = estimateEquity(input.portfolio);
     const currentActiveMargin = activeMarginUsd(input.portfolio);

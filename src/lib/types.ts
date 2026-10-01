@@ -160,7 +160,15 @@ export interface RiskParameters {
 
 export type PaperMarginMode = 'PROBE' | 'STANDARD' | 'STRONG';
 
-export interface OpenPosition {
+export interface StrategyProvenance {
+  strategyFamily?: string;
+  strategyConfigHash?: string;
+  strategyDataSchemaVersion?: string;
+  strategyRegime?: string;
+  candidateId?: string;
+  featureCutoffMs?: number;
+}
+export interface OpenPosition extends StrategyProvenance {
   asset: string;          // E.g., 'BTC', 'ETH', 'EURUSD', 'GOLD'
   entryPrice: number;
   amount: number;         // Sized asset amount (e.g. BTC amount, Gold ounces, Forex units)
@@ -342,7 +350,7 @@ export interface Portfolio {
   lastUpdated: string;
 }
 
-export interface Trade {
+export interface Trade extends StrategyProvenance {
   id: string;
   timestamp: string;
   asset: string;          // E.g., 'BTC', 'EURUSD'

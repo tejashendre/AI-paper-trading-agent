@@ -40,6 +40,7 @@ import {
   decideSwingExit,
   isOppositeEdgeConfirmed,
   isThesisWeakening,
+  PARTIAL_PROFIT_POLICY,
 } from "@/lib/execution/exitPolicy";
 
 export interface SwingExitSweepResult {
@@ -364,6 +365,9 @@ function buildCloseTrade(
     finalConviction: pos.finalConviction,
     decisionState: pos.decisionState,
     setupTags: pos.setupTags,
+    strategyFamily: pos.strategyFamily, strategyConfigHash: pos.strategyConfigHash,
+    strategyDataSchemaVersion: pos.strategyDataSchemaVersion, strategyRegime: pos.strategyRegime,
+    candidateId: pos.candidateId, featureCutoffMs: pos.featureCutoffMs,
     dataQuality: pos.dataQuality,
     triggerScore: pos.triggerScore,
     marketStructureScore: pos.marketStructureScore,
@@ -924,6 +928,9 @@ async function scaleIntoWinner(
     finalConviction: pos.finalConviction,
     decisionState: pos.decisionState,
     setupTags: pos.setupTags,
+    strategyFamily: pos.strategyFamily, strategyConfigHash: pos.strategyConfigHash,
+    strategyDataSchemaVersion: pos.strategyDataSchemaVersion, strategyRegime: pos.strategyRegime,
+    candidateId: pos.candidateId, featureCutoffMs: pos.featureCutoffMs,
     dataQuality: pos.dataQuality,
     triggerScore: pos.triggerScore,
     marketStructureScore: pos.marketStructureScore,
@@ -982,11 +989,11 @@ async function takePartialProfit(
   if (portfolioType !== "ai") return false;
   if (pos.strategyType && pos.strategyType !== "swing") return false;
   if ((pos.partialExitCount || 0) >= 1) return false;
-  if (profitMultiple(asset, pos, currentPrice) < 1.2) return false;
+  if (profitMultiple(asset, pos, currentPrice) < PARTIAL_PROFIT_POLICY.activationR) return false;
   if (pos.amount <= 0 || pos.usdInvested <= 0) return false;
 
   const linear = isLinearPosition(pos);
-  const targetFraction = 0.35;
+  const targetFraction = PARTIAL_PROFIT_POLICY.fraction;
   let exitAmount = pos.amount * targetFraction;
   if (linear) {
     // A venue reduction is a whole number of lot steps; a step too small to
