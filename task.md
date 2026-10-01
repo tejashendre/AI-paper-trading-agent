@@ -48,11 +48,18 @@ Next: Tejas reviews the branch and the runbook. Release B (plan Tasks 8-10) only
 - [x] Independent review, Node 20 regression suite (197/197), type check, lint, offline strategy audit, fixture research/ledger checks.
 - [x] Record explicit acceptance of XSEC risk reductions and preservation of manual BTC/history.
 - [x] Remove confirmed unused execution/writer dependencies; automate compression and unused Docker cleanup; share one runtime image.
-- [ ] Finish production build, commit reviewed changes, and run pull-request CI plus private VPS migration/public-market preflight.
-- [ ] Merge verified result, deploy, compare live account/history and feeds, inspect rendered dashboard, and record final evidence.
+- [x] Finish production build, commit reviewed changes, and run pull-request CI plus private VPS migration/public-market preflight.
+- [x] Merge verified result, deploy, compare live account/history and feeds, inspect rendered dashboard, and record final evidence.
 Prior planning-only and Claude no-deploy boundaries above are historical checkpoints. Tejas's current request authorizes completion and deployment.
 
 ## Deployment recovery
 - [x] PR #8 cloud preflight and deployment reached image/source/account validation; manual history preserved and approved XSEC unwind completed.
 - [x] Diagnose restart lease delay and reset scan IDs; reproduce and repair current-commit scan health and persistent numbering.
-- [ ] Verify and deploy the restart fix, lift release freeze after real scan advancement, complete storage/UI proof.
+- [x] Verify and deploy the restart fix, lift release freeze after real scan advancement, complete storage/UI proof.
+
+## Shipped release checkpoint
+- [x] Verify and deploy restart fix; final run 36854097722 successful at commit 191761f.
+- [x] Lift release freeze after real scan advancement; verify normal nine-asset scan, account/history preservation and XSEC SHADOW state.
+- [x] Reclaim 1782.2 MB by lossless ledger compression plus unused Docker artifacts; verify about 37 GB free and scheduled maintenance.
+- [x] Complete rendered desktop/mobile coverage checks and save docs/BYBIT_RELEASE_VERIFICATION_2026-10-01.md.
+Next optional slice: implement the documented subsecond quote display with separate connection/quote/candle-quality indicators. Release B strategy learning remains pending. The current release is deployed and operational.
