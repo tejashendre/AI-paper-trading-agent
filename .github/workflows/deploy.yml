@@ -98,7 +98,7 @@ jobs:
             fi
 
             # New code starts with entries frozen; exits keep managing old positions.
-            docker exec quant-redis redis-cli SET swing:entryFreeze '{"reason":"Verified Release A rollout","setBy":"Codex"}'
+            docker exec quant-redis redis-cli SET swing:entryFreeze '{"reason":"Reviewed bot upgrade rollout","setBy":"Codex"}'
 
             echo "Materializing the exact GitHub commit..."
             git fetch --prune origin main
