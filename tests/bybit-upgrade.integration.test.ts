@@ -376,11 +376,13 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
     const world = await openWorld(asset);
     try {
       await world.memory.set("swing:entryFreeze", { reason: "migration window", setBy: "operator" });
+      await world.memory.set("swing:lastScan:ai", { scanId: 33338, completedAt: new Date(T - 60_000).toISOString() });
       await m.daemon.runEntryScan();
       assert.deepEqual(Object.keys((await m.portfolio.PortfolioManager.getPortfolio("ai")).openPositions), []);
       assert.equal(ledgerEvents(world.ledgerDir).filter((event) => event.type === "ENTRY_FILLED").length, 0);
-      const frozenScan = await world.memory.get<{ scanId: number; results: Array<{ action: string }> }>("swing:lastScan:ai");
-      assert.ok(frozenScan && frozenScan.scanId > 0, "entry freeze must keep real evaluations and deployment heartbeat running");
+      const frozenScan = await world.memory.get<{ scanId: number; runtimeCommit: string | null; results: Array<{ action: string }> }>("swing:lastScan:ai");
+      assert.ok(frozenScan && frozenScan.scanId > 33338, "restart must advance the persisted scan sequence");
+      assert.equal(frozenScan.runtimeCommit, process.env.APP_COMMIT_SHA || null);
       assert.equal(frozenScan.results.length, 9);
       assert.ok(frozenScan.results.every((row) => row.action !== "ENTRY"));
 

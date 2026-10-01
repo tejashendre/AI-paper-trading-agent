@@ -29,3 +29,5 @@ Audit findings will be recorded after verification. Existing technical decisions
 
 ## Release review lessons (2026-10-01)
 A release entry freeze must preserve real evaluations and scan advancement or the deployment verifier deadlocks. Missing funding is pending evidence, regardless of age. Changing economics requires a new strategy cohort before old learned rules are reused. Ledger maintenance must verify a fixed hash prefix because live writers can append during compression. Remove dependencies only after proving their execution paths have no callers; keep historical readers. Exclude build cache before copying the builder layer into the production image.
+
+Production restart verification requires a scan from the deployed commit, not merely a Redis key. Preserve scan IDs across restarts and allow the prior five-minute lease to expire safely. Do not delete active write locks to make a deployment check pass.
