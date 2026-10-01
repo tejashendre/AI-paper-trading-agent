@@ -54,3 +54,25 @@ test("all attempted trials count by default in Sharpe correction", () => {
   const result = deflatedSharpeRatio({ observedSharpePerPeriod: 0.4, periods: 100, skew: 0, kurtosis: 3, trials: 5 });
   assert.equal(result.effectiveTrials, 5);
 });
+
+test('renaming a consumed holdout cannot recycle the same evidence or interval', async () => {
+  const r=await registry();
+  const bound={...definition,evidenceManifestHash:'a'.repeat(64),
+    holdoutStartMs:definition.registeredAtMs,holdoutEndMs:definition.registeredAtMs+300*86400000};
+  const consumed={...bound,holdoutConsumed:true};
+  const renamed={...bound,candidateId:'renamed',holdoutId:'new-name'};
+  const rows=outcomes().map(o=>({...o,evidenceManifestHash:bound.evidenceManifestHash}));
+  const input={definition:renamed,outcomes:rows,trials:[consumed,renamed],holdoutConsumed:false,feesVerified:true};
+  assert.ok(r.evaluatePromotion(input).reasons.includes('HOLDOUT_CONSUMED'));
+  const changedManifest={...renamed,evidenceManifestHash:'b'.repeat(64)};
+  assert.ok(r.evaluatePromotion({...input,definition:changedManifest,trials:[consumed,changedManifest],
+    outcomes:rows.map(o=>({...o,evidenceManifestHash:changedManifest.evidenceManifestHash}))}).reasons.includes('HOLDOUT_CONSUMED'));
+  const shift=365*86400000;
+  const fresh={...changedManifest,candidateId:'fresh',holdoutId:'fresh',registeredAtMs:bound.registeredAtMs-shift,
+    holdoutStartMs:bound.holdoutStartMs-shift,holdoutEndMs:bound.holdoutEndMs-shift};
+  const report=r.evaluatePromotion({...input,definition:fresh,trials:[consumed,fresh],outcomes:rows.map(o=>({...o,
+    evidenceManifestHash:fresh.evidenceManifestHash,openedAtMs:o.openedAtMs-shift,closedAtMs:o.closedAtMs-shift,
+    featureStartMs:o.featureStartMs-shift,labelEndMs:o.labelEndMs-shift}))});
+  assert.equal(report.eligible,true,JSON.stringify(report.reasons));
+  assert.equal(r.evaluatePromotion({...input,outcomes:rows.map(o=>({...o,evidenceManifestHash:'wrong'}))}).eligible,false);
+});

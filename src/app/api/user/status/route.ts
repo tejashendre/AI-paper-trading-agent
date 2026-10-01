@@ -9,7 +9,7 @@ import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/tradin
 import { buildCoverageSnapshot, DailyFunnel, ScanDecision, VetoCode } from "@/lib/trading/coverageStatus";
 import { CONFIGURED_ASSETS } from "@/lib/trading/instrumentRegistry";
 import { getRedis } from "@/lib/redis";
-import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
+import { OpportunityJournal, OPPORTUNITY_QUEUE_STATUS_KEY } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
 import { SetupPerformance } from "@/lib/trading/setupPerformance";
 import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
@@ -476,7 +476,8 @@ export async function GET(request: Request) {
         learningDigest.headline=localLearningRules.length ?
           'Scoped rules use independent completed positions. Learning cannot increase leverage or risk.' :
           'Insufficient evidence for a scoped learning rule. Research continues collecting complete outcomes.';
-        const research=await getRedis().get(RESEARCH_STATUS_KEY).catch(()=>null);
+          const research=await getRedis().get(RESEARCH_STATUS_KEY).catch(()=>null);
+          const researchQueue=await getRedis().get(OPPORTUNITY_QUEUE_STATUS_KEY).catch(()=>null);
         const researchArchive=await Promise.all(CONFIGURED_ASSETS.map(async asset=>({asset,
           ...((await getRedis().get<Record<string,unknown>>(`research:archive:${asset}`).catch(()=>null))??{})})));
         const userEquityTrades = buildEquityCurveTrades(userTrades);
@@ -586,7 +587,8 @@ export async function GET(request: Request) {
             learningDigest,
             learningEvidence,
             research,
-            researchArchive,
+              researchArchive,
+              researchQueue,
             tradeReviewDigest,
             tradeReviewSignals: isSpectator ? tradeReviewSignals.slice(0, 8) : tradeReviewSignals,
             aiAssetBookDigest,

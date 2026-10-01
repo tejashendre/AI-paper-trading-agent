@@ -5,6 +5,7 @@ import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
+import { describeResearchCapture } from '@/lib/research/researchDisplay';
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
@@ -1665,9 +1666,9 @@ function DashboardContent({ secret }: { secret: string }) {
                         ))}
                       </div>
                       <p className={`text-[9px] mt-2 ${textMuted}`}>
-                        Research archive: {(data?.researchArchive||[]).some((a:any)=>a.status==='STORAGE_LIMIT')?
-                          'Storage limit reached; capture paused.':'Closed bars and periodic summaries, capped at 1 GiB by default.'}
+                        Research archive: {describeResearchCapture(data?.researchArchive||[])}
                         {' '}Missing fees, funding or historical execution evidence keeps promotion blocked.
+                        {data?.researchQueue?.status==='CAPACITY_LIMIT' && ' Label queue full; new observations paused while unfinished labels remain protected.'}
                       </p>
                     </div>
 

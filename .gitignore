@@ -40,6 +40,7 @@ ssh-key-*.key*
 *.tar.gz
 *.zip
 .replay-cache/
+.playwright-cli/
 
 # personal working notes, not part of the system
 docs/notes/

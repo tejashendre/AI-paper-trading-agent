@@ -70,6 +70,11 @@ export class MemoryRedis implements RedisClient {
     return list.slice(start, end < 0 ? undefined : end + 1);
   }
 
+  async replaceList(key:string, rows:string[], lockKey:string, token:string):Promise<boolean> {
+    if (this.live(lockKey)?.value!==token) return false;
+    this.lists.set(key,[...rows]); return true;
+  }
+
   async publish(): Promise<number> {
     return 0;
   }

@@ -4,7 +4,8 @@ const registered = Date.parse("2026-01-01T00:00:00Z");
 export const definition: any = { candidateId: "baseline-btc-trend", family: "TREND_PULLBACK", configHash: "config-1",
   strategyVersion: TRADING_STRATEGY_VERSION, instrumentVersions: [getConfiguredInstrument("BTC").instrumentVersion],
   costModelVersion: "cost-v3", riskPolicyVersion: "risk-v3", registeredAtMs: registered,
-  labelHorizonMs: 86400000, holdoutId: "untouched-1", mode: "SHADOW" };
+  labelHorizonMs: 86400000, holdoutId: "untouched-1", mode: "SHADOW",
+  evidenceManifestHash:'a'.repeat(64),holdoutStartMs:registered,holdoutEndMs:registered+300*86400000 };
 export function outcomes(count = 90): any[] {
   return Array.from({ length: count }, (_, i) => {
     const openedAtMs = registered + (i * 3 + 1) * 86400000;
@@ -17,6 +18,7 @@ export function outcomes(count = 90): any[] {
       riskPolicyVersion: definition.riskPolicyVersion, setupTags: [], grossPnlUsdt: pnl + 5, feesUsdt: 5,
       fundingCashflowUsdt: 0, netPnlUsdt: pnl, initialRiskUsdt: 100, netR: pnl / 100,
       returnOnInitialMargin: pnl / 1000, legIds: ["leg-" + i],
+      evidenceManifestHash:definition.evidenceManifestHash,
       researchOrigin: i < 70 ? "REPLAY" : "SHADOW", historicalCostsAvailable: true,
       stressedNetPnlUsdt: pnl - 5, riskLimitBreached: false };
   });

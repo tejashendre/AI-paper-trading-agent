@@ -5,6 +5,8 @@ import type { CompletedPositionOutcome } from "@/lib/trading/positionOutcomes";
 import { CONFIGURED_ASSETS, CONFIGURED_INSTRUMENTS, ConfiguredAsset, getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
 import { feeScheduleFor } from "@/lib/trading/assetSpecs";
 
+export {describeResearchCapture} from '@/lib/research/researchDisplay';
+
 /**
  * Per-asset coverage: whether each configured asset's data is ready, whether
  * the strategy produced a candidate, and which check stopped it. A healthy

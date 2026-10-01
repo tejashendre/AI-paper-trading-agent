@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { randomUUID } from 'node:crypto';
 import { getRedis } from "@/lib/redis";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
@@ -9,7 +10,7 @@ import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { getConfiguredInstrument } from './instrumentRegistry';
 import { fetchFundingSettlements } from '@/lib/data/bybitPublic';
 import { replayStrategyCandidate } from '@/lib/research/familyReplay';
-import { storeResearchOutcome } from '@/lib/research/researchLoop';
+import { storeResearchOutcome, bindResearchManifest } from '@/lib/research/researchLoop';
 import type { StrategyCandidate } from '@/lib/swingEngine';
 
 // Derived learning is strategy-version scoped. Earlier observations remain in
@@ -21,6 +22,9 @@ const EVALUATIONS_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations`;
 const SUMMARY_KEY = `${OPPORTUNITY_NAMESPACE}:summary`;
 const DEDUPE_KEY_PREFIX = `${OPPORTUNITY_NAMESPACE}:last:`;
 const MAX_HISTORY = 500;
+const MAX_PENDING = 4096;
+export const OPPORTUNITY_QUEUE_STATUS_KEY = `${OPPORTUNITY_NAMESPACE}:queueStatus`;
+const QUEUE_LOCK = `${OPPORTUNITY_NAMESPACE}:queueLock`;
 const MAX_EVALUATIONS = 1000;
 const DEDUPE_SECONDS = 15 * 60;
 
@@ -169,7 +173,7 @@ function dueHorizons(record: OpportunityRecord, now = Date.now()): EvaluationHor
     ["4h", 4 * 60 * 60_000],
     ["24h", 24 * 60 * 60_000],
   ];
-  return due.filter(([horizon, ms]) => age >= ms && !already.has(horizon)).map(([horizon]) => horizon);
+  return due.filter(([horizon, ms]) => (!record.candidateId || horizon==='24h') && age >= ms && !already.has(horizon)).map(([horizon]) => horizon);
 }
 
 function inferDecision(action?: string, decisionState?: string): OpportunityDecision {
@@ -349,7 +353,7 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
     const endMs = startMs + HORIZON_MS[horizon];
     const timeframe = timeframeForHorizon(horizon);
     const intervalMs=({ '1m':60000,'5m':300000,'15m':900000 } as Record<string,number>)[timeframe];
-    const candles = await MarketService.getCandles(timeframe, horizon==='24h'?1000:120, record.asset);
+    const candles = await MarketService.getLabelCandles(timeframe, record.asset, startMs, endMs);
     const pathCandles=selectLabelPath(candles,startMs,endMs,intervalMs);
     if (!pathCandles) return null;
     const labelPrice=pathCandles[pathCandles.length-1].close;
@@ -365,7 +369,7 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
         bars:pathCandles,barIntervalMs:intervalMs,featureStartMs:record.featureStartMs??startMs,
         labelEndMs:endMs,funding,fundingIntervalMinutes:record.fundingIntervalMinutes??480,
         halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:false,researchOrigin:'SHADOW'});
-      if (replay.status==='COMPLETED') await storeResearchOutcome(replay.outcome);
+      if (replay.status==='COMPLETED') await storeResearchOutcome(await bindResearchManifest(replay.outcome));
     }
     return {...result,currentPrice:labelPrice};
   } catch {
@@ -401,7 +405,7 @@ export class OpportunityJournal {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
 
     return {
-      id: `${result.asset}-${result.timestamp || new Date().toISOString()}-${result.decisionState || result.action}`,
+      id: result.candidateId || `${result.asset}-${result.timestamp || new Date().toISOString()}-${result.decisionState || result.action}`,
       candidateId: result.candidateId,
       family: result.family,
       configHash: result.configHash,
@@ -438,6 +442,12 @@ export class OpportunityJournal {
     if (records.length === 0) return;
 
     const redis = getRedis();
+    const token=randomUUID();
+    if (!await redis.set(QUEUE_LOCK,token,{nx:true,ex:900})) return;
+    try {
+    const pending=(await redis.lrange(PENDING_KEY,0,-1)).map(parseRecord).filter(Boolean) as OpportunityRecord[];
+    const admitted:OpportunityRecord[]=[];
+    let rejectedNew=0;
     for (const record of records) {
       const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}:${record.family || "baseline"}`;
       if (record.candidateId && await redis.get(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`)) continue;
@@ -447,37 +457,48 @@ export class OpportunityJournal {
         ? Math.abs(record.entryPrice - previous.entryPrice) / previous.entryPrice * 100
         : Infinity;
       if (!record.candidateId && previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
-
-      await redis.set(dedupeKey, { fingerprint, entryPrice: record.entryPrice }, { ex: DEDUPE_SECONDS });
-      if (record.candidateId) await redis.set(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`, true, { ex: 86400 * 2 });
+      if (pending.some(row=>row.id===record.id || (record.candidateId && row.candidateId===record.candidateId))) continue;
+      if (record.direction!=='NEUTRAL' && pending.length>=MAX_PENDING) {rejectedNew++;continue;}
       await redis.lpush(HISTORY_KEY, JSON.stringify(record));
-      if (record.direction !== "NEUTRAL") await redis.lpush(PENDING_KEY, JSON.stringify(record));
+      admitted.push(record);
+      if (record.direction !== "NEUTRAL") pending.unshift(record);
+    }
+    if (!await redis.replaceList(PENDING_KEY,pending.map(row=>JSON.stringify(row)),QUEUE_LOCK,token))
+      throw new Error('Research queue lease expired; unfinished labels preserved');
+    for (const record of admitted) {
+      await redis.set(`${DEDUPE_KEY_PREFIX}${record.asset}:${record.family||'baseline'}`,
+        {fingerprint:observationFingerprint(record),entryPrice:record.entryPrice},{ex:DEDUPE_SECONDS});
+      if (record.candidateId) await redis.set(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`,true,{ex:86400*2});
     }
     await redis.ltrim(HISTORY_KEY, 0, MAX_HISTORY - 1);
-    await redis.ltrim(PENDING_KEY, 0, MAX_HISTORY - 1);
+    await redis.set(OPPORTUNITY_QUEUE_STATUS_KEY,{pending:pending.length,capacity:MAX_PENDING,rejectedNew,
+      status:rejectedNew?'CAPACITY_LIMIT':'COLLECTING',observedAt:new Date().toISOString()});
+    } finally {await redis.compareAndDelete(QUEUE_LOCK,token);}
   }
 
   static async evaluateDue() {
     const redis = getRedis();
-    const pendingRaw = await redis.lrange(PENDING_KEY, 0, MAX_HISTORY - 1);
-    const pending = pendingRaw.map(parseRecord).filter(Boolean) as OpportunityRecord[];
+    const token=randomUUID();
+    if (!await redis.set(QUEUE_LOCK,token,{nx:true,ex:900}))
+      return {evaluated:0,pending:(await redis.lrange(PENDING_KEY,0,-1)).length,busy:true};
+    try {
+    const deadline=Date.now()+45000;
+    const pendingRaw = await redis.lrange(PENDING_KEY, 0, -1);
+    const pending = (pendingRaw.map(parseRecord).filter(Boolean) as OpportunityRecord[])
+      .sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
     const keep: OpportunityRecord[] = [];
     const evaluations: OpportunityEvaluation[] = [];
 
     for (const record of pending) {
+      if (evaluations.length>=12 || Date.now()>=deadline) {keep.push(record);continue;}
       const due = dueHorizons(record);
       if (due.length === 0) {
         keep.push(record);
         continue;
       }
 
-      let currentPrice = 0;
-      try {
-        currentPrice = await MarketService.getCurrentPrice(record.asset);
-      } catch {
-        keep.push(record);
-        continue;
-      }
+      // A matured historical label uses its closed path, without a live quote dependency.
+      const currentPrice = record.entryPrice;
 
       if (evaluations.length >= 12) {keep.push(record);continue;}
       for (const horizon of due) {
@@ -522,7 +543,7 @@ export class OpportunityJournal {
         record.evaluatedHorizons.push(horizon);
       }
 
-      if (record.evaluatedHorizons.length < 4) keep.push(record);
+      if (record.candidateId ? !record.evaluatedHorizons.includes('24h') : record.evaluatedHorizons.length < 4) keep.push(record);
     }
 
     if (evaluations.length > 0) {
@@ -533,13 +554,14 @@ export class OpportunityJournal {
       await this.rebuildSummary();
     }
 
-    await redis.del(PENDING_KEY);
-    for (let i = keep.length - 1; i >= 0; i--) {
-      await redis.lpush(PENDING_KEY, JSON.stringify(keep[i]));
-    }
-    await redis.ltrim(PENDING_KEY, 0, MAX_HISTORY - 1);
+    if (!await redis.replaceList(PENDING_KEY,keep.map(row=>JSON.stringify(row)),QUEUE_LOCK,token))
+      throw new Error('Research queue lease expired; unfinished labels preserved');
+    const previous=await redis.get<Record<string,unknown>>(OPPORTUNITY_QUEUE_STATUS_KEY);
+    await redis.set(OPPORTUNITY_QUEUE_STATUS_KEY,{...previous,pending:keep.length,capacity:MAX_PENDING,
+      oldestPendingAt:keep[0]?.timestamp??null,observedAt:new Date().toISOString()});
 
     return { evaluated: evaluations.length, pending: keep.length };
+    } finally {await redis.compareAndDelete(QUEUE_LOCK,token);}
   }
 
   static async getRecent(limit = 20) {

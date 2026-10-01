@@ -224,10 +224,11 @@ async function fetchTicker(symbol: string): Promise<{ row: BybitTickerRow; serve
   return { row, serverTimeMs };
 }
 
-async function fetchCandles(symbol: string, interval: CandleInterval, limit: number) {
+async function fetchCandles(symbol: string, interval: CandleInterval, limit: number, range?: {startMs:number;endMs:number}) {
   const bounded = Math.max(1, Math.min(1_000, limit));
   const { result, serverTimeMs } = await deps.bybitGet<{ list?: unknown[][] }>(
-    `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${BYBIT_INTERVAL[interval]}&limit=${bounded}`
+    `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${BYBIT_INTERVAL[interval]}&limit=${bounded}` +
+    (range ? `&start=${range.startMs}&end=${range.endMs-1}` : '')
   );
   const candles = validCandles((result.list ?? []).map((row) => ({
     time: Math.floor(Number(row?.[0]) / 1_000),
@@ -369,6 +370,16 @@ export class MarketService {
     // series even if it is old.
     if (staleCandidate && options.allowStale) return staleCandidate.slice(-limit);
     throw new Error(`Bybit ${instrument.symbol} ${timeframe} candles are unavailable or stale for ${assetKey}.`);
+  }
+
+  /** One bounded historical request for a matured label, independent of live caches. */
+  static async getLabelCandles(timeframe:Timeframe, asset:string, startMs:number, endMs:number):Promise<Candle[]> {
+    const interval=({ '1m':60000,'5m':300000,'15m':900000 } as Record<string,number>)[timeframe];
+    if (!interval || !Number.isFinite(startMs) || !(endMs>startMs) || endMs>Date.now() ||
+      Math.ceil((endMs-startMs)/interval)+2>1000) throw new Error('Invalid bounded label window');
+    const {candles,serverTimeMs}=await fetchCandles(getConfiguredInstrument(asset).symbol,timeframe,
+      Math.ceil((endMs-startMs)/interval)+2,{startMs,endMs});
+    return candles.filter(c=>c.time*1000>=startMs && c.time*1000+interval<=Math.min(endMs,serverTimeMs));
   }
 
   /**

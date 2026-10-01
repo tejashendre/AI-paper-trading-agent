@@ -3,14 +3,15 @@
 **Status, 2026-10-01:** Release A `191761f` is deployed and verified. Tejas
 authorized its planned XSEC reductions and has now requested completion and
 deployment of the remaining upgrade. Branch `codex/bybit-complete-upgrade`
-awaits final independent review, CI and VPS preflight. Merge only the reviewed
+passed independent review and its regression/fix pass; CI and VPS preflight
+remain pending. Merge only the reviewed
 head, then verify the actual deployed commit before lifting the entry freeze.
 This operational authorization does not activate unproven range candidates
 or release XSEC's historical drawdown restriction.
 
 The remaining release preserves balances, old position economics, fills and
 ledger records. New strategy and research evidence is version-scoped, and
-new ledger event types are additive. Research uses `data/research/bars` with
+new ledger event types are additive. Research uses `data/research` with
 a 1 GiB default limit; archive-full and missing-evidence states are visible.
 The browser stream is display-only; it cannot authorize an entry or exit.
 
