@@ -5,7 +5,9 @@ import {
   bookEquityUsd,
   getBookTrades,
   loadBookPortfolio,
+  SHADOW_BOOK_PORTFOLIO_KEY,
 } from "@/lib/execution/bookRebalancer";
+import { describeBookRisk, describeShadowEvidence } from "@/lib/trading/coverageStatus";
 import { DEFAULT_STRATEGY, DEFAULT_UNIVERSE } from "@/lib/strategy/crossSectionalMomentum";
 import { RECONCILIATION_VERDICT_KEY, CostVerdict } from "@/lib/execution/costModelReconciliation";
 import { EdgeVerdict } from "@/lib/research/edgeDecay";
@@ -79,8 +81,20 @@ export async function GET() {
     });
     const grossNotional = positions.reduce((sum, p) => sum + p.notionalUsd, 0);
     const netNotional = positions.reduce((sum, p) => sum + (p.side === "LONG" ? p.notionalUsd : -p.notionalUsd), 0);
+    // Risk state of the live book, and the capital-free shadow evidence kept
+    // while it is halted. Shadow figures are hypothetical, never profit.
+    const shadowBook = await loadBookPortfolio(10_000, SHADOW_BOOK_PORTFOLIO_KEY).catch(() => null);
+    const risk = describeBookRisk({
+      portfolio,
+      prices,
+      edgeVerdict: edgeVerdict?.verdict ?? null,
+      edgeReviewedAt: edgeVerdict?.at ?? null,
+    });
+    const shadow = shadowBook && shadowBook.totalRebalances > 0 ? describeShadowEvidence(shadowBook, prices) : null;
 
     return NextResponse.json({
+      risk,
+      shadow,
       strategy: {
         name: "Cross-Sectional Momentum",
         version: portfolio.strategyVersion,

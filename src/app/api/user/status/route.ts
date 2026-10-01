@@ -6,6 +6,8 @@ import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
 import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from "@/lib/trading/assetSpecs";
 import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/trading/positionOutcomes";
+import { buildCoverageSnapshot, DailyFunnel, ScanDecision, VetoCode } from "@/lib/trading/coverageStatus";
+import { CONFIGURED_ASSETS } from "@/lib/trading/instrumentRegistry";
 import { getRedis } from "@/lib/redis";
 import { OpportunityJournal } from "@/lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "@/lib/trading/localLearning";
@@ -150,6 +152,41 @@ function buildClosedTradeStats(trades: any[], initialCapital = 10_000, openPosit
         realizedCashFromExitLegs: summary.realizedCashFromExitLegs,
         positionConflicts: conflicts.length,
     };
+}
+
+/**
+ * One row per configured asset: data readiness, the latest decision's first
+ * binding veto, and 7/30-day funnels. Funnel counts were written by the
+ * daemon once per decision; reading them here never increments anything.
+ */
+async function buildAssetCoverage(aiTrades: any[], aiPortfolio: any, swingScan: any, feedHealthMatrix: any) {
+    const redis = getRedis();
+    const outcomes = buildPositionOutcomes({ trades: aiTrades || [], openPositions: Object.values(aiPortfolio?.openPositions || {}) }).completed;
+    const funnels: Record<string, DailyFunnel[]> = {};
+    const assets: Record<string, any> = {};
+    await Promise.all(CONFIGURED_ASSETS.map(async (asset) => {
+        funnels[asset] = (await redis.get<DailyFunnel[]>(`coverage:funnel:v1:${asset}`).catch(() => null)) ?? [];
+        const feed = (feedHealthMatrix?.assets || []).find((row: any) => row.asset === asset);
+        const result = (swingScan?.results || []).find((row: any) => row.asset === asset);
+        const metadata = await MarketService.getInstrumentMetadata(asset).catch(() => null);
+        const lastDecision: ScanDecision | null = result
+            ? {
+                decisionId: `${swingScan.startedAt}:${asset}`,
+                asset,
+                at: swingScan.completedAt || swingScan.startedAt,
+                action: result.action,
+                vetoCode: (result.vetoCode ?? null) as VetoCode | null,
+                reason: result.reason,
+            }
+            : null;
+        assets[asset] = {
+            dataEligibility: feed?.dataEligibility ?? null,
+            quoteEventTimeMs: feed?.dataEligibility?.quoteEventTimeMs ?? null,
+            lastDecision,
+            fundingIntervalMinutes: metadata?.fundingIntervalMinutes ?? null,
+        };
+    }));
+    return buildCoverageSnapshot({ nowMs: Date.now(), assets, outcomes, trades: aiTrades || [], funnels });
 }
 
 function portfolioWithClosedStats(portfolio: any, stats: ReturnType<typeof buildClosedTradeStats>) {
@@ -492,7 +529,10 @@ export async function GET(request: Request) {
             }
         }
 
+        const assetCoverage = await buildAssetCoverage(aiTrades, aiPortfolio, swingScan, feedHealthMatrix).catch(() => []);
+
         return NextResponse.json({
+            assetCoverage,
             deployment: {
                 commit: process.env.APP_COMMIT_SHA || null,
                 deployedAt: process.env.APP_DEPLOYED_AT || null,

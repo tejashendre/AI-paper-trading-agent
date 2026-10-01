@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { SwingEngine } from "../lib/swingEngine";
 import { entryInstrumentFor, MarketService, SUPPORTED_ASSETS } from "../lib/market";
 import { evaluateEntryEligibility } from "../lib/trading/entryEligibility";
+import { DailyFunnel, recordFunnelDecision, VetoCode } from "../lib/trading/coverageStatus";
 import { PortfolioManager } from "../lib/portfolio";
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
@@ -70,6 +71,8 @@ interface SwingScanResult {
   asset: string;
   action: SwingScanAction;
   reason: string;
+  /** The first check that stopped this decision; null for an entry. */
+  vetoCode?: VetoCode | null;
   simpleStatus?: string;
   simpleReason?: string;
   nextStep?: string;
@@ -357,6 +360,24 @@ async function updateLifetimeStats(results: SwingScanResult[]): Promise<Lifetime
   return updated;
 }
 
+/** Count each asset's scan decision into its daily funnel, once per decision id. */
+async function recordCoverageFunnels(results: SwingScanResult[], startedAt: string) {
+  const redis = getRedis();
+  for (const result of results) {
+    const key = `coverage:funnel:v1:${result.asset}`;
+    const days = (await redis.get<DailyFunnel[]>(key).catch(() => null)) ?? [];
+    const next = recordFunnelDecision(days, {
+      decisionId: `${startedAt}:${result.asset}`,
+      asset: result.asset,
+      at: startedAt,
+      action: result.action,
+      vetoCode: result.vetoCode ?? null,
+      reason: result.reason,
+    });
+    if (next !== days) await redis.set(key, next).catch(() => undefined);
+  }
+}
+
 async function saveScanSnapshot(
   results: SwingScanResult[],
   exitSweep: SwingExitSweepResult,
@@ -370,6 +391,7 @@ async function saveScanSnapshot(
   const decisionSummary = summarizeDecisionStates(results);
   const blockerSummary = summarizeEntryBlockers(results);
   const lifetimeStats = await updateLifetimeStats(results);
+  await recordCoverageFunnels(results, startedAt).catch(() => undefined);
 
   await redis.set(
     SCAN_SNAPSHOT_KEY,
@@ -517,6 +539,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "ACTIVE_POSITION",
           reason: "Active position already open for this asset.",
           simpleStatus: `Managing active ${activePosition.direction.toLowerCase()} trade`,
           simpleReason: activePosition.thesisStatus
@@ -542,6 +565,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "COOLDOWN",
           reason: "Asset is cooling down after a recent swing exit.",
           timestamp,
         });
@@ -550,7 +574,7 @@ async function runEntryScan() {
 
       const migrationBlock = migrationEntryBlock(portfolio, asset);
       if (migrationBlock) {
-        results.push({ asset, action: "SKIPPED", reason: migrationBlock, timestamp });
+        results.push({ asset, action: "SKIPPED", vetoCode: "MIGRATION_CONFLICT", reason: migrationBlock, timestamp });
         continue;
       }
 
@@ -559,6 +583,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "SESSION_CLOSED",
           reason: session.reason,
           timestamp,
         });
@@ -572,6 +597,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "SKIPPED",
+            vetoCode: "EVENT_BLACKOUT",
             reason: eventCheck.reason,
             simpleStatus: "Paused for news event",
             simpleReason: eventCheck.reason,
@@ -587,6 +613,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "SKIPPED",
+          vetoCode: "FEED_UNHEALTHY",
           reason: `Feed health blocked autonomous entry: ${assetFeed.warnings[0] || assetFeed.status}.`,
           simpleStatus: "Waiting for reliable market data",
           simpleReason: assetFeed.warnings[0] || `Feed status is ${assetFeed.status.toLowerCase()}.`,
@@ -610,6 +637,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "HOLD",
+            vetoCode: "OFF_PEAK_CONVICTION",
             reason: `${session.reason} Conviction ${swingSignal.finalConviction} is below the ${requiredOffPeakConviction} required outside peak hours.`,
             simpleStatus: "Waiting for peak liquidity window",
             simpleReason: session.reason,
@@ -636,6 +664,9 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "HOLD",
+            vetoCode: swingSignal.decisionState === "BLOCKED_DATA"
+              ? "SIGNAL_UNAVAILABLE"
+              : swingSignal.riskMode === "Watch Only" ? "LEARNING" : "NO_SETUP",
             reason: swingSignal.reasoning,
             simpleStatus: swingSignal.simpleStatus,
             simpleReason: swingSignal.simpleReason,
@@ -692,6 +723,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: dataEligibility.state === "WARMING_UP" ? "WARMING_UP" : "DATA_NOT_ELIGIBLE",
             reason,
             simpleStatus: dataEligibility.state === "WARMING_UP"
               ? "Waiting for enough completed price history"
@@ -729,6 +761,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "PORTFOLIO_GUARD",
             reason: portfolioGuard.reason,
             simpleStatus: "Portfolio exposure blocked this trade",
             simpleReason: portfolioGuard.reason,
@@ -773,7 +806,7 @@ async function runEntryScan() {
           (isShort && swingSignal.stopLoss <= swingSignal.entryPrice);
         if (invalidStop) {
           results.push({
-            asset, action: "BLOCKED", reason: "Stop loss is on wrong side of entry price",
+            asset, action: "BLOCKED", vetoCode: "INVALID_STOP", reason: "Stop loss is on wrong side of entry price",
             simpleStatus: "Invalid stop loss", simpleReason: "Stop loss would trigger immediately — skipping.",
             nextStep: "Waiting for better data quality.", decisionState: "BLOCKED_RISK",
             score: swingSignal.score, timestamp,
@@ -818,6 +851,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "ADMISSION",
             reason: admission.reason,
             simpleStatus: "Trade blocked for safety",
             simpleReason: admission.reason,
@@ -867,6 +901,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: decisionState === "BLOCKED_VENUE_SIZE" ? "VENUE_SIZE" : "LIQUIDITY",
             reason,
             simpleStatus: "Venue liquidity or size rules blocked this trade",
             simpleReason: reason,
@@ -961,6 +996,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "EXECUTION_COST",
             reason: executionFailure,
             simpleStatus: "Execution economics blocked this trade",
             simpleReason: executionFailure,
@@ -1013,6 +1049,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "BLOCKED",
+            vetoCode: "PORTFOLIO_RISK_BUDGET",
             reason: portfolioBudget.reason,
             simpleStatus: "Portfolio circuit breaker blocked this trade",
             simpleReason: portfolioBudget.reason,
@@ -1066,6 +1103,7 @@ async function runEntryScan() {
           results.push({
             asset,
             action: "SKIPPED",
+            vetoCode: "IDENTITY",
             reason: `Position identity unavailable: ${error instanceof Error ? error.message : String(error)}`,
             timestamp,
           });
@@ -1270,6 +1308,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "ENTRY",
+          vetoCode: null,
           reason: newPos.reasoning,
           simpleStatus: swingSignal.simpleStatus,
           simpleReason: swingSignal.simpleReason,
@@ -1320,6 +1359,7 @@ async function runEntryScan() {
         results.push({
           asset,
           action: "ERROR",
+          vetoCode: "ERROR",
           reason: error instanceof Error ? error.message : String(error),
           timestamp,
         });
