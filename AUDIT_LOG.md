@@ -15,6 +15,10 @@ Four red-first cases reproduced NORMAL exposure despite an open loss, unchanged 
 Verification including entry-mark initialization: targeted watchdog case passed, full test:upgrade 294/294, audit:strategy 156/0/0 and TypeScript clean. No risk ceiling or legacy economics changed.
 P0 draft PR #11 opened and attached. Its initial e08d65f CI passed including read-only VPS preflight (run 37026532347). Main merge and production deployment remain unapproved.
 
+## 2026-10-02 P1 probe-risk checkpoint
+Red-first dashboard test showed no approved-versus-taken risk presentation. The position card now reports the already-recorded approval ceiling, frozen initial stop risk and percentage used; it does not substitute a changed trailing stop or invent missing legacy evidence. Entry ledger records already contain both admission.riskAmountUsd and executionPlan.netLossUsd.
+Verification: test:upgrade 295/295, audit:strategy 156/0/0, TypeScript clean. Example 13.74 approved / 2.42 taken = 17.6% used. Proposal: retain current probe sizing until position-level costs and expectancy justify a policy decision. Quantity is already bounded by stop risk, probe margin, leverage, cash, portfolio room, venue lots and liquidity; using more approved risk by bypassing a binding margin cap would change policy. No sizing or risk ceiling changed.
+
 ## 2026-10-01 browser and status verification
 Task 11 adds one public browser socket for all nine ticker and trade topics, reuses the backend ticker parser, limits rendering to 10 Hz, and falls back to authenticated read-only server quotes. Unit coverage verifies delta behavior, reconnect reset and cleanup. Full upgrade suite: 230/230. Node 20 production build succeeds. Playwright checked 1440px desktop and 390px mobile: no horizontal overflow or page exceptions, research panel visible, and 1,368 received public frames including all nine ticker topics. UI verification injected research summary fields into a read-only production snapshot; it did not exercise a deployed v5 backend. API, transport, data quality, closed-bar age and research activation are separate states.
 

@@ -1,7 +1,15 @@
 /**
  * Plain-language labels the dashboard shows, kept pure so their wording can
  * be tested against the states that used to be mislabeled.
- */
+*/
+
+/** Approval is a ceiling; the frozen initial stop risk is what was taken. */
+export function entryRiskUsage(position: { riskAmountUsd?: number; initialRiskUsdt?: number }) {
+  const approvedUsdt = Number.isFinite(position.riskAmountUsd) && position.riskAmountUsd! > 0 ? position.riskAmountUsd! : null;
+  const takenUsdt = Number.isFinite(position.initialRiskUsdt) && position.initialRiskUsdt! >= 0 ? position.initialRiskUsdt! : null;
+  return { approvedUsdt, takenUsdt,
+    utilizationPercent: approvedUsdt !== null && takenUsdt !== null ? takenUsdt / approvedUsdt * 100 : null };
+}
 
 export function emptyBookMessage(input: { totalRebalances: number; riskState?: string | null }): string {
   if (input.totalRebalances === 0) return "No book yet. The daemon opens one at its first rebalance.";

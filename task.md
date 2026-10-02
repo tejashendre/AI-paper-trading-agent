@@ -5,7 +5,7 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 - [ ] P0: review release safety, open PR and obtain CI evidence; ask about an offline ledger copy before destructive compaction.
 - [ ] P0: deploy only after explicit approval and verify exact VPS release, ledger, continuity, scheduler, feeds and retention.
 - [x] P1: include unrealized P&L in every swing drawdown guard and update marks in the exit watchdog.
-- [ ] P1: expose approved versus executed probe risk; retain sizing policy pending an owner decision.
+- [x] P1: expose approved versus executed probe risk; retain sizing policy pending an owner decision.
 - [ ] P1: replay recorded research data and distinguish missing evidence from zero fills.
 - [ ] P1: verify official FX contract fees and retain blocks when unverified.
 - [ ] P1: confirm XSEC stall cause from VPS logs and post-release behavior.

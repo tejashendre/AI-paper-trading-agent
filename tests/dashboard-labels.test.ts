@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { describeLastBookAction, emptyBookMessage, rebalanceScheduleNote, swingWinRateTile } from "@/lib/ui/dashboardLabels";
+import * as labels from '@/lib/ui/dashboardLabels';
 
 describe("dashboard labels", () => {
+  it('shows approved versus executed initial risk without treating the approval as the fill', () => {
+    const usage = (labels as any).entryRiskUsage;
+    assert.equal(typeof usage, 'function');
+    const result = usage({ riskAmountUsd: 13.74, initialRiskUsdt: 2.42, maxLossUsd: 0.5 });
+    assert.equal(result.approvedUsdt, 13.74);
+    assert.equal(result.takenUsdt, 2.42, 'a trailed stop must not replace the frozen entry risk');
+    assert.ok(Math.abs(result.utilizationPercent - 17.6128093159) < 1e-8);
+    assert.equal(usage({}).utilizationPercent, null, 'missing legacy evidence must stay unknown');
+  });
   it("a flat halted book is not described as never having opened", () => {
     assert.equal(emptyBookMessage({ totalRebalances: 0, riskState: "ACTIVE" }), "No book yet. The daemon opens one at its first rebalance.");
     const halted = emptyBookMessage({ totalRebalances: 61, riskState: "SHADOW" });
