@@ -1375,11 +1375,17 @@ function auditProductionRegressions(): AuditResult[] {
     learningSource.includes("static async clearCurrentStrategyState()") &&
     opportunitySource.includes("static async clearCurrentStrategyState()") &&
     tradeReviewSource.includes("static async clearCurrentStrategyState()");
-  const chartIdentitySafe = chartSource.includes("allowStale: true") &&
+  const chartHistorySource = read("src", "lib", "ui", "useChartHistory.ts");
+  const chartIdentitySafe = chartSource.includes("getChartCandlePage") &&
     chartSource.includes("asset,") &&
+    chartSource.includes("stale: !seriesStatus.fresh") &&
+    marketSource.includes("closedCandles(raw, timeframe, serverTimeMs)") &&
     marketSource.includes("options.allowStale") &&
-    dashboardSource.includes("payload.asset !== activeAsset") &&
-    dashboardSource.includes("setChartData(null)");
+    chartHistorySource.includes("payload.asset !== asset") &&
+    chartHistorySource.includes("payload.interval !== interval") &&
+    chartHistorySource.includes("setChartData(null)") &&
+    chartHistorySource.includes("controller.abort()") &&
+    dashboardSource.includes("chartData?.asset === activeAsset");
   const selectedVenueRouting = marketSource.includes('CRYPTO_EXECUTION_PROVIDER = "BYBIT_LINEAR"') &&
     marketSource.includes("fetchCandles(instrument.symbol") &&
     marketSource.includes("getCurrentPriceSnapshot") &&

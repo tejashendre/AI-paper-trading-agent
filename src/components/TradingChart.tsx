@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useRef } from "react";
-import { createChart, ColorType, IChartApi, Time } from "lightweight-charts";
+import { createChart, ColorType, IChartApi, Time, TickMarkType } from "lightweight-charts";
+import { formatChartTime } from '@/lib/ui/chartHistory';
 import { Candle } from "@/lib/types";
 
 interface Props {
@@ -18,59 +19,10 @@ interface Props {
   theme?: 'light' | 'dark';
 }
 
-/**
- * Returns the UTC offset in SECONDS for the given IANA timezone at the current moment.
- *
- * Strategy: Ask Intl.DateTimeFormat to render the current moment in the target
- * timezone, parse out year/month/day/hour/minute/second, build a UTC epoch from
- * those parts, then diff against Date.now().  That diff IS the UTC offset.
- *
- * Example (UTC+5:30 / Asia/Kolkata):
- *   Now (UTC) = 10:00:00  → Kolkata wall-clock = 15:30:00
- *   targetTime = Date.UTC(…, 15, 30, 0) = now + 5.5 h
- *   offsetSeconds = +19800 (5.5 × 3600)
- */
-function getUtcOffsetSeconds(ianaTimezone: string): number {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: ianaTimezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(now);
-  const get = (type: string): number => {
-    const part = parts.find(p => p.type === type);
-    return part ? parseInt(part.value, 10) : 0;
-  };
-
-  // Wall-clock time in the target timezone
-  let h = get('hour');
-  // Intl sometimes returns 24 for midnight
-  if (h === 24) h = 0;
-
-  // Reconstruct "what UTC epoch corresponds to these wall-clock digits treated as UTC"
-  const targetMs = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    h,
-    get('minute'),
-    get('second'),
-  );
-
-  // The difference is the timezone's offset from UTC
-  return Math.round((targetMs - now.getTime()) / 1000);
-}
-
 export function TradingChart({ candles, trades, indicators, activePosition, assetName, timezone = 'EU', theme = 'dark' }: Props) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const viewportRef = useRef<{ from: Time; to: Time } | null>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -79,40 +31,25 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
     const textColor = isDark ? "#A3A3A3" : "#586069";
     const gridColor = isDark ? "#1a1a1a" : "#e2e8f0";
 
-    // Map timezone selector to IANA timezone strings
-    // EU  = Europe/Paris   (CET/CEST, UTC+1/+2 — continental European financial time)
-    // UK  = Europe/London  (GMT/BST,  UTC+0/+1 — London session / Forex hub)
-    // IST = Asia/Kolkata   (IST,      UTC+5:30  — Indian Standard Time)
-    // US  = America/New_York (ET,     UTC−5/−4  — Wall Street / NYSE)
     const ianaTimezone =
       timezone === 'IST' ? 'Asia/Kolkata'
       : timezone === 'US'  ? 'America/New_York'
       : timezone === 'UK'  ? 'Europe/London'
       : 'Europe/Paris'; // EU default
 
-    /**
-     * WHY WE SHIFT TIMESTAMPS:
-     * lightweight-charts v4 treats every timestamp as UTC and renders X-axis
-     * tick labels directly from UTC values. There is no built-in timezone support
-     * for axis ticks (localization.timeFormatter only affects the crosshair tooltip,
-     * NOT the axis labels).
-     *
-     * The only reliable way to make the axis show e.g. "19:30" for IST when the
-     * raw candle is at 14:00 UTC is to ADD the target timezone's UTC offset to
-     * every timestamp before feeding it to the chart.  The library then thinks the
-     * shifted value IS UTC and renders the correct wall-clock digits.
-     */
-    const offsetSeconds = getUtcOffsetSeconds(ianaTimezone);
-
-    // Shift a raw UTC unix-second timestamp into the target timezone's "fake UTC"
-    const shiftTime = (utcSec: number): Time => (utcSec + offsetSeconds) as Time;
+    const chartTime = (utcSec: number): Time => utcSec as Time;
+    const utcSeconds = (time: Time) => typeof time === 'number' ? time :
+      typeof time === 'string' ? Date.parse(time) / 1000 : Date.UTC(time.year, time.month - 1, time.day) / 1000;
 
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
       width: chartContainerRef.current.clientWidth,
       height: 400,
-      timeScale: { timeVisible: true, secondsVisible: false },
+      localization: { timeFormatter: (time: Time) => formatChartTime(utcSeconds(time), ianaTimezone) },
+      timeScale: { timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: (time: Time, type: TickMarkType) => formatChartTime(utcSeconds(time), ianaTimezone,
+          type === 0 ? 'year' : type === 1 ? 'month' : type === 2 ? 'date' : 'clock') },
     });
     chartRef.current = chart;
 
@@ -154,11 +91,11 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       wickDownColor: "#ef4444"
     });
 
-    // Shift every candle timestamp by the target timezone offset
+    // Keep UTC coordinates for candles, indicators and trade markers.
     const seenTimes = new Set<number>();
     const cdata = candles
       .map(c => ({
-        time: shiftTime(c.time as number),
+        time: chartTime(c.time as number),
         open: c.open,
         high: c.high,
         low: c.low,
@@ -173,9 +110,15 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       .sort((a, b) => (a.time as number) - (b.time as number));
 
     candlestickSeries.setData(cdata);
+    const saved = viewportRef.current;
+    if (saved && cdata.length && Number(saved.from) >= Number(cdata[0].time) && Number(saved.to) <= Number(cdata.at(-1)!.time)) {
+      chart.timeScale().setVisibleRange(saved);
+    } else if (cdata.length) {
+      chart.timeScale().setVisibleRange({ from: cdata[Math.max(0, cdata.length - 120)].time, to: cdata.at(-1)!.time });
+    }
 
     // Track raw UTC times that made it into the chart (for marker matching)
-    const shiftedTimes = new Set<number>(cdata.map(c => c.time as number));
+    const chartTimes = new Set<number>(cdata.map(c => c.time as number));
 
     // Active Position Trade Level Overlays
     if (activePosition) {
@@ -207,12 +150,12 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       });
     }
 
-    // Plot dynamic markers for paper trade transactions (also shift their timestamps)
+    // Plot paper transactions against the same UTC coordinates.
     if (trades && trades.length > 0) {
       const seenMarkerTimes = new Set<number>();
       const markers = trades
         .map(t => ({
-          time: shiftTime(t.time as number),
+          time: chartTime(t.time as number),
           position: t.action === "BUY" ? ("belowBar" as const) : ("aboveBar" as const),
           color: t.action === "BUY" ? "#22c55e" : "#ef4444",
           shape: t.action === "BUY" ? ("arrowUp" as const) : ("arrowDown" as const),
@@ -220,8 +163,8 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
         }))
         .filter(m => {
           const t = m.time as number;
-          // Only plot markers on candles that exist in our shifted dataset
-          if (!shiftedTimes.has(t)) return false;
+          // Only plot markers on candles that exist in the loaded dataset.
+          if (!chartTimes.has(t)) return false;
           if (seenMarkerTimes.has(t)) return false;
           seenMarkerTimes.add(t);
           return true;
@@ -236,7 +179,7 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
         const seen = new Set<number>();
         return candles
           .map((c, i) => ({
-            time: shiftTime(c.time as number),
+            time: chartTime(c.time as number),
             value: seriesValues[i]
           }))
           .filter(d => {
@@ -271,7 +214,9 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       if (legend.parentNode) {
         legend.parentNode.removeChild(legend);
       }
+      viewportRef.current = chart.timeScale().getVisibleRange();
       chart.remove();
+      chartRef.current = null;
     };
   }, [candles, trades, indicators, activePosition, timezone, theme, assetName]);
 

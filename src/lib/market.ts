@@ -224,11 +224,11 @@ async function fetchTicker(symbol: string): Promise<{ row: BybitTickerRow; serve
   return { row, serverTimeMs };
 }
 
-async function fetchCandles(symbol: string, interval: CandleInterval, limit: number, range?: {startMs:number;endMs:number}) {
+async function fetchCandles(symbol: string, interval: CandleInterval, limit: number, range?: {startMs?:number;endMs:number}) {
   const bounded = Math.max(1, Math.min(1_000, limit));
   const { result, serverTimeMs } = await deps.bybitGet<{ list?: unknown[][] }>(
     `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${BYBIT_INTERVAL[interval]}&limit=${bounded}` +
-    (range ? `&start=${range.startMs}&end=${range.endMs-1}` : '')
+    (range ? `${range.startMs === undefined ? '' : `&start=${range.startMs}`}&end=${range.endMs-1}` : '')
   );
   const candles = validCandles((result.list ?? []).map((row) => ({
     time: Math.floor(Number(row?.[0]) / 1_000),
@@ -370,6 +370,22 @@ export class MarketService {
     // series even if it is old.
     if (staleCandidate && options.allowStale) return staleCandidate.slice(-limit);
     throw new Error(`Bybit ${instrument.symbol} ${timeframe} candles are unavailable or stale for ${assetKey}.`);
+  }
+
+  /** Read-only chart history: one public request, no historical cache or strategy changes. */
+  static async getChartCandlePage(timeframe: Timeframe, limit: number, asset: string, beforeMs?: number) {
+    if (!TIMEFRAME_MS[timeframe] || !Number.isInteger(limit) || limit < 50 || limit > 1000 ||
+      (beforeMs !== undefined && (!Number.isSafeInteger(beforeMs) || beforeMs <= 0 || beforeMs > deps.nowMs()))) {
+      throw new Error('Invalid chart page');
+    }
+    const { candles: raw, serverTimeMs } = await fetchCandles(getConfiguredInstrument(asset).symbol, timeframe,
+      limit, beforeMs === undefined ? undefined : { endMs: beforeMs });
+    if (beforeMs !== undefined && raw.some(c => c.time * 1000 >= beforeMs)) {
+      throw new Error('History provider did not respect the chart cursor');
+    }
+    const candles = closedCandles(raw, timeframe, serverTimeMs);
+    return { candles, hasMore: candles.length > 0 && raw.length === limit,
+      nextBeforeMs: candles.length ? candles[0].time * 1000 : null };
   }
 
   /** One bounded historical request for a matured label, independent of live caches. */

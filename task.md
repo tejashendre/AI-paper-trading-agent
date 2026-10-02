@@ -11,7 +11,7 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 - [ ] P1: confirm XSEC stall cause from VPS logs and post-release behavior.
 - [x] P2: display learning-gate progress and reproduce promotion, demotion and book release with durable decision evidence in integration fixtures.
 - [ ] P2: review the first observed production transition against its preserved decision evidence after an approved deployment.
-- [ ] Charts: verify free Bybit history limits and implement bounded historical pagination.
+- [x] Charts: verify public Bybit history limits, implement cursor pages and a bounded rolling browser window, and verify controls, refresh, failures and mobile layout.
 - [ ] Dashboard: make signed total gain/loss the live primary number in the human/swing comparison cards, preserving separate book accounting.
 
 
