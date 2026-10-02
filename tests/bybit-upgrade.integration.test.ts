@@ -153,6 +153,29 @@ function outcomes(memory: MemoryRedis) {
 }
 
 describe("Bybit all-assets upgrade, offline end to end", () => {
+  it('new FX signals use only the published-fee learning cohort', async () => {
+    const world=await openWorld('EURUSD');
+    try {
+      const engine=await import('@/lib/swingEngine');
+      const costs=await import('@/lib/trading/executionCostModel');
+      const instrument=getConfiguredInstrument('EURUSD');
+      const rules=['TREND','RANGE','NEUTRAL'].flatMap(regime=>[false,true].map(current=>({
+        id:`fee-${regime}-${current}`,scope:'asset',key:'EURUSD',action:current?'BOOST':'WATCH_ONLY',
+        confidenceAdjustment:current?2:-4,message:current?'verified-fee-cohort':'old-stress-cohort',
+        netReturnFraction:current?0.01:-0.02,netR:current?0.1:-0.2,
+        sampleSize:30,distinctSampleCount:30,sampleUnit:'COMPLETED_POSITION',units:'FRACTION_AND_R',
+        createdAt:new Date(T-86400000).toISOString(),expiresAt:new Date(T+86400000).toISOString(),
+        cohort:{instrumentVersion:instrument.instrumentVersion,dataSchemaVersion:engine.STRATEGY_DATA_SCHEMA_VERSION,
+          assetClass:'forex',family:'TREND_PULLBACK',regime,direction:'SHORT',strategyVersion:m.ledger.TRADING_STRATEGY_VERSION,
+          configHash:engine.strategyFamilyConfigHash('TREND_PULLBACK','EURUSD'),
+          costModelVersion:current?`${costs.EXECUTION_COST_MODEL_VERSION}:${m.specs.feeScheduleFor(instrument).version}`:costs.EXECUTION_COST_MODEL_VERSION,
+          riskPolicyVersion:m.specs.RISK_POLICY_VERSION}})));
+      await world.memory.set(`learning:${m.ledger.TRADING_STRATEGY_VERSION}:localRules`,rules);
+      const signal=await engine.SwingEngine.analyze('EURUSD');
+      assert.ok(signal.learningRules.includes('verified-fee-cohort'),JSON.stringify(signal.learningRules));
+      assert.ok(!signal.learningRules.includes('old-stress-cohort'));
+    } finally {world.close();}
+  });
   for (const restriction of ['COOLDOWN','ACTIVE_POSITION','EVENT_BLACKOUT','OPERATOR_FREEZE'] as const) {
     it(`shadow research continues under ${restriction} without adding an order`, async () => {
       const asset=restriction==='EVENT_BLACKOUT'?'OIL':'BTC';
@@ -258,7 +281,7 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
         assert.equal(m.specs.floorOrderQty(quantity, metadata), quantity);
         const schedule = m.specs.feeScheduleFor(instrument);
         assert.equal(pos.feeScheduleVersion, schedule.version);
-        assert.equal(schedule.status, CONFIGURED_INSTRUMENTS[asset].riskClass === "forex" ? "UNVERIFIED_STRESS_RATE" : "PUBLIC_BASELINE");
+        assert.equal(schedule.status, "PUBLIC_BASELINE");
         assert.equal(pos.fillLiquidity?.policyVersion, "fill-capacity-v1-2026-10-01");
 
         // Two hours later price trades through the target; one funding boundary passed.
@@ -298,9 +321,7 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
         assert.equal(status.completedPositions, 1);
         assert.ok(status.lastFillAt);
         assert.equal(status.funnel7d.fills, 1);
-        if (schedule.status === "UNVERIFIED_STRESS_RATE") {
-          assert.ok(status.notes.some((note) => note.includes("cannot be promoted")));
-        }
+        assert.ok(!status.notes.some((note) => note.includes("not confirmed the fee schedule")));
         const learning = m.setups.SetupPerformance.build(trades, null);
         assert.equal(learning.closedTradeCount, 1);
         assert.deepEqual(learning.positionConflicts, []);

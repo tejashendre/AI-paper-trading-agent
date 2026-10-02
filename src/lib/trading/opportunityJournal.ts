@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { getRedis } from "@/lib/redis";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
-import { amountFromNotionalUsd, calculatePnlUsd, feeScheduleFor } from "@/lib/trading/assetSpecs";
+import { amountFromNotionalUsd, calculatePnlUsd, feeScheduleFor, PRIOR_FX_FEE_SCHEDULE } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { getConfiguredInstrument, type InstrumentRef } from './instrumentRegistry';
@@ -43,6 +43,7 @@ export interface OpportunityRecord {
   mode?: string;
   vetoCode?: string;
   instrumentVersion?: string;
+  feeScheduleVersion?: string;
   featureStartMs?: number;
   fundingIntervalMinutes?: number;
   halfSpreadBps?: number;
@@ -277,8 +278,8 @@ function evaluateCandles(record: OpportunityRecord, candles: Candle[], currentPr
   };
 }
 
-function simulatedNetOutcome(
-  record: Pick<OpportunityRecord, "asset" | "direction" | "entryPrice" | "stopLoss" | "takeProfit"> & { dataQuality?: number },
+export function simulatedNetOutcome(
+  record: Pick<OpportunityRecord, "asset" | "direction" | "entryPrice" | "stopLoss" | "takeProfit" | "feeScheduleVersion"> & { dataQuality?: number },
   path: Pick<OpportunityEvaluation, "firstHit" | "currentPrice"> | { firstHit: OpportunityEvaluation["firstHit"]; currentPrice?: number },
   fallbackCurrentPrice: number
 ) {
@@ -308,9 +309,13 @@ function simulatedNetOutcome(
 
   try {
     const amount = amountFromNotionalUsd(record.asset, notionalUsd, entryPrice);
+    const instrument=getConfiguredInstrument(record.asset);
+    const feeScheduleVersion=record.feeScheduleVersion ??
+      (feeScheduleFor(instrument).scope==='forex' ? PRIOR_FX_FEE_SCHEDULE.version : undefined);
     const assetMode = ["BTC", "ETH", "SOL"].includes(record.asset) ? "REALTIME_FAST" : "SLOW_SWING";
     const entry = estimatePaperFill({
       asset: record.asset,
+      feeScheduleVersion,
       action: record.direction === "SHORT" ? "SHORT" : "BUY",
       requestedPrice: entryPrice,
       amount,
@@ -318,6 +323,7 @@ function simulatedNetOutcome(
     });
     const exit = estimatePaperFill({
       asset: record.asset,
+      feeScheduleVersion,
       action: record.direction === "SHORT" ? "COVER" : "SELL",
       requestedPrice: hypotheticalExitPrice,
       amount,
@@ -354,9 +360,10 @@ function simulatedNetOutcome(
  * the live book at the time and the fee schedule is a published baseline.
  * Funding is checked separately against Bybit's settlement history.
  */
-export function shadowCostsObserved(record: { halfSpreadBps?: number }, instrument: InstrumentRef): boolean {
+export function shadowCostsObserved(record: { halfSpreadBps?: number; feeScheduleVersion?: string }, instrument: InstrumentRef): boolean {
   return Number.isFinite(record.halfSpreadBps) && (record.halfSpreadBps as number) >= 0 &&
-    feeScheduleFor(instrument).status === 'PUBLIC_BASELINE';
+    feeScheduleFor(instrument, record.feeScheduleVersion ??
+      (feeScheduleFor(instrument).scope==='forex' ? PRIOR_FX_FEE_SCHEDULE.version : undefined)).status === 'PUBLIC_BASELINE';
 }
 
 export function selectLabelPath(candles:Candle[], startMs:number,endMs:number,intervalMs:number) {
@@ -391,7 +398,9 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
         initialRiskUsdt:Math.abs(record.entryPrice-record.stopLoss!),mode:'SHADOW',reasons:[],netRewardRisk:0},
         bars:pathCandles,barIntervalMs:intervalMs,featureStartMs:record.featureStartMs??startMs,
         labelEndMs:endMs,funding,fundingIntervalMinutes:record.fundingIntervalMinutes??480,
-        halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:shadowCostsObserved(record,instrument),researchOrigin:'SHADOW'});
+        halfSpreadBps:record.halfSpreadBps,feeScheduleVersion:record.feeScheduleVersion ??
+          (feeScheduleFor(instrument).scope==='forex' ? PRIOR_FX_FEE_SCHEDULE.version : undefined),
+        historicalCostsAvailable:shadowCostsObserved(record,instrument),researchOrigin:'SHADOW'});
       if (replay.status==='COMPLETED') await storeResearchOutcome(await bindResearchManifest(replay.outcome));
     }
     return {...result,currentPrice:labelPrice};
@@ -437,6 +446,7 @@ export class OpportunityJournal {
       mode: result.mode,
       vetoCode: result.vetoCode,
       instrumentVersion: result.instrumentVersion,
+      feeScheduleVersion: feeScheduleFor(getConfiguredInstrument(result.asset)).version,
       featureStartMs: result.featureStartMs,
       fundingIntervalMinutes:result.fundingIntervalMinutes, halfSpreadBps:result.halfSpreadBps, regime:result.regime,
       asset: result.asset,

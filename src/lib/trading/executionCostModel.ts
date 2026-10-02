@@ -5,12 +5,21 @@ import {
   estimateNotionalUsd,
   instrumentFee,
   instrumentNotional,
+  feeScheduleFor,
 } from "./assetSpecs";
-import type { InstrumentRef } from "./instrumentRegistry";
+import { getConfiguredInstrument, isConfiguredAsset, type InstrumentRef } from "./instrumentRegistry";
 
 // v3: versioned public fee schedules for Bybit contracts, taker-only paper
 // fills, and observed-spread entry profiles.
 export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v3-2026-10-01";
+
+/** A fee change creates a distinct FX learning cohort without rewriting prior costs. */
+export function executionCostModelVersionFor(instrument: InstrumentRef, feeScheduleVersion?: string): string {
+  if (instrument.economicsModel !== "BYBIT_LINEAR_USDT_V1") return EXECUTION_COST_MODEL_VERSION;
+  const schedule = feeScheduleFor(instrument, feeScheduleVersion);
+  return schedule.scope === "forex" && schedule.status === "PUBLIC_BASELINE"
+    ? `${EXECUTION_COST_MODEL_VERSION}:${schedule.version}` : EXECUTION_COST_MODEL_VERSION;
+}
 
 export type PaperExecutionAction = "BUY" | "SELL" | "SHORT" | "COVER";
 export type PaperExecutionReason =
@@ -81,6 +90,7 @@ export interface PaperExecutionPlan {
 
 export interface PaperExecutionPlanInput {
   asset: string;
+  feeScheduleVersion?: string;
   direction: OpenPosition["direction"];
   entryPrice: number;
   stopLoss: number;
@@ -176,6 +186,7 @@ export function estimatePaperFill(input: {
    * instrument's model, so an exit must not be valued by today's routing.
    */
   instrument?: InstrumentRef;
+  feeScheduleVersion?: string;
 }): PaperFillEstimate {
   if (!Number.isFinite(input.requestedPrice) || input.requestedPrice <= 0) {
     throw new Error(`Invalid requested execution price for ${input.asset}`);
@@ -210,15 +221,18 @@ export function estimatePaperFill(input: {
   const feeUsd = input.feeRate !== undefined
     ? notionalUsd * input.feeRate
     : input.instrument
-      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker")
-      : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
+      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker", input.feeScheduleVersion)
+      : input.feeScheduleVersion
+        ? instrumentFee(getConfiguredInstrument(input.asset), input.amount, fillPrice, "taker", input.feeScheduleVersion)
+        : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
   const spreadCostUsd = requestedNotionalUsd * spreadBps / 10_000;
   const slippageCostUsd = requestedNotionalUsd * slippageBps / 10_000;
   const gapCostUsd = requestedNotionalUsd * gapBps / 10_000;
   const priceImpactCostUsd = spreadCostUsd + slippageCostUsd + gapCostUsd;
 
   return {
-    modelVersion: EXECUTION_COST_MODEL_VERSION,
+    modelVersion: input.instrument ? executionCostModelVersionFor(input.instrument, input.feeScheduleVersion)
+      : isDerived && !isConfiguredAsset(input.asset) ? EXECUTION_COST_MODEL_VERSION : executionCostModelVersionFor(getConfiguredInstrument(input.asset), input.feeScheduleVersion),
     venueModel: profile.venueModel,
     action: input.action,
     reason: input.context.reason,
@@ -250,6 +264,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "ENTRY" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
   const targetExit = estimatePaperFill({
     asset: input.asset,
@@ -258,6 +273,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "TAKE_PROFIT" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
   const stopExit = estimatePaperFill({
     asset: input.asset,
@@ -266,6 +282,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "STOP_LOSS" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
 
   const grossRewardUsd = calculatePnlUsd(
@@ -288,7 +305,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
   const netRewardRiskRatio = netLossUsd > 0 ? netRewardUsd / netLossUsd : 0;
 
   return {
-    modelVersion: EXECUTION_COST_MODEL_VERSION,
+    modelVersion: executionCostModelVersionFor(getConfiguredInstrument(input.asset), input.feeScheduleVersion),
     entry,
     targetExit,
     stopExit,

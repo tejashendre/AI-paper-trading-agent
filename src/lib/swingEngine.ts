@@ -4,7 +4,7 @@ import { ClosedBarCounts, WEEKLY_FEATURE_MIN_BARS } from "./trading/entryEligibi
 import { computeAllIndicators, getLatestSnapshot } from "./indicators";
 import { computeStatistics } from "./statistics";
 import { calculateLearningAdjustment, LocalLearningMemory, LocalLearningRule } from "./trading/localLearning";
-import { buildPaperExecutionPlan, EXECUTION_COST_MODEL_VERSION } from "./trading/executionCostModel";
+import { buildPaperExecutionPlan, EXECUTION_COST_MODEL_VERSION, executionCostModelVersionFor } from "./trading/executionCostModel";
 import { createHash } from "node:crypto";
 import { ATR, BollingerBands, EMA } from "./indicators";
 import { ConfiguredAsset, CONFIGURED_INSTRUMENTS, getConfiguredInstrument, InstrumentRef } from "./trading/instrumentRegistry";
@@ -409,7 +409,7 @@ export function evaluateNetRewardRisk(input: {
     reason: passed
       ? `Net reward/risk ${ratio.toFixed(2)} clears the ${minimumRequired.toFixed(2)} minimum after modeled fees, spread, slippage, and stop-gap risk.`
       : `Net reward/risk ${Math.max(0, ratio).toFixed(2)} is below the ${minimumRequired.toFixed(2)} minimum after modeled fees, spread, slippage, and stop-gap risk.`,
-    executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+    executionCostModelVersion: plan.modelVersion,
     entryFillPrice: plan.entry.fillPrice,
     targetFillPrice: plan.targetExit.fillPrice,
     stopFillPrice: plan.stopExit.fillPrice,
@@ -1119,7 +1119,7 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
         regime: adxForLearning >= 25 ? "TREND" : adxForLearning < 20 ? "RANGE" : "NEUTRAL",
         direction: bestDirection, strategyVersion: TRADING_STRATEGY_VERSION,
         configHash: strategyFamilyConfigHash("TREND_PULLBACK", instrument.asset),
-        costModelVersion: EXECUTION_COST_MODEL_VERSION, riskPolicyVersion: RISK_POLICY_VERSION,
+        costModelVersion: executionCostModelVersionFor(instrument), riskPolicyVersion: RISK_POLICY_VERSION,
       } });
     const triggerScore = trigger.score;
     const thresholds = entryThresholds(assetMode);
@@ -1206,7 +1206,7 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
           minimumRequired: 1.35,
           passed: false,
           reason: "No directional setup exists for reward/risk evaluation.",
-          executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+          executionCostModelVersion: executionCostModelVersionFor(instrument),
         }
       : evaluateNetRewardRisk({
           asset: assetKey,

@@ -15,6 +15,7 @@ import {
   instrumentQuantityFromNotional,
   positionInstrument,
   positionLegIdentity,
+  positionFeeScheduleVersion,
   validateOrderSize,
 } from "@/lib/trading/assetSpecs";
 import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
@@ -90,7 +91,7 @@ function positionNotional(pos: OpenPosition, quantity: number, price: number): n
 }
 
 function positionEntryFee(pos: OpenPosition): number {
-  return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice);
+  return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice, "taker", positionFeeScheduleVersion(pos));
 }
 
 const isLinearPosition = (pos: OpenPosition) => positionInstrument(pos).economicsModel === "BYBIT_LINEAR_USDT_V1";
@@ -477,6 +478,7 @@ function estimatePositionExit(
   return estimatePaperFill({
     asset: pos.asset,
     instrument: positionInstrument(pos),
+    feeScheduleVersion: positionFeeScheduleVersion(pos),
     action: pos.direction === "SHORT" ? "COVER" : "SELL",
     requestedPrice,
     amount,
@@ -805,6 +807,7 @@ async function scaleIntoWinner(
   const scaleFill = estimatePaperFill({
     asset,
     instrument: positionInstrument(pos),
+    feeScheduleVersion: positionFeeScheduleVersion(pos),
     action: pos.direction === "SHORT" ? "SHORT" : "BUY",
     requestedPrice: currentPrice,
     amount: addAmount,

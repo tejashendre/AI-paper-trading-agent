@@ -1,4 +1,4 @@
-import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from '@/lib/trading/assetSpecs';
+import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument, positionFeeScheduleVersion } from '@/lib/trading/assetSpecs';
 import { estimateCarryCostUsd, estimatePaperFill, getExecutionCostProfile } from '@/lib/trading/executionCostModel';
 import type { PositionValuation } from '@/lib/ui/livePortfolioGain';
 
@@ -35,6 +35,7 @@ export function modeledPositionMark(asset: string, pos: any, currentPrice: numbe
     const exit = estimatePaperFill({
         asset,
         instrument,
+        feeScheduleVersion: positionFeeScheduleVersion({...pos, asset}),
         action: pos.direction === "SHORT" ? "COVER" : "SELL",
         requestedPrice: currentPrice,
         amount: pos.amount,
@@ -50,7 +51,7 @@ export function modeledPositionMark(asset: string, pos: any, currentPrice: numbe
     const grossPnl = calculateInstrumentPnl({
         instrument, entryPrice: pos.entryPrice, exitPrice: exit.fillPrice, quantity: pos.amount, direction: pos.direction,
     });
-    const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
+    const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice, 'taker', positionFeeScheduleVersion({...pos, asset}));
     // Linear positions book funding to cash at each settlement; marking it
     // again here would count it twice.
     const carryCost = instrument.economicsModel === "BYBIT_LINEAR_USDT_V1" ? 0 : estimateCarryCostUsd({

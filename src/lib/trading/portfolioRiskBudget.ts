@@ -1,5 +1,5 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
-import { instrumentFee, instrumentNotional, positionInstrument, tradeInstrument } from "./assetSpecs";
+import { instrumentFee, instrumentNotional, positionInstrument, tradeInstrument, positionFeeScheduleVersion } from "./assetSpecs";
 import { markedEquity } from './markedEquity';
 
 // v3: named factors in true USDT notional, factor stop-risk cap, gross notional ceiling.
@@ -94,7 +94,9 @@ function eventExecutionCostUsd(trade: Trade): number {
   if (!Number.isFinite(Number(trade.amount)) || !Number.isFinite(Number(trade.price))) return 0;
   try {
     // Each row is costed under the model it was written with.
-    return instrumentFee(tradeInstrument(trade), Number(trade.amount), Number(trade.price));
+    const instrument=tradeInstrument(trade);
+    return instrumentFee(instrument, Number(trade.amount), Number(trade.price), 'taker',
+      positionFeeScheduleVersion({asset:trade.asset,instrument,feeScheduleVersion:trade.feeScheduleVersion}));
   } catch {
     return 0;
   }

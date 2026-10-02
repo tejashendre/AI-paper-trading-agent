@@ -273,6 +273,7 @@ export interface FeeSchedule {
   takerRate: number;
   effectiveFrom: string;
   sourceUrl: string;
+  verificationSourceUrls?: string[];
   status: FeeScheduleStatus;
   note?: string;
 }
@@ -303,29 +304,50 @@ export const FEE_SCHEDULES: Record<FeeSchedule["scope"], FeeSchedule> = {
     status: "PUBLIC_BASELINE",
   },
   forex: {
-    version: "bybit-fx-stress-2026-10-01",
+    version: "bybit-vip0-tradfi-fx-2026-10-02",
     scope: "forex",
-    makerRate: 0.0002,
-    takerRate: 0.00055,
-    effectiveFrom: "2026-10-01",
-    sourceUrl: "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
-    status: "UNVERIFIED_STRESS_RATE",
-    note: "No official current source confirms the FX perpetual fee group; crypto VIP0 rates are a stress assumption, and strategy promotion is blocked for this cost cohort.",
+    makerRate: 0,
+    takerRate: 0.000275,
+    effectiveFrom: "2026-10-02",
+    sourceUrl: "https://announcements.bybit.com/en/article/tradfi-perpetuals-lower-fees-across-all-tiers-bltb196506dada4be39/",
+    verificationSourceUrls: [
+      "https://www.bybit.com/en/learn/bybit-tradfi/trade-tradfi-perpetuals-bybit",
+      "https://www.bybit.com/en/learn/bybit-tradfi/what-are-fx-perpetual-contracts-bybit",
+    ],
+    status: "PUBLIC_BASELINE",
+    note: "Verified 2026-10-02: official guide includes forex and applies the discounted schedule to all TradFi perpetuals except Pre-IPO. G9 announcement supplies exact VIP0 rates. Paper baseline only; authenticated account and regional rates may differ.",
   },
 };
 
-export function feeScheduleFor(instrument: InstrumentRef): FeeSchedule {
-  return FEE_SCHEDULES[getAssetSpec(instrument.asset).assetClass];
+export const PRIOR_FX_FEE_SCHEDULE: FeeSchedule = {
+  version: "bybit-fx-stress-2026-10-01", scope: "forex", makerRate: 0.0002, takerRate: 0.00055,
+  effectiveFrom: "2026-10-01", sourceUrl: "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+  status: "UNVERIFIED_STRESS_RATE", note: "Prior conservative assumption retained for frozen positions and evidence.",
+};
+
+export function feeScheduleFor(instrument: InstrumentRef, version?: string): FeeSchedule {
+  const scope = getAssetSpec(instrument.asset).assetClass;
+  const schedule = version === PRIOR_FX_FEE_SCHEDULE.version ? PRIOR_FX_FEE_SCHEDULE : FEE_SCHEDULES[scope];
+  if (schedule.scope !== scope || (version && schedule.version !== version)) throw new Error(`Unknown ${scope} fee schedule: ${version}`);
+  return schedule;
+}
+
+/** Unstamped historical linear FX positions predate the verified baseline. */
+export function positionFeeScheduleVersion(position: Pick<OpenPosition, "asset" | "instrument" | "strategyType" | "feeScheduleVersion">): string | undefined {
+  const instrument = positionInstrument(position);
+  return position.feeScheduleVersion ?? (isLinear(instrument) && getAssetSpec(instrument.asset).assetClass === "forex"
+    ? PRIOR_FX_FEE_SCHEDULE.version : undefined);
 }
 
 export function instrumentFee(
   instrument: InstrumentRef,
   quantity: number,
   price: number,
-  liquidity: "maker" | "taker" = "taker"
+  liquidity: "maker" | "taker" = "taker",
+  feeScheduleVersion?: string
 ): number {
   if (isLinear(instrument)) {
-    const schedule = feeScheduleFor(instrument);
+    const schedule = feeScheduleFor(instrument, feeScheduleVersion);
     return instrumentNotional(instrument, quantity, price) * (liquidity === "maker" ? schedule.makerRate : schedule.takerRate);
   }
   const spec = getAssetSpec(instrument.asset);
@@ -463,6 +485,7 @@ export function positionLegIdentity(position: OpenPosition) {
     economicsModel: instrument.economicsModel,
     initialRiskUsdt: position.initialRiskUsdt,
     riskPolicyVersion: position.riskPolicyVersion,
+    ...(positionFeeScheduleVersion(position) ? {feeScheduleVersion: positionFeeScheduleVersion(position)} : {}),
   };
 }
 

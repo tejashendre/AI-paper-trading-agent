@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getRedis } from '@/lib/redis';
 import { CONFIGURED_ASSETS, getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 import { strategyFamilyConfigHash } from '@/lib/swingEngine';
-import { EXECUTION_COST_MODEL_VERSION } from '@/lib/trading/executionCostModel';
+import { EXECUTION_COST_MODEL_VERSION, executionCostModelVersionFor } from '@/lib/trading/executionCostModel';
 import { TRADING_STRATEGY_VERSION } from '@/lib/trading/executionLedger';
 import { RISK_POLICY_VERSION, feeScheduleFor } from '@/lib/trading/assetSpecs';
 import type { CompletedPositionOutcome } from '@/lib/trading/positionOutcomes';
@@ -15,7 +15,10 @@ export async function ensureResearchBaselines(nowMs=Date.now()) {
   const existing=await getCandidateRegistry();
   for (const asset of CONFIGURED_ASSETS) for (const family of ['TREND_PULLBACK','RANGE_REVERSION'] as const) {
     const configHash=strategyFamilyConfigHash(family,asset), instrument=getConfiguredInstrument(asset);
-    const candidateId=createHash('sha256').update([instrument.instrumentVersion,family,configHash,TRADING_STRATEGY_VERSION].join(':')).digest('hex');
+    const costModelVersion=executionCostModelVersionFor(instrument);
+    const identity=[instrument.instrumentVersion,family,configHash,TRADING_STRATEGY_VERSION];
+    if (costModelVersion!==EXECUTION_COST_MODEL_VERSION) identity.push(costModelVersion);
+    const candidateId=createHash('sha256').update(identity.join(':')).digest('hex');
     if (existing.some(d=>d.candidateId===candidateId)) continue;
     const holdoutStartMs=nowMs,holdoutEndMs=nowMs+5*365*86400000;
     // The collection manifest freezes instrument, family, versions and window.
@@ -23,7 +26,7 @@ export async function ensureResearchBaselines(nowMs=Date.now()) {
     const evidenceManifestHash=createHash('sha256').update(JSON.stringify({candidateId,
       schema:'bybit-closed-bars-v1',holdoutStartMs,holdoutEndMs})).digest('hex');
     await registerCandidate({candidateId,family,configHash,strategyVersion:TRADING_STRATEGY_VERSION,
-      instrumentVersions:[instrument.instrumentVersion],costModelVersion:EXECUTION_COST_MODEL_VERSION,
+      instrumentVersions:[instrument.instrumentVersion],costModelVersion,
       riskPolicyVersion:RISK_POLICY_VERSION,registeredAtMs:nowMs,labelHorizonMs:86400000,
       holdoutId:TRADING_STRATEGY_VERSION+':'+candidateId,mode:'SHADOW',evidenceManifestHash,holdoutStartMs,holdoutEndMs});
   }
@@ -94,6 +97,7 @@ export function paperResearchOutcome(outcome: CompletedPositionOutcome): Researc
 export async function bindResearchManifest(outcome:ResearchOutcome):Promise<ResearchOutcome> {
   const definition=(await getCandidateRegistry()).find(d=>d.instrumentVersions.includes(outcome.instrument.instrumentVersion) &&
     d.family===outcome.setupFamily && d.configHash===outcome.configHash && d.strategyVersion===outcome.strategyVersion &&
+    d.costModelVersion===outcome.costModelVersion && d.riskPolicyVersion===outcome.riskPolicyVersion &&
     outcome.openedAtMs>=d.holdoutStartMs && (outcome.labelEndMs??outcome.closedAtMs)<=d.holdoutEndMs);
   return definition?{...outcome,evidenceManifestHash:definition.evidenceManifestHash}:outcome;
 }
@@ -108,7 +112,9 @@ export async function reviewRegisteredCandidates(nowMs=Date.now()) {
     const asset=CONFIGURED_ASSETS.find(a=>definition.instrumentVersions.includes(getConfiguredInstrument(a).instrumentVersion));
     const promotionEvidence={definition,outcomes:outcomes.filter(o=>o.researchOrigin!=='PAPER' && matchesDefinition(o,definition)),
       trials,holdoutConsumed:Boolean(definition.holdoutConsumed),
-      feesVerified:asset ? feeScheduleFor(getConfiguredInstrument(asset)).status==='PUBLIC_BASELINE' : false};
+      feesVerified:asset ? feeScheduleFor(getConfiguredInstrument(asset)).status==='PUBLIC_BASELINE' &&
+        (feeScheduleFor(getConfiguredInstrument(asset)).scope!=='forex' ||
+          definition.costModelVersion===executionCostModelVersionFor(getConfiguredInstrument(asset))) : false};
     const report=evaluatePromotion(promotionEvidence);
     const paper=outcomes.filter(o=>o.researchOrigin==='PAPER' && matchesDefinition(o,definition));
     const mode=await recordPromotionReview(definition,report,paper,promotionEvidence);

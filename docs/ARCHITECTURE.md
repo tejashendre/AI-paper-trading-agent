@@ -189,8 +189,15 @@ the upgrade keep their legacy model and are not scaled into. With one venue ther
 is no second source to cross-check a bad print, so the entry gate instead
 requires validated venue metadata, a quote under 10 seconds old on every field
 it uses, at most 2 seconds in the future, and 100 completed 15m, 1h and 4h bars.
-Bybit has not confirmed the fee schedule for the three FX contracts, so they are
-costed at a higher stress rate and their results cannot be promoted.
+The official TradFi guide includes forex and applies its discounted schedule
+to all TradFi perpetuals except Pre-IPO; the G9 announcement gives VIP0 maker
+0% and taker 0.0275%. New FX paper fills use the verified 2026-10-02 baseline.
+Existing positions, unstamped old FX observations and prior learning cohorts
+keep the earlier unverified stress fee. New FX costs have a separate cohort and
+candidate identity; old evidence is never retroactively verified. This public
+baseline does not claim an authenticated account's regional or negotiated rate.
+See [official scope](https://www.bybit.com/en/learn/bybit-tradfi/trade-tradfi-perpetuals-bybit)
+and [exact VIP0 schedule](https://announcements.bybit.com/en/article/tradfi-perpetuals-lower-fees-across-all-tiers-bltb196506dada4be39/).
 
 Commodities are priced from a crypto venue, which is not the obvious choice, so
 the reason is worth stating. They were on Yahoo's CME futures until 2026-09-07,

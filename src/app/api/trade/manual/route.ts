@@ -11,6 +11,8 @@ import {
   instrumentFee,
   positionInstrument,
   positionLegIdentity,
+  positionFeeScheduleVersion,
+  feeScheduleFor,
 } from '@/lib/trading/assetSpecs';
 import { getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 import { getMarketSessionState } from '@/lib/trading/marketSession';
@@ -75,7 +77,8 @@ export async function POST(request: Request) {
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual BUY order', entryFeePaid: entryFee,
         direction: 'LONG',
         // Sized above on the asset's Bybit contract, so it carries that model.
-        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1',
+        feeScheduleVersion: feeScheduleFor(getConfiguredInstrument(asset)).version
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;
@@ -116,7 +119,8 @@ export async function POST(request: Request) {
         initialStopLoss: currentPrice * 1.05,
         entryTime: new Date().toISOString(), signalScore: 0, reasoning: 'Manual SHORT order', entryFeePaid: entryFee,
         direction: 'SHORT',
-        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1'
+        positionId: crypto.randomUUID(), instrument: getConfiguredInstrument(asset), economicsModel: 'BYBIT_LINEAR_USDT_V1',
+        feeScheduleVersion: feeScheduleFor(getConfiguredInstrument(asset)).version
       };
       if (!portfolio.openPositions) portfolio.openPositions = {};
       portfolio.openPositions[asset] = pos;
@@ -140,8 +144,8 @@ export async function POST(request: Request) {
       const pos = currentPosition;
       const instrument = positionInstrument(pos);
       const pnl = calculateInstrumentPnl({ instrument, entryPrice: pos.entryPrice, exitPrice: currentPrice, quantity: pos.amount, direction: 'LONG' });
-      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
-      const exitFee = instrumentFee(instrument, pos.amount, currentPrice);
+      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice, 'taker', positionFeeScheduleVersion(pos));
+      const exitFee = instrumentFee(instrument, pos.amount, currentPrice, 'taker', positionFeeScheduleVersion(pos));
       const netPnl = pnl - entryFee - exitFee;
       const proceeds = pos.usdInvested + entryFee + netPnl;
       const pnlPercent = (netPnl / pos.usdInvested) * 100;
@@ -191,8 +195,8 @@ export async function POST(request: Request) {
       const pos = currentPosition;
       const instrument = positionInstrument(pos);
       const pnl = calculateInstrumentPnl({ instrument, entryPrice: pos.entryPrice, exitPrice: currentPrice, quantity: pos.amount, direction: 'SHORT' });
-      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
-      const exitFee = instrumentFee(instrument, pos.amount, currentPrice);
+      const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice, 'taker', positionFeeScheduleVersion(pos));
+      const exitFee = instrumentFee(instrument, pos.amount, currentPrice, 'taker', positionFeeScheduleVersion(pos));
       const netPnl = pnl - entryFee - exitFee;
       const pnlPercent = (netPnl / pos.usdInvested) * 100;
 
