@@ -117,7 +117,7 @@ jobs:
             # ledger unchanged and the deploy continues.
             echo "Compacting the execution ledger with the writers stopped..."
             docker compose stop swing-daemon xsec-daemon || true
-            docker compose run --rm --no-deps -T swing-daemon tsx scripts/ledger-compact.ts --apply               || echo "Ledger compaction refused; the ledger is unchanged."
+            docker compose run --rm --no-deps -T swing-daemon tsx scripts/ledger-compact.ts --apply || echo "Ledger compaction refused; the ledger is unchanged."
 
             docker compose up -d --no-build --remove-orphans
 
