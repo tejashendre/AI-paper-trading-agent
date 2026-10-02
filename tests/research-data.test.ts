@@ -58,4 +58,3 @@ test("a full research archive rotates out its oldest days instead of stopping ca
   assert.deepEqual(fs.readdirSync(directory).filter((f: string) => f.endsWith(".gz")).sort(), ["2026-10-02.ndjson.gz", "2026-10-03.ndjson.gz"]);
   assert.equal(archive.readResearchEvidence(directory).length, 2, "what remains still verifies");
 });
-
