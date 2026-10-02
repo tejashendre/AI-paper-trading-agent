@@ -106,7 +106,10 @@ services:
     restart: unless-stopped
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);r.get('xsec:equity').then(v=>{r.disconnect();process.exit(v?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
+      # Healthy only while marking is fresh AND the 12h rebalance keeps time
+      # (13h allows one period plus an hour of grace). A heartbeat alone
+      # stayed healthy through a rebalance that had silently stopped.
+      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL);Promise.all([r.get('xsec:equity'),r.get('xsec:lastRebalanceAt')]).then(([e,l])=>{r.disconnect();process.exit(e&&Date.now()-Number(l)<13*3600000?0:1)}).catch(()=>{r.disconnect();process.exit(1)})"]
       interval: 60s
       timeout: 10s
       retries: 5

@@ -502,6 +502,25 @@ export async function settleBookFunding(
 /** The capital-free book that keeps forward evidence while the live book is halted. */
 export const SHADOW_BOOK_PORTFOLIO_KEY = "xsec:shadow:portfolio";
 export const SHADOW_BOOK_EQUITY_CURVE_KEY = "xsec:shadow:equityCurve";
+/** When the last complete rebalance pass finished (epoch ms). */
+export const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
+/** The book rebalances every holdHours; a pass later than this grace is a fault. */
+export const REBALANCE_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Whether the rebalance loop is keeping time. A missing record counts as
+ * overdue: a running daemon writes one within a minute of starting.
+ */
+export function rebalanceStatus(lastAtMs: number | null, nowMs: number, holdHours = 12) {
+  const periodMs = holdHours * 60 * 60 * 1000;
+  const last = Number.isFinite(lastAtMs) && (lastAtMs as number) > 0 ? (lastAtMs as number) : null;
+  const nextDueAtMs = last === null ? null : last + periodMs;
+  return {
+    lastAtMs: last,
+    nextDueAtMs,
+    overdue: nextDueAtMs === null || nowMs > nextDueAtMs + REBALANCE_GRACE_MS,
+  };
+}
 
 export async function loadBookPortfolio(initialCapitalUsd = 10_000, key = BOOK_PORTFOLIO_KEY): Promise<BookPortfolio> {
   const stored = await getRedis().get<BookPortfolio>(key).catch(() => null);

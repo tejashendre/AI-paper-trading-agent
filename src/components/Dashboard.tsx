@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture } from '@/lib/research/researchDisplay';
+import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
@@ -2243,11 +2244,18 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
                     <span className={`text-[8px] font-mono uppercase font-bold text-emerald-400 mb-1`}>Swing Brain</span>
-                    <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.swing.trades > 0 ? ((data.aiDetailedStats.swing.wins / data.aiDetailedStats.swing.trades) * 100).toFixed(1) : 0}%</span>
-                    <span className={`text-[10px] font-mono ${data.aiDetailedStats.swing.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      PnL: ${data.aiDetailedStats.swing.pnl.toFixed(2)}
-                    </span>
-                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Total: {data.aiDetailedStats.swing.trades} Swings</span>
+                    {(() => {
+                      const tile = swingWinRateTile(data.aiClosedStats, data.aiDetailedStats.swing);
+                      return (
+                        <>
+                          <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {tile.winRateText}</span>
+                          <span className={`text-[10px] font-mono ${tile.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            PnL: ${tile.pnl.toFixed(2)}
+                          </span>
+                          <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>{tile.countText}</span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

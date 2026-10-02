@@ -1,11 +1,14 @@
 /**
  * Cross-sectional momentum daemon.
  *
- * Two loops, deliberately far apart in frequency:
- *   - Rebalance every `holdHours`, which is when the strategy has anything to
- *     say. Rebalancing more often only adds turnover cost.
- *   - Mark to market every minute so the dashboard and drawdown guard see a
- *     current equity figure between rebalances.
+ * One serialized cycle every minute, so the daemon's own tasks never contend
+ * for the book lock with each other:
+ *   - Mark to market (and, when reducing, one staged risk step) every cycle.
+ *   - Rebalance when `holdHours` have passed, which is when the strategy has
+ *     anything to say. Rebalancing more often only adds turnover cost.
+ *   - Look for newly published funding every five minutes.
+ * Separate timers with the same period used to collide on the lock in a fixed
+ * phase; the loser skipped silently and the 12-hour rebalance stopped for good.
  *
  * Request budget on the free tier is small by design: one tickers call gives
  * every price at once, and momentum needs one kline call per symbol per
@@ -22,10 +25,12 @@ import {
   bookEquityUsd,
   currentWeights,
   getEquityCurve,
+  LAST_REBALANCE_KEY,
   loadBookPortfolio,
   logRebalance,
   recordBookTrades,
   recordEquityPoint,
+  rebalanceStatus,
   recordReconciliation,
   saveBookPortfolio,
   settleBookFunding,
@@ -48,7 +53,6 @@ const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
 const MARK_INTERVAL_MS = 60_000;
 /** How often to look for newly published settlements; charges follow each symbol's own boundaries. */
 const FUNDING_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
 const EQUITY_KEY = "xsec:equity";
 const LOCK_KEY = "xsec:lock";
 const EDGE_VERDICT_KEY = "xsec:edgeVerdict";
@@ -68,11 +72,29 @@ const RISK_RELEASE_KEY = "xsec:riskRelease";
 let rebalancing = false;
 let marking = false;
 
-async function withLock<T>(fn: () => Promise<T>): Promise<T | null> {
+/** How long a task waits for another holder (a script, a second process) to release the book lock. */
+const LOCK_WAIT_MS = 60_000;
+const LOCK_RETRY_MS = 250;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Run `fn` holding the book lock. Waits up to LOCK_WAIT_MS for another holder
+ * instead of skipping at once, and says so when it gives up, so contention is
+ * visible rather than a task that silently never runs.
+ */
+async function withLock<T>(fn: () => Promise<T>, task = "task"): Promise<T | null> {
   const redis = getRedis();
-  const token = `${process.pid}-${Date.now()}`;
-  const acquired = await redis.set(LOCK_KEY, token, { ex: 300, nx: true }).catch(() => null);
-  if (!acquired) return null;
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let acquired = await redis.set(LOCK_KEY, token, { ex: 300, nx: true }).catch(() => null);
+  while (!acquired && Date.now() < deadline) {
+    await sleep(LOCK_RETRY_MS);
+    acquired = await redis.set(LOCK_KEY, token, { ex: 300, nx: true }).catch(() => null);
+  }
+  if (!acquired) {
+    await Logger.warn(`[XSEC] ${task} deferred: the book lock stayed held for ${LOCK_WAIT_MS / 1000}s.`);
+    return null;
+  }
   try {
     return await fn();
   } finally {
@@ -159,7 +181,7 @@ async function runRiskSweep(prices: Map<string, PerpTicker>) {
     await reduceOnlyStep(portfolio, prices, decision);
     // The last close moves a breached book to SHADOW at once.
     if (Object.keys(portfolio.positions).length === 0) await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
-  });
+  }, "risk sweep");
 }
 
 /** The same plan on a capital-free book, so halted periods still produce forward evidence. */
@@ -213,7 +235,7 @@ async function runRebalance() {
       }
       if (decision.state !== "ACTIVE") await runShadowRebalance(snapshot);
       await getRedis().set(LAST_REBALANCE_KEY, Date.now());
-    });
+    }, "rebalance");
   } catch (error) {
     await Logger.error(`[XSEC] rebalance failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -334,7 +356,7 @@ async function runFunding() {
       if (outcome.pending > 0 || outcome.errors.length > 0) {
         await Logger.warn(`[XSEC] funding pending reconciliation: ${outcome.pending} boundary(ies). ${outcome.errors.join("; ")}`.trim());
       }
-    });
+    }, "funding");
   } catch (error) {
     await Logger.warn(`[XSEC] funding settlement failed: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -345,22 +367,36 @@ async function maybeRebalance() {
   if (Date.now() - last >= REBALANCE_INTERVAL_MS) await runRebalance();
 }
 
+let lastFundingCheckAt = 0;
+
+/**
+ * One pass of every task, in order. Each awaits the previous, so the daemon
+ * never contends with itself for the book lock.
+ */
+async function runCycle() {
+  await runMark().catch(() => undefined);
+  await maybeRebalance().catch(() => undefined);
+  if (Date.now() - lastFundingCheckAt >= FUNDING_CHECK_INTERVAL_MS) {
+    lastFundingCheckAt = Date.now();
+    await runFunding().catch(() => undefined);
+  }
+}
+
 async function main() {
   await Logger.info(
     `[XSEC] starting cross-sectional daemon: ${CONFIG.lookbackHours}h momentum, ` +
     `${CONFIG.holdHours}h rebalance, ${CONFIG.bookSize} names per side, ${CONFIG.rankBuffer}x rank buffer.`
   );
-
-  await runMark().catch(() => undefined);
-  await maybeRebalance().catch(() => undefined);
-
-  setInterval(() => { void maybeRebalance(); }, 5 * 60 * 1000);
-  setInterval(() => { void runMark(); }, MARK_INTERVAL_MS);
-  await runFunding().catch(() => undefined);
-  setInterval(() => { void runFunding(); }, FUNDING_CHECK_INTERVAL_MS);
+  // Schedule the next cycle only after this one finishes, so a slow
+  // rebalance delays the next mark instead of overlapping it.
+  const loop = async () => {
+    await runCycle();
+    setTimeout(() => { void loop(); }, MARK_INTERVAL_MS);
+  };
+  await loop();
 }
 
-export { decideRiskState, runRebalance, runRiskSweep };
+export { decideRiskState, rebalanceStatus, runCycle, runRebalance, runRiskSweep };
 
 if (require.main === module) main().catch(async (error) => {
   await Logger.error(`[XSEC] fatal: ${error instanceof Error ? error.message : String(error)}`);
