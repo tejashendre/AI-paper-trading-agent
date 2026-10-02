@@ -16,6 +16,8 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 - [x] Charts: verify public Bybit history limits, implement cursor pages and a bounded rolling browser window, and verify controls, refresh, failures and mobile layout.
 - [x] Dashboard: signed total gain/loss is the live primary comparison-card number; verified costs, frozen units, stale labeling and separate book accounting.
 
+Replay review checkpoint: preserve actual component clocks and capture availability, refuse future/stale/missing source timing, and retain timestamps in new runtime/public captures. 321/321 tests and audit 156/0/0. Recorded VPS archives remain descriptive and crypto remains NOT_TESTABLE where fast bars or flow clocks are absent.
+
 
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.

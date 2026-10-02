@@ -302,7 +302,7 @@ export class MarketService {
    * Funding and open interest from the mapped perpetual. A value Bybit did not
    * report is absent, never zero.
    */
-  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number; openInterest?: number; nextFundingTimeMs?: number }> {
+  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number; openInterest?: number; nextFundingTimeMs?: number; observedAtMs?: number }> {
     const instrument = getConfiguredInstrument(assetKey);
     const now = deps.nowMs();
     const pick = (source: { fundingRate?: unknown; openInterest?: unknown; nextFundingTimeMs?: unknown }) => {
@@ -320,13 +320,14 @@ export class MarketService {
       const state = await deps.cache.get<BybitTickerState>(liveQuoteKey(assetKey));
       if (state?.symbol === instrument.symbol && state.sensorEventMs !== undefined && now - state.sensorEventMs <= SENSOR_MAX_AGE_MS) {
         const sensors = pick(state);
-        if (Object.keys(sensors).length > 0) return sensors;
+        if (Object.keys(sensors).length > 0) return {...sensors,observedAtMs:state.sensorEventMs};
       }
     } catch {}
 
     try {
-      const { row } = await fetchTicker(instrument.symbol);
-      return pick({ fundingRate: row.fundingRate, openInterest: row.openInterest, nextFundingTimeMs: row.nextFundingTime });
+      const { row, serverTimeMs } = await fetchTicker(instrument.symbol);
+      const sensors = pick({ fundingRate: row.fundingRate, openInterest: row.openInterest, nextFundingTimeMs: row.nextFundingTime });
+      return Object.keys(sensors).length ? {...sensors,observedAtMs:serverTimeMs} : sensors;
     } catch (error) {
       console.warn(`[MarketService] Bybit sensors unavailable for ${assetKey}:`, error);
       return {};
@@ -502,14 +503,14 @@ export class MarketService {
    * Fifty-level book imbalance for the mapped perpetual. Throws when depth is
    * unavailable rather than reporting a neutral book that was never observed.
    */
-  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean }> {
+  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean; observedAtMs?: number }> {
     const instrument = getConfiguredInstrument(assetKey);
     const now = deps.nowMs();
     const cacheKey = `cache:depth:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}`;
     type Depth = { bidVolume: number; askVolume: number; observedAtMs: number };
     const shape = (depth: Depth) => {
       const ratio = depth.bidVolume / depth.askVolume;
-      return { bidVolume: depth.bidVolume, askVolume: depth.askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 };
+      return { bidVolume: depth.bidVolume, askVolume: depth.askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66, observedAtMs:depth.observedAtMs };
     };
 
     try {
