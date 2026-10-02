@@ -198,7 +198,8 @@ export function evaluatePromotion(input: {
     folds: folds.length, testPositions: testSamples.length, netExpectancy95: interval,
     deflatedSharpe: sharpe?.deflatedSharpe ?? null, forwardPositions: forward.length, forwardSpanMs,
     forwardExpectancy95: forwardInterval, forwardDeflatedSharpe: forwardSharpe?.deflatedSharpe ?? null,
-    route, forwardRouteReasons: forwardRoute };
+    route, forwardRouteReasons: forwardRoute, forwardRequiredPositions: FORWARD_ONLY_MIN_POSITIONS,
+    forwardRequiredSpanMs: 14 * 86400000 };
   const report = { eligible: reasons.length === 0, reasons, metrics, configHash: definition.configHash,
     definitionHash: candidateDefinitionHash(definition) };
   return { ...report, reportHash: hash({ report, input }) };
@@ -232,7 +233,7 @@ export function evaluateDemotion(paperOutcomes: ResearchOutcome[]) {
  * that configuration. Every transition is written to the ledger.
  */
 export async function recordPromotionReview(definition: CandidateDefinition, report: ReturnType<typeof evaluatePromotion>,
-  paperOutcomes: ResearchOutcome[] = []) {
+  paperOutcomes: ResearchOutcome[] = [], promotionEvidence?: Parameters<typeof evaluatePromotion>[0]) {
   const redis = getRedis(), key = REGISTRY + ":review:" + definition.candidateId;
   const previous = (await redis.get<{ mode?: CandidateDefinition["mode"] }>(key).catch(() => null))?.mode ?? "SHADOW";
   let mode: CandidateDefinition["mode"] = previous === "REJECTED" ? "REJECTED" : previous === "PAPER_ACTIVE" ? "PAPER_ACTIVE"
@@ -247,7 +248,11 @@ export async function recordPromotionReview(definition: CandidateDefinition, rep
     await ExecutionLedger.recordBestEffort({ id: `research-${mode}:${definition.candidateId}`,
       type: mode === "PAPER_ACTIVE" ? "RESEARCH_PROMOTED" : "RESEARCH_DEMOTED", source: "RESEARCH",
       payload: { candidateId: definition.candidateId, family: definition.family, instrumentVersions: definition.instrumentVersions,
-        from: previous, to: mode, route: report.metrics.route, demotion, reviewedAt } });
+        from: previous, to: mode, route: report.metrics.route, demotion, reviewedAt,
+        reportHash: report.reportHash, definitionHash: report.definitionHash,
+        // Freeze inputs only on a rare transition, never on hourly reviews.
+        promotionEvidence: mode === 'PAPER_ACTIVE' ? promotionEvidence : undefined,
+        paperEvidence: mode === 'REJECTED' ? paperOutcomes : undefined } });
   }
   return mode;
 }

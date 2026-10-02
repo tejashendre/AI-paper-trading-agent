@@ -5,7 +5,7 @@ import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
-import { describeResearchCapture } from '@/lib/research/researchDisplay';
+import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
@@ -1643,9 +1643,13 @@ function DashboardContent({ secret }: { secret: string }) {
                       </p>
                       <div className={`mt-2 space-y-1 text-[9px] font-mono ${textMuted}`}>
                         {(data?.research?.candidates || []).map((candidate:any)=>(
-                          <div key={candidate.candidateId} className="flex flex-wrap justify-between gap-1">
-                            <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
-                            <span>{candidate.mode} | {candidate.metrics?.forwardPositions||0} independent shadow completions</span>
+                          <div key={candidate.candidateId} className="space-y-1 border-b pb-1">
+                            <div className="flex flex-wrap justify-between gap-1">
+                              <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
+                              <span>{candidate.mode}</span>
+                            </div>
+                            <p>{promotionProgress(candidate.metrics ?? {})}</p>
+                            {candidate.reasons?.length > 0 && <p>Blocked: {candidate.reasons.join(', ')}</p>}
                           </div>
                         ))}
                       </div>

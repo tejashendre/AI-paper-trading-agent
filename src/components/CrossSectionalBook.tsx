@@ -90,6 +90,8 @@ interface BookResponse {
     hypotheticalUnrealizedPnlUsdt: number;
   } | null;
   error?: string;
+  releaseEvidence?: { passed: boolean; reasons: string[]; metrics: { periods: number; maxDrawdownPercent: number;
+    meanReturn95: { low: number; high: number } | null } };
 }
 
 const RISK_STATE_TEXT: Record<string, string> = {
@@ -295,6 +297,19 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
               {" "}({data.costModel.totalRatio.toFixed(2)}x) · {data.costModel.sampleSize} fills measured
             </div>
           )}
+        </div>
+      )}
+
+      {data.risk?.state === 'SHADOW' && data.releaseEvidence && (
+        <div className={`mt-2 p-2 rounded-lg border ${bgSub}`}>
+          <div className={`text-[9px] font-mono ${textPrimary}`}>Shadow release progress</div>
+          <p className={`text-[10px] mt-1 ${textMuted}`}>
+            {data.releaseEvidence.metrics.periods}/30 twelve-hour periods (about 15 days minimum).
+            {' '}95% lower mean net return: {data.releaseEvidence.metrics.meanReturn95
+              ? `${(data.releaseEvidence.metrics.meanReturn95.low * 100).toFixed(3)}%` : 'unavailable'}.
+            {' '}Shadow drawdown: {data.releaseEvidence.metrics.maxDrawdownPercent.toFixed(2)}% / below 15% required.
+          </p>
+          <p className={`text-[9px] mt-1 ${textMuted}`}>{data.releaseEvidence.reasons.join('; ') || 'All shadow evidence gates passed.'}</p>
         </div>
       )}
 

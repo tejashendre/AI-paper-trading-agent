@@ -230,6 +230,7 @@ async function releaseOnShadowEvidence(portfolio: BookPortfolio): Promise<string
       documentedAt: new Date().toISOString(),
       note: "Shadow book passed the release gate: >=30 periods, positive 95% lower bound on mean net return, drawdown under 15%.",
       evidence,
+      evidenceCurve: curve,
     };
     await redis.set(RISK_RELEASE_KEY, record);
     await ExecutionLedger.recordBestEffort({ type: "BOOK_RISK_RELEASED", source: "XSEC", payload: record });

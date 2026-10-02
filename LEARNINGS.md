@@ -53,3 +53,5 @@ Dense quarter-hour observations cannot share retention with unfinished 24-hour l
 - A capped queue shared by high-rate and low-rate producers starves the low-rate one; deduplicate at the evidence grain (one per closed bar) and give the evidence that drives decisions priority.
 - A WARN that measures profitability on synthetic data is a category error; audit the gate's logic instead and judge profitability on real forward evidence.
 
+
+2026-10-02 P2: A transition verdict and hash are insufficient for independent verification if its inputs later rotate. Save immutable decision inputs only at rare promotion, demotion and risk-release events. Progress displays must show all remaining gates, not imply that reaching a sample count alone activates trading. Runtime fixtures are reproducible evidence; they do not establish that a production transition has occurred.

@@ -106,10 +106,11 @@ export async function reviewRegisteredCandidates(nowMs=Date.now()) {
   const summaries=[];
   for (const definition of trials) {
     const asset=CONFIGURED_ASSETS.find(a=>definition.instrumentVersions.includes(getConfiguredInstrument(a).instrumentVersion));
-    const report=evaluatePromotion({definition,outcomes,trials,holdoutConsumed:Boolean(definition.holdoutConsumed),
-      feesVerified:asset ? feeScheduleFor(getConfiguredInstrument(asset)).status==='PUBLIC_BASELINE' : false});
+    const promotionEvidence={definition,outcomes,trials,holdoutConsumed:Boolean(definition.holdoutConsumed),
+      feesVerified:asset ? feeScheduleFor(getConfiguredInstrument(asset)).status==='PUBLIC_BASELINE' : false};
+    const report=evaluatePromotion(promotionEvidence);
     const paper=outcomes.filter(o=>o.researchOrigin==='PAPER' && matchesDefinition(o,definition));
-    const mode=await recordPromotionReview(definition,report,paper);
+    const mode=await recordPromotionReview(definition,report,paper,promotionEvidence);
     summaries.push({asset,family:definition.family,candidateId:definition.candidateId,
       mode,reasons:report.reasons,metrics:report.metrics});
   }
