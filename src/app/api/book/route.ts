@@ -14,6 +14,9 @@ import { DEFAULT_STRATEGY, DEFAULT_UNIVERSE } from "@/lib/strategy/crossSectiona
 import { RECONCILIATION_VERDICT_KEY, CostVerdict } from "@/lib/execution/costModelReconciliation";
 import { EdgeVerdict } from "@/lib/research/edgeDecay";
 import { estimateBookCapacity } from "@/lib/execution/capacity";
+import { evaluateShadowEvidence } from '@/lib/execution/bookRiskPolicy';
+import { getEquityCurve } from '@/lib/execution/equityCurve';
+import { SHADOW_BOOK_EQUITY_CURVE_KEY } from '@/lib/execution/bookRebalancer';
 
 interface StoredEdgeVerdict {
   at: string;
@@ -94,6 +97,8 @@ export async function GET() {
       edgeReviewedAt: edgeVerdict?.at ?? null,
     });
     const shadow = shadowBook && shadowBook.totalRebalances > 0 ? describeShadowEvidence(shadowBook, prices) : null;
+    const haltedAtMs = Date.parse(portfolio.riskState?.haltedAt ?? '') || 0;
+    const releaseEvidence = evaluateShadowEvidence((await getEquityCurve(SHADOW_BOOK_EQUITY_CURVE_KEY)).filter(p => Date.parse(p.at) >= haltedAtMs));
 
     return NextResponse.json({
       risk,
@@ -138,6 +143,7 @@ export async function GET() {
         netExposure: equity > 0 ? netNotional / equity : 0,
       },
       positions,
+      releaseEvidence,
       recentTrades: trades,
       lastRebalance,
       // Whether the 12h rebalance loop is keeping time, independent of state.

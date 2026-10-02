@@ -126,6 +126,8 @@ describe("the daemon releases the halted book by itself", () => {
     const release = await memory.get<{ authorizedBy?: string; documentedAt?: string; evidence?: unknown }>("xsec:riskRelease");
     assert.equal(release?.authorizedBy, "AUTONOMOUS_EVIDENCE_GATE");
     assert.ok(release?.documentedAt && release.evidence);
+    assert.ok(Array.isArray((release as any).evidenceCurve), 'release must retain its exact shadow curve');
+    assert.deepEqual(evaluateShadowEvidence((release as any).evidenceCurve), release.evidence);
     const book = await m.book.loadBookPortfolio();
     assert.equal(book.riskState?.state, "ACTIVE", (book.riskState?.reasons ?? []).join(" "));
     assert.equal(book.riskState?.breachAcknowledgedAtPercent, 28.15);
