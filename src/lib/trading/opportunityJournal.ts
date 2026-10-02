@@ -19,6 +19,8 @@ const OPPORTUNITY_NAMESPACE = `opportunity:${TRADING_STRATEGY_VERSION}:v3`;
 const HISTORY_KEY = `${OPPORTUNITY_NAMESPACE}:history`;
 const PENDING_KEY = `${OPPORTUNITY_NAMESPACE}:pending`;
 const EVALUATIONS_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations`;
+/** 24-hour labels kept apart, so short-horizon labels cannot flush them. */
+const EVALUATIONS_24H_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations:24h`;
 const SUMMARY_KEY = `${OPPORTUNITY_NAMESPACE}:summary`;
 const DEDUPE_KEY_PREFIX = `${OPPORTUNITY_NAMESPACE}:last:`;
 const MAX_HISTORY = 500;
@@ -154,6 +156,17 @@ function parseEvaluation(raw: unknown): OpportunityEvaluation | null {
   }
   return raw as OpportunityEvaluation;
 }
+
+function observationBar(record: OpportunityRecord): number {
+  return Math.floor((record.featureCutoffMs ?? Date.parse(record.timestamp)) / (15 * 60_000));
+}
+
+/** Redis keys of the current strategy version's opportunity journal. */
+export const OPPORTUNITY_KEYS = {
+  pending: PENDING_KEY,
+  evaluations: EVALUATIONS_KEY,
+  evaluations24h: EVALUATIONS_24H_KEY,
+} as const;
 
 function observationFingerprint(record: OpportunityRecord): string {
   return [
@@ -394,6 +407,7 @@ export class OpportunityJournal {
       HISTORY_KEY,
       PENDING_KEY,
       EVALUATIONS_KEY,
+      EVALUATIONS_24H_KEY,
       SUMMARY_KEY,
       ...Object.keys(SUPPORTED_ASSETS).map((asset) => `${DEDUPE_KEY_PREFIX}${asset}`),
     ];
@@ -458,17 +472,30 @@ export class OpportunityJournal {
     const pending=(await redis.lrange(PENDING_KEY,0,-1)).map(parseRecord).filter(Boolean) as OpportunityRecord[];
     const admitted:OpportunityRecord[]=[];
     let rejectedNew=0;
+    const batchBars=new Set<string>();
     for (const record of records) {
       const dedupeKey = `${DEDUPE_KEY_PREFIX}${record.asset}:${record.family || "baseline"}`;
       if (record.candidateId && await redis.get(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`)) continue;
-      const previous = await redis.get<{ fingerprint: string; entryPrice: number }>(dedupeKey).catch(() => null);
+      const previous = await redis.get<{ fingerprint: string; entryPrice: number; bar?: number; direction?: string }>(dedupeKey).catch(() => null);
       const fingerprint = observationFingerprint(record);
       const priceMovePercent = previous?.entryPrice
         ? Math.abs(record.entryPrice - previous.entryPrice) / previous.entryPrice * 100
         : Infinity;
       if (!record.candidateId && previous?.fingerprint === fingerprint && priceMovePercent < 0.15) continue;
+      // Baseline features come from closed 15-minute bars, so a second
+      // observation in the same bar and direction is the same evidence.
+      const bar = observationBar(record);
+      const barKey = `${record.asset}:${record.family || "baseline"}:${record.direction}:${bar}`;
+      if (!record.candidateId && (batchBars.has(barKey) || (previous?.bar === bar && previous?.direction === record.direction))) continue;
       if (pending.some(row=>row.id===record.id || (record.candidateId && row.candidateId===record.candidateId))) continue;
-      if (record.direction!=='NEUTRAL' && pending.length>=MAX_PENDING) {rejectedNew++;continue;}
+      if (record.direction!=='NEUTRAL' && pending.length>=MAX_PENDING) {
+        // A full queue makes room for strategy-family evidence by dropping the
+        // oldest baseline observation; baseline records simply wait.
+        const oldestBaseline = record.candidateId ? pending.map(row => !row.candidateId).lastIndexOf(true) : -1;
+        if (oldestBaseline < 0) {rejectedNew++;continue;}
+        pending.splice(oldestBaseline, 1);
+      }
+      if (!record.candidateId) batchBars.add(barKey);
       await redis.lpush(HISTORY_KEY, JSON.stringify(record));
       admitted.push(record);
       if (record.direction !== "NEUTRAL") pending.unshift(record);
@@ -477,7 +504,7 @@ export class OpportunityJournal {
       throw new Error('Research queue lease expired; unfinished labels preserved');
     for (const record of admitted) {
       await redis.set(`${DEDUPE_KEY_PREFIX}${record.asset}:${record.family||'baseline'}`,
-        {fingerprint:observationFingerprint(record),entryPrice:record.entryPrice},{ex:DEDUPE_SECONDS});
+        {fingerprint:observationFingerprint(record),entryPrice:record.entryPrice,bar:observationBar(record),direction:record.direction},{ex:DEDUPE_SECONDS});
       if (record.candidateId) await redis.set(`${DEDUPE_KEY_PREFIX}candidate:${record.candidateId}`,true,{ex:86400*2});
     }
     await redis.ltrim(HISTORY_KEY, 0, MAX_HISTORY - 1);
@@ -559,8 +586,10 @@ export class OpportunityJournal {
     if (evaluations.length > 0) {
       for (const evaluation of evaluations) {
         await redis.lpush(EVALUATIONS_KEY, JSON.stringify(evaluation));
+        if (evaluation.horizon === "24h") await redis.lpush(EVALUATIONS_24H_KEY, JSON.stringify(evaluation));
       }
       await redis.ltrim(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1);
+      await redis.ltrim(EVALUATIONS_24H_KEY, 0, MAX_EVALUATIONS - 1);
       await this.rebuildSummary();
     }
 
@@ -595,7 +624,12 @@ export class OpportunityJournal {
 
   static async rebuildSummary() {
     const redis = getRedis();
-    const rows = await redis.lrange(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1);
+    // The dedicated 24-hour list first; 24-hour rows still in the mixed list
+    // (written before it existed) are deduplicated by opportunity id.
+    const rows = [
+      ...await redis.lrange(EVALUATIONS_24H_KEY, 0, MAX_EVALUATIONS - 1),
+      ...await redis.lrange(EVALUATIONS_KEY, 0, MAX_EVALUATIONS - 1),
+    ];
     const horizonEvaluations = rows.map(parseEvaluation).filter(Boolean) as OpportunityEvaluation[];
     const evaluations = selectIndependentOpportunityEvaluations(horizonEvaluations);
     const byAsset: Record<string, { total: number; favorable: number; avgMove: number; avgNetPnlUsd: number; avgNetReturnPercent: number; grossProfitUsd: number; grossLossUsd: number; profitFactor: number | null }> = {};
