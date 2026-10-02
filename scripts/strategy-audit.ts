@@ -1391,15 +1391,18 @@ function auditProductionRegressions(): AuditResult[] {
     daemonSource.includes("entryMode: effectiveEntryMode") &&
     admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
     admissionSource.includes('return "PROBE"');
-  // Behavioral, not textual: a delta needs this session's snapshot, and a
-  // funding-only update never refreshes the last-price time.
+  // Behavioral, not textual: a delta needs this session's snapshot. Bybit
+  // pushes only changed fields, so a delta confirms the fields it omits as
+  // unchanged at its time (values preserved); a dead socket sends no deltas.
   const snapshotFrame = { topic: "tickers.BTCUSDT", type: "snapshot", ts: 1_000, data: { lastPrice: "100", bid1Price: "99", ask1Price: "101" } };
   const seeded = mergeBybitTicker(null, snapshotFrame, 1_000);
   const fundingOnly = seeded && mergeBybitTicker(seeded, { topic: "tickers.BTCUSDT", type: "delta", ts: 5_000, data: { fundingRate: "0.0001" } }, 5_000);
   const bybitDeltaSafe = Boolean(seeded) &&
     mergeBybitTicker(null, { ...snapshotFrame, type: "delta" }, 1_000) === null &&
-    fundingOnly?.lastPriceEventMs === 1_000 &&
-    fundingOnly?.bidAskEventMs === 1_000;
+    fundingOnly?.lastPrice === 100 && fundingOnly?.bid === 99 && fundingOnly?.ask === 101 &&
+    fundingOnly?.lastPriceEventMs === 5_000 &&
+    fundingOnly?.bidAskEventMs === 5_000 &&
+    fundingOnly?.markEventMs === undefined;
 
   return [
     result(lockSafe ? "PASS" : "FAIL", "atomic portfolio lock release", lockSafe
