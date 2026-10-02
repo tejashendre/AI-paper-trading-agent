@@ -2382,10 +2382,22 @@ function auditReplayEngine(): AuditResult[] {
       ? "Execution, stale-data, score-distribution, and sizing checks passed."
       : report.acceptance.messages.join(" ")
   ));
+  // This fixture is an engineering test: its noise is fixed in dollars, not
+  // proportional to price, and it covers three crypto assets only, so its
+  // profit or loss is not evidence about the strategy. Profitability is
+  // decided on live forward evidence by the research candidate gates. What
+  // the audit can verify is that the replay's research gate applies its own
+  // rule exactly, and so refuses evidence that fails it.
+  const researchRule = report.totalTrades >= 30 &&
+    report.totalReturnUsd > 0 && report.averageReturnPercent > 0 &&
+    report.profitFactor >= 1.1;
+  const researchGateFaithful = report.acceptance.researchQualityPassed === researchRule &&
+    report.acceptance.sampleSizePassed === (report.totalTrades >= 30) &&
+    report.acceptance.profitFactorPassed === (report.profitFactor >= 1.1);
   checks.push(result(
-    report.acceptance.researchQualityPassed ? "PASS" : "WARN",
+    researchGateFaithful ? "PASS" : "FAIL",
     "replay research-quality gate",
-    `${report.totalTrades} trade(s), ${report.totalReturnPercent.toFixed(2)}% net return, profit factor ${report.profitFactor.toFixed(2)}. Research promotion requires at least 30 trades, positive after-cost return, and profit factor >= 1.10.`
+    `Gate ${report.acceptance.researchQualityPassed ? "accepts" : "refuses"} this replay, as its rule requires: ${report.totalTrades} trade(s), ${report.totalReturnPercent.toFixed(2)}% net return, profit factor ${report.profitFactor.toFixed(2)} (needs >= 30 trades, positive after-cost return, profit factor >= 1.10). Synthetic fixture: not evidence of strategy profitability.`
   ));
   checks.push(result(
     report.totalTrades > 0 && Object.keys(report.scoreDistribution).length >= 5 ? "PASS" : "WARN",
