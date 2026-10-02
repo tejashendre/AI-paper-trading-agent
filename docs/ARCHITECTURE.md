@@ -405,6 +405,8 @@ The human and swing comparison cards display signed total gain/loss as their pri
 
 Server quote synchronization failure retains each position's valid timestamped last mark and its modeled P&L, with live coefficients disabled. If any held position has no usable mark, the account total is null and the comparison card shows Unavailable. Entry cost is never substituted as a last observed price.
 
+All diagnostic equity, return, margin-percentage and balance displays preserve this unknown state. Arithmetic runs only on finite values; genuine zero equity still reports its actual total loss, with unavailable margin utilization when the denominator is zero.
+
 ## Marked swing risk (2026-10-02)
 Swing exposure guards, admission drawdown adjustments and portfolio risk budgets use cash plus held margin and frozen-model unrealized P&L less exit fees. The exit watchdog records usable marks, with material price changes or periodic confirmation, and retains worst historical drawdown. New entries and scale-ins refuse added exposure when any held mark is missing or older than 60 seconds. Scale-in aggregate margin remains capped at 40% of marked equity; existing stops and reductions run while marks are incomplete. No account, historical fill or risk limit is reset.
 

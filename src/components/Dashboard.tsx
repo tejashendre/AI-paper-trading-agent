@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
-import { livePortfolioGain, formatSignedGain } from '@/lib/ui/livePortfolioGain';
+import { livePortfolioGain, formatSignedGain, portfolioEquityMetrics } from '@/lib/ui/livePortfolioGain';
 import { useChartHistory } from '@/lib/ui/useChartHistory';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
@@ -1241,7 +1241,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Swing Engine NLV</div>
                     <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
-                      ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {typeof totalValue === 'number' && Number.isFinite(totalValue) ? '$' + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : totalValue === null ? 'Unavailable' : 'Loading...'}
                     </h3>
                     <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
                       Available Cash: ${portfolio.usd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1252,8 +1252,9 @@ function DashboardContent({ secret }: { secret: string }) {
                     <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>True Equity P&L (Net of Fees)</div>
                     {(() => {
                       const initialCapital = portfolio.initialCapital || 10000;
-                      const truePnl = totalValue - initialCapital;
-                      const truePnlPercent = (truePnl / initialCapital) * 100;
+                      const metrics = portfolioEquityMetrics(totalValue, initialCapital, 0);
+                      const truePnl = metrics.gain, truePnlPercent = metrics.returnPercent;
+                      if (truePnl === null || truePnlPercent === null) return <p className={`text-lg font-bold font-mono mt-1 ${textMuted}`}>Unavailable</p>;
                       const isProfit = truePnl >= 0;
                       return (
                         <>
@@ -1280,14 +1281,14 @@ function DashboardContent({ secret }: { secret: string }) {
                         totalExposure += estimateDisplayNotional(pos.asset, pos.amount, currentPrice);
                         totalMargin += pos.usdInvested || 0;
                       });
-                      const marginUtilization = totalValue > 0 ? (totalMargin / totalValue) * 100 : 0;
+                      const marginUtilization = portfolioEquityMetrics(totalValue, portfolio.initialCapital, totalMargin).marginPercent;
                       return (
                         <>
                           <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
                             ${totalExposure?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </h3>
-                          <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
-                            Paper Margin Used: {marginUtilization.toFixed(1)}% (Max 40% Guard)
+                          <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization !== null && marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
+                            Paper Margin Used: {marginUtilization === null ? 'Unavailable' : marginUtilization.toFixed(1) + '%'} (Max 40% Guard)
                           </p>
                         </>
                       );
@@ -2082,7 +2083,7 @@ function DashboardContent({ secret }: { secret: string }) {
               <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Swing Engine Asset Balances</h2>
               <p className={`text-[9px] font-mono ${textMuted}`}>The nine markets the swing engine trades. Cross-sectional book positions are listed in the Cross-Sectional Book panel.</p>
               <div className="text-xl font-bold font-mono text-green-400">
-                ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {typeof totalValue === 'number' && Number.isFinite(totalValue) ? '$' + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : totalValue === null ? 'Unavailable' : 'Loading...'}
               </div>
 
               {/* Free (Cash) and Used Capital Display */}
