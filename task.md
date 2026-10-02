@@ -81,3 +81,13 @@ Next optional slice: implement the documented subsecond quote display with separ
 - [x] Whole-branch review and single regression/fix pass; 238/238 tests, TypeScript/lint/build/audit/fixtures.
 - [x] State-preserving cloud release and deployed runtime/UI verification: PR #10, c90483d, deployment 36894427081 successful. All 103 historical fills/manual BTC preserved; XSEC flat; all nine data-ready, 18 SHADOW research configurations, desktop/mobile and source parity verified. See docs/BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md.
 Authorization continues the existing end-to-end deployment request. New family activation and XSEC risk release remain separately evidence-gated. Profit is an evaluation result, not a feature promise.
+
+## 2026-10-02 Autonomy hardening (branch claude/autonomy-hardening)
+Intent (confirmed by Tejas: "Full auto"): find and fix bugs system-wide, remove provably unused code, repair the XSEC rebalance stall and its healthcheck, fix dashboard errors, and make learning plus promotion autonomous end to end, including the bot releasing the halted XSEC book once shadow evidence passes the gates. No LLM.
+Out of scope: raising risk ceilings, leverage or drawdown breakers; account resets; rewriting fills or ledger; live money; push or deploy without approval.
+- [x] S1 XSEC rebalance stall: reproduced (silent lock skip), serialized cycle + bounded lock wait, 13h healthcheck, /api/book rebalanceSchedule (a74840b)
+- [x] S2 Dashboard errors: win-rate units, empty-book copy, unwind labeled as rebalance, overdue note (a74840b; 245/245)
+- [x] S3 System bug audit: fixed XSEC stall, dashboard units/copy, dead learning loop, impossible XSEC release, stale venue labels (247bae5); swing daemon lock is serialized in-process (no bug). Known limitation kept: swing drawdown guards use cost-basis equity (no unrealized P&L)
+- [x] S4 Provably unused code removal (3c14a83: 13 unreachable modules, 37 dead exports, Monte Carlo path, 15 unread env keys; -3,107 lines net; 245/245, audit 155/1/0)
+- [x] S5 Autonomous promotion: XSEC self-release on shadow evidence (1d36e54); forward-evidence promotion, auto PAPER_ACTIVE/REJECTED, promoted-family probe entries, live PAPER rows feed demotion (b9f02ca); 269/269
+- [x] S6 Full checks: test:upgrade 270/270, audit 155/1/0, research fixture exit 0, ledger fixture valid 8, tsc --incremental false, lint, build, diff --check all clean. Not deployed; awaiting Tejas's approval to push/deploy.
