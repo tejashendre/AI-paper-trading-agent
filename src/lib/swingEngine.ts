@@ -535,7 +535,6 @@ export function scoreExecutionTrigger(
     return { score: assetMode === "SLOW_SWING" ? 8 : 0, tags, reason: "Short-term confirmation data is limited." };
   }
 
-  const last1m = candles1m[candles1m.length - 1];
   const prev1m = candles1m[candles1m.length - 2];
   const last5m = candles5m[candles5m.length - 1];
   const recent5m = candles5m.slice(-20);
@@ -990,7 +989,6 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
 
     // 2. Regime Filter Setup (Based on 1H structural data)
     const isMeanReverting = stats1h.hurstExponent < 0.55;
-    const isVolatilitySqueeze = stats1h.volatilityPercentile < 30;
 
     // 3. Quantitative Confluence Signal Calculations
     let buyScore = 0;

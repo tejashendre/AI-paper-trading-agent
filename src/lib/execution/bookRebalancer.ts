@@ -19,7 +19,6 @@ import {
 import {
   BookPlan,
   CROSS_SECTIONAL_STRATEGY_VERSION,
-  DEFAULT_STRATEGY,
   StrategyConfig,
 } from "@/lib/strategy/crossSectionalMomentum";
 import { PerpTicker } from "@/lib/data/perpUniverse";

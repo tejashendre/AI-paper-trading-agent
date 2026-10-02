@@ -18,8 +18,7 @@ import {
   validateOrderSize,
 } from "@/lib/trading/assetSpecs";
 import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
-import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
-import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { SwingEngine } from "@/lib/swingEngine";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import {
   estimateCarryCostUsd,

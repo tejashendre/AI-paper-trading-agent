@@ -1,9 +1,9 @@
 "use client";
-import { AuthGate, createAuthFetch } from "./AuthGate";
+import { AuthGate } from "./AuthGate";
 import CrossSectionalBook from "@/components/CrossSectionalBook";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
+import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture } from '@/lib/research/researchDisplay';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
@@ -322,13 +322,10 @@ function DashboardContent({ secret }: { secret: string }) {
   // Client-Side Simulation States
   const [backtestResult, setBacktestResult] = useState<any>(null);
   const [backtesting, setBacktesting] = useState(false);
-  const [monteCarloResult, setMonteCarloResult] = useState<any>(null);
-  const [simulatingMC, setSimulatingMC] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
-  const [showActivityDetails, setShowActivityDetails] = useState(true);
   // Plain-language mode. The engine already computes readable sentences on
   // every scan (simpleStatus / simpleReason / nextStep) and the UI was showing
   // the raw scores instead, which made the dashboard unreadable to anyone who
@@ -541,13 +538,9 @@ function DashboardContent({ secret }: { secret: string }) {
       if (type === "BACKTEST_SUCCESS") {
         setBacktestResult(resData);
         setBacktesting(false);
-      } else if (type === "MONTE_CARLO_SUCCESS") {
-        setMonteCarloResult(resData);
-        setSimulatingMC(false);
       } else if (type === "ERROR") {
         alert(`Simulation Error: ${error}`);
         setBacktesting(false);
-        setSimulatingMC(false);
       }
     };
     return () => { workerRef.current?.terminate(); };
@@ -577,7 +570,6 @@ function DashboardContent({ secret }: { secret: string }) {
     ? (data?.aiEquityTrades || [])
     : (data?.userEquityTrades || []);
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
-  const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
   const closedStats = viewMode === "ai" ? data?.aiClosedStats : data?.userClosedStats;
   const activeLivePrice = livePrices?.[activeAsset];
 
@@ -678,21 +670,6 @@ function DashboardContent({ secret }: { secret: string }) {
       alert(`Backtest fetch error: ${e}`);
       setBacktesting(false);
     }
-  };
-
-  const runMonteCarloSim = async () => {
-    if (!chartData || chartData.candles.length === 0) return;
-    setSimulatingMC(true);
-    const candles = chartData.candles;
-    const currentPrice = candles[candles.length - 1].close;
-    const closes = candles.slice(-30).map((c: any) => c.close);
-    const mean = closes.reduce((a: number, b: number) => a + b, 0) / closes.length;
-    const variance = closes.reduce((a: number, b: number) => a + Math.pow(b - mean, 2), 0) / closes.length;
-    const stdDevPercent = Math.sqrt(variance) / currentPrice;
-    workerRef.current?.postMessage({
-      type: "MONTE_CARLO",
-      data: { currentPrice, volatility: stdDevPercent, paths: 1500, steps: 24 }
-    });
   };
 
   if (loading) {
