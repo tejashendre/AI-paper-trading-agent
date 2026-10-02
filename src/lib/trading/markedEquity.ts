@@ -1,5 +1,5 @@
 import type { Portfolio } from '@/lib/types';
-import { calculateInstrumentPnl, instrumentFee, positionInstrument } from './assetSpecs';
+import { calculateInstrumentPnl, instrumentFee, positionInstrument, positionFeeScheduleVersion } from './assetSpecs';
 
 /** Cash already includes entry fees and booked funding. Do not subtract them twice. */
 export function markedEquity(portfolio: Portfolio): number {
@@ -13,7 +13,7 @@ export function markedEquity(portfolio: Portfolio): number {
     if (!Number.isFinite(price) || !(price! > 0)) continue;
     const instrument = positionInstrument(pos);
     equity += calculateInstrumentPnl({ instrument, entryPrice: pos.entryPrice, exitPrice: price!, quantity: pos.amount, direction: pos.direction })
-      - instrumentFee(instrument, pos.amount, price!);
+      - instrumentFee(instrument, pos.amount, price!, 'taker', positionFeeScheduleVersion(pos));
   }
   return Math.max(0, equity);
 }

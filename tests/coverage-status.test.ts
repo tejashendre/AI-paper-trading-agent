@@ -55,7 +55,7 @@ test("healthy_feed_does_not_claim_asset_can_trade", async (t) => {
     assert.equal(eur.dataReady, false);
     assert.deepEqual(eur.intradayWarmUp, ["WARMING_UP_H4: 80 of 100 completed h4 bars"]);
     assert.ok(eur.limitations.some((note) => note.startsWith("WEEKLY_FEATURE_UNAVAILABLE")));
-    assert.ok(eur.notes.some((note) => /fee/i.test(note) && /not confirmed/i.test(note)));
+    assert.ok(eur.notes.some((note) => /fee/i.test(note) && /0\.0275% taker/.test(note) && /older stress-fee cohorts remain unverified/.test(note)));
   });
 
   await t.test("all nine rows appear even when one asset's inputs failed", () => {

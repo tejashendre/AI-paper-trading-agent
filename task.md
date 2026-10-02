@@ -1,5 +1,11 @@
 # Active work
 
+## 2026-10-02 final release intake
+Owner approved final upload and merge after fixes and requested real-time completion of the remaining work. Complete the official FX public baseline with frozen-cost and cohort regressions before release; preserve old records. Verify the running release afterward. Genuine promotion still requires the unchanged forward evidence window; no artificial promotion or shortened check is authorized.
+- [x] Resolve FX public-baseline fees with official symbol-scope evidence and frozen-cost regressions: 334/334 tests, audit 156/0/0, types/lint/build clean.
+- [ ] Release the reviewed, passing head and verify production continuity.
+- [ ] Record observed live learning status and exact evidence required for an earned transition.
+
 ## 2026-10-02 Codex handoff completion
 Scope: review the existing 20 fixes without reimplementing them; complete P0, P1, P2 and chart history in priority order with red-first regression tests. No merge or deployment without new explicit approval. Preserve account and trade history, risk ceilings and the no-LLM contract.
 - [x] P0: reviewed release safety, opened PR 11 and verified Node 20 CI 37042756402 at abd2c2d; offline-copy question answered with required learning/history preservation. Final documentation-head checks also required before approval.
@@ -22,7 +28,7 @@ Gain review checkpoint: a failed live quote preserves the actual stored loss mar
 
 Final UI review checkpoint: browser RED reproduced unknown equity coerced to -100% in diagnostic tiles. GREEN keeps unknown P&L/utilization/values unavailable while true zero equity still reports -100%. Final full suite 325/325, audit 156/0/0 and production build clean. Rendered signed gain, null valuation, 21 chart pages, rolling bound, refresh, retry and 390px layout pass. Independent review reports no remaining Critical/Important findings.
 
-Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). Production remains c90483d; no merge/deploy or destructive maintenance authorized for this branch. Preserve one full verified ledger copy offline before approved compaction, and preserve every learning/financial record in production. Only P0 deployment/live proof, XSEC causal observation, exact FX fee confirmation and first real transition verification remain open.
+Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). Owner approved final upload and merge after fixes. Production remains c90483d until release. Preserve one full verified ledger copy offline before approved compaction, and preserve every learning/financial record in production. FX public-baseline fees are resolved with separate immutable cohorts. P0 deployment/live proof, XSEC observation and first earned transition observation remain to be checked on the running release.
 
 
 <details>

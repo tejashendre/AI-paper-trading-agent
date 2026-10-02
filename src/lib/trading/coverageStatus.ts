@@ -176,6 +176,8 @@ function notesFor(asset: ConfiguredAsset, completedPositions: number, fundingInt
   const fees = feeScheduleFor(instrument);
   if (fees.status === "UNVERIFIED_STRESS_RATE") {
     notes.push("Bybit has not confirmed the fee schedule for this FX contract, so a higher stress fee is assumed and its results cannot be promoted.");
+  } else if (fees.scope === "forex") {
+    notes.push("Public VIP0 TradFi fee baseline: 0% maker and 0.0275% taker. Paper orders pay taker; older stress-fee cohorts remain unverified.");
   }
   if (fundingIntervalMinutes) notes.push(`Funding is exchanged every ${fundingIntervalMinutes / 60} hours at the venue's published settlements.`);
   if (completedPositions < RESEARCH_MINIMUM_POSITIONS) {
