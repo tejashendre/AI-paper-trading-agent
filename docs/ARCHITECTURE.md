@@ -28,8 +28,18 @@ alternate per family/instrument cycle. Reviews require 30/10/10 chronological
 folds with row and time embargoes, nonoverlapping feature/label windows,
 positive lower block-bootstrap net expectancy, full attempted-trial Sharpe
 correction, nonnegative doubled-cost stress, verified fees and at least 15
-independent forward shadow completions over 14 days. PAPER_ACTIVE requires a
-human-authorized release. No automatic tuning or risk promotion occurs.
+independent forward shadow completions over 14 days. A second, forward-only
+route accepts 30 independent forward shadow completions over 14 days with the
+same expectancy, Sharpe and doubled-cost tests and observed costs on every
+sample (live spread at the time, published fees, Bybit funding history).
+
+Since 2026-10-02 (owner decision: full autonomy) the hourly review acts on its
+own verdict. An eligible candidate moves to PAPER_ACTIVE and trades as a
+controlled probe through the normal entry path. Its live results return as
+PAPER rows that never count toward promotion; a 6R cumulative loss or a 95%
+upper bound of mean net R below zero moves it to REJECTED, which is final for
+that configuration. Every transition is a ledger event. No risk limit,
+leverage or capital ceiling is raised by any of this.
 The Sharpe null-variance approximation is documented in deflatedSharpe.ts;
 it is a screening statistic, not a probability of future profit.
 
@@ -281,10 +291,19 @@ flowchart TB
 `REDUCE_ONLY` or `SHADOW` before acting. A lifetime drawdown past 25% is never
 cleared automatically: the book moves to `REDUCE_ONLY`, unwinds in stages capped
 at 1% of each symbol's turnover per minute, and becomes `SHADOW` once flat. The
-shadow book keeps producing forward evidence. Leaving `SHADOW` needs an owner's
-recorded release (`xsec:riskRelease`) plus promotion evidence. The live book's
-lifetime drawdown was 28.15% when this was written, so deploying Release A
-starts its unwind on the first minute's sweep.
+shadow book keeps producing forward evidence. Since 2026-10-02 the daemon
+releases a halted book itself once the shadow book, since the halt, has at
+least 30 twelve-hour periods, a positive 95% block-bootstrap lower bound on its
+mean net period return and its own drawdown under 15%; it writes the release
+record (`xsec:riskRelease`, `AUTONOMOUS_EVIDENCE_GATE`) and a ledger event. A
+released book measures drawdown from its release epoch, and the lifetime
+breaker re-halts it as soon as lifetime drawdown deepens past the acknowledged
+level (about 2% below release equity at today's figures).
+
+The daemon runs mark, rebalance and funding as one serialized cycle per minute;
+separate timers sharing the book lock had silently stopped the 12-hour
+rebalance on 2026-10-01. The container is healthy only while a rebalance has
+completed within 13 hours, and `/api/book` reports the schedule.
 
 Hysteresis is not cosmetic. Without it the book replaces ~89% of its notional
 every rebalance purely because names shuffle around the cut-off; with it, ~27%.
