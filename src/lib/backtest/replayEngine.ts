@@ -1,4 +1,3 @@
-import { computeAllIndicators } from "@/lib/indicators";
 import { Candle, OpenPosition, Portfolio } from "@/lib/types";
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { evaluateSwingSignal, SwingSignal } from "@/lib/swingEngine";
@@ -6,7 +5,6 @@ import { calculatePnlUsd, getAssetSpec } from "@/lib/trading/assetSpecs";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 import { estimateCarryCostUsd, estimatePaperFill, fitPaperExecutionPlanToRiskBudget } from "@/lib/trading/executionCostModel";
 import { decideSwingExit, isOppositeEdgeConfirmed } from "@/lib/execution/exitPolicy";
-import { SWING_STOP_ATR_MULTIPLE, SWING_TARGET_R_MULTIPLE } from "@/lib/swingEngine";
 import { getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
 
 type ReplayDirection = "LONG" | "SHORT" | "NEUTRAL";
@@ -197,10 +195,6 @@ function emptyPortfolio(usd: number): Portfolio {
   };
 }
 
-function finite(value: number, fallback = 0): number {
-  return Number.isFinite(value) ? value : fallback;
-}
-
 function average(values: number[]): number {
   return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
@@ -226,20 +220,6 @@ function medianIntervalSeconds(candles: Candle[]): number {
 function isStaleWindow(candles: Candle[], index: number, intervalSeconds: number): boolean {
   if (index <= 0) return false;
   return candles[index].time - candles[index - 1].time > intervalSeconds * 2.5;
-}
-
-function slope(values: number[]): number {
-  if (values.length < 2) return 0;
-  const n = values.length;
-  const meanX = (n - 1) / 2;
-  const meanY = average(values);
-  let numerator = 0;
-  let denominator = 0;
-  for (let i = 0; i < n; i++) {
-    numerator += (i - meanX) * (values[i] - meanY);
-    denominator += Math.pow(i - meanX, 2);
-  }
-  return denominator > 0 ? numerator / denominator : 0;
 }
 
 /** Net unrealized PnL for a replay position, on the same cost model as live. */

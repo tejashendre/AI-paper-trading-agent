@@ -168,39 +168,3 @@ export async function buildMarketFrame(
     sentiment,
   };
 }
-
-/**
- * Builds FreeMarketFrames for all supported assets at a given timeframe.
- * Useful for the autonomous cycle's asset scanning phase.
- *
- * Returns a map of assetKey → FreeMarketFrame (or null if data unavailable).
- */
-export async function buildAllMarketFrames(
-  timeframe: Timeframe,
-  limit: number = 200,
-  includeSentiment: boolean = false
-): Promise<Record<string, FreeMarketFrame | null>> {
-  const assets = Object.keys(SUPPORTED_ASSETS);
-  const results: Record<string, FreeMarketFrame | null> = {};
-
-  // Fetch in parallel for speed
-  const promises = assets.map(async (assetKey) => {
-    const frame = await buildMarketFrame(assetKey, timeframe, limit, includeSentiment);
-    results[assetKey] = frame;
-  });
-
-  await Promise.all(promises);
-  return results;
-}
-
-/**
- * Quick health check: returns true if the asset's data is safe for trading.
- */
-export function isDataSafeForTrading(frame: FreeMarketFrame | null): boolean {
-  if (!frame) return false;
-  if (frame.feedHealth.status === 'BAD') return false;
-  if (frame.stale) return false;
-  if (frame.currentPrice <= 0) return false;
-  if (frame.candles.length < 10) return false;
-  return true;
-}
