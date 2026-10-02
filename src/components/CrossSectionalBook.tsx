@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { describeLastBookAction, emptyBookMessage, rebalanceScheduleNote } from "@/lib/ui/dashboardLabels";
 
 /**
  * Live view of the cross-sectional momentum book.
@@ -62,6 +63,7 @@ interface BookResponse {
   exposure: { openPositions: number; longs: number; shorts: number; grossExposure: number; netExposure: number };
   positions: BookPosition[];
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
+  rebalanceSchedule?: { lastAtMs: number | null; nextDueAtMs: number | null; overdue: boolean };
   costModel: CostVerdict | null;
   edgeCheck: EdgeCheck | null;
   capacity: Capacity | null;
@@ -347,16 +349,19 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
+      {rebalanceScheduleNote(data.rebalanceSchedule) && (
+        <p className="text-[10px] font-mono mt-2 text-red-500">{rebalanceScheduleNote(data.rebalanceSchedule)}</p>
+      )}
+
       {lastRebalance?.at && (
         <p className={`text-[9px] font-mono mt-2 ${textMuted}`}>
-          Last rebalance {new Date(lastRebalance.at).toLocaleString()} · {lastRebalance.executed ?? 0} fills ·{" "}
-          {((lastRebalance.turnover ?? 0) * 100).toFixed(1)}% turnover · ranked {lastRebalance.universeSize ?? 0} markets
+          {describeLastBookAction(lastRebalance).title} {new Date(lastRebalance.at).toLocaleString()} · {describeLastBookAction(lastRebalance).detail}
         </p>
       )}
 
       {positions.length === 0 ? (
         <p className={`text-xs font-mono mt-3 ${textMuted}`}>
-          No book yet. The daemon opens one at its first rebalance.
+          {emptyBookMessage({ totalRebalances: performance.totalRebalances, riskState: data.risk?.state })}
         </p>
       ) : (
         <>

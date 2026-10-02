@@ -4,7 +4,9 @@ import { fetchTickers } from "@/lib/data/perpUniverse";
 import {
   bookEquityUsd,
   getBookTrades,
+  LAST_REBALANCE_KEY,
   loadBookPortfolio,
+  rebalanceStatus,
   SHADOW_BOOK_PORTFOLIO_KEY,
 } from "@/lib/execution/bookRebalancer";
 import { describeBookRisk, describeShadowEvidence } from "@/lib/trading/coverageStatus";
@@ -50,6 +52,7 @@ export async function GET() {
       getRedis().get<CostVerdict>(RECONCILIATION_VERDICT_KEY).catch(() => null),
       getRedis().get<StoredEdgeVerdict>("xsec:edgeVerdict").catch(() => null),
     ]);
+    const lastRebalanceAtMs = await getRedis().get<number>(LAST_REBALANCE_KEY).catch(() => null);
 
     const positions = Object.values(portfolio.positions).map((position) => {
       const mark = prices.get(position.symbol)?.markPrice ?? position.entryPrice;
@@ -137,6 +140,8 @@ export async function GET() {
       positions,
       recentTrades: trades,
       lastRebalance,
+      // Whether the 12h rebalance loop is keeping time, independent of state.
+      rebalanceSchedule: rebalanceStatus(Number(lastRebalanceAtMs) || null, Date.now(), DEFAULT_STRATEGY.holdHours),
       liveSnapshot: equitySnapshot,
       // Whether the cost model that every backtest number rests on is telling
       // the truth. Null until enough fills have been measured.
