@@ -40,6 +40,24 @@ async function seededLedger(): Promise<string> {
 }
 
 describe("ledger compaction", () => {
+  it("refuses requests to discard financial or learning evidence", async () => {
+    const dir = await seededLedger();
+    const snapshot = rows(dir);
+    const report = compactLedger({ directory: dir, dropTypes: ["ENTRY_FILLED"], minDropBytes: 0 });
+    assert.match(report.status, /^REFUSED/);
+    assert.deepEqual(rows(dir), snapshot);
+  });
+
+  it("retains recovery files from an interrupted previous compaction", async () => {
+    const dir = await seededLedger();
+    const recovery = `${dir}.pre-compaction`;
+    fs.mkdirSync(recovery);
+    fs.writeFileSync(path.join(recovery, "recovery.txt"), "irreplaceable evidence");
+    const report = compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 });
+    assert.match(report.status, /^REFUSED/);
+    assert.equal(fs.readFileSync(path.join(recovery, "recovery.txt"), "utf8"), "irreplaceable evidence");
+    assert.equal(ExecutionLedger.verify(dir).events, 24);
+  });
   it("drops scan records, keeps every other event, and re-seals a verifiable chain", async () => {
     const dir = await seededLedger();
     const before = rows(dir);

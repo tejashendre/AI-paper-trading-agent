@@ -24,5 +24,5 @@ const minDropMb = Number(value("--min-drop-mb") ?? 50);
     await refreshLedgerMirror(directory).catch((error) => console.warn("Redis ledger mirror not refreshed:", error));
   }
   await getRedis().quit().catch(() => undefined);
-  process.exit(report.status === "REFUSED_INVALID_SOURCE" ? 1 : 0);
+  process.exit(report.status.startsWith("REFUSED") ? 1 : 0);
 })();

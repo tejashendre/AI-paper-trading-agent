@@ -1,5 +1,18 @@
 # Active work
 
+## 2026-10-02 Codex handoff completion
+Scope: review the existing 20 fixes without reimplementing them; complete P0, P1, P2 and chart history in priority order with red-first regression tests. No merge or deployment without new explicit approval. Preserve account and trade history, risk ceilings and the no-LLM contract.
+- [ ] P0: review release safety, open PR and obtain CI evidence; ask about an offline ledger copy before destructive compaction.
+- [ ] P0: deploy only after explicit approval and verify exact VPS release, ledger, continuity, scheduler, feeds and retention.
+- [ ] P1: include unrealized P&L in every swing drawdown guard and update marks in the exit watchdog.
+- [ ] P1: expose approved versus executed probe risk; retain sizing policy pending an owner decision.
+- [ ] P1: replay recorded research data and distinguish missing evidence from zero fills.
+- [ ] P1: verify official FX contract fees and retain blocks when unverified.
+- [ ] P1: confirm XSEC stall cause from VPS logs and post-release behavior.
+- [ ] P2: display learning-gate progress; reproduce autonomous transitions in integration fixtures and review the first observed live transition.
+- [ ] Charts: verify free Bybit history limits and implement bounded historical pagination.
+
+
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.
 - [x] Task 9: exact economic learning cohorts, independent completed positions and capped risk adjustments.
