@@ -37,7 +37,17 @@ import {
   SHADOW_BOOK_EQUITY_CURVE_KEY,
   SHADOW_BOOK_PORTFOLIO_KEY,
 } from "../lib/execution/bookRebalancer";
-import { BOOK_RISK_POLICY_VERSION, BookRiskDecision, evaluateBookRisk, makeReduceOnlyPlan } from "../lib/execution/bookRiskPolicy";
+import {
+  BOOK_RISK_POLICY_VERSION,
+  BookRiskDecision,
+  epochDrawdownPercent,
+  evaluateBookRisk,
+  evaluateShadowEvidence,
+  makeReduceOnlyPlan,
+  PROMOTION_EVIDENCE_PASSED,
+} from "../lib/execution/bookRiskPolicy";
+import { getEquityCurve as getCurve } from "../lib/execution/equityCurve";
+import { ExecutionLedger } from "../lib/trading/executionLedger";
 import { FILL_CAPACITY_POLICY } from "../lib/execution/liquidityCost";
 import type { PerpTicker } from "../lib/data/perpUniverse";
 import { liveFundingDeps } from "../lib/data/bybitPublic";
@@ -64,8 +74,10 @@ const EDGE_VERDICT_KEY = "xsec:edgeVerdict";
 const EDGE_WINDOW_PERIODS = 30;
 
 /**
- * A documented release written by the owner, e.g. { authorizedBy, documentedAt,
- * note }. Nothing in this process writes it; a halted book cannot clear itself.
+ * A documented release, e.g. { authorizedBy, documentedAt, evidence }. The
+ * owner chose full autonomy on 2026-10-02, so the daemon writes it itself,
+ * but only when the shadow book's evidence gate passes; the evidence and the
+ * release are recorded in the ledger. Risk ceilings are unchanged.
  */
 const RISK_RELEASE_KEY = "xsec:riskRelease";
 
@@ -110,9 +122,15 @@ async function withLock<T>(fn: () => Promise<T>, task = "task"): Promise<T | nul
 async function decideRiskState(portfolio: BookPortfolio, prices: Map<string, PerpTicker> | null, edgeVerdict: string): Promise<BookRiskDecision> {
   const positions = Object.values(portfolio.positions);
   const equity = prices ? bookEquityUsd(portfolio, prices) : null;
-  const currentDrawdownPercent = equity !== null && portfolio.peakEquityUsd > 0
-    ? Math.max(0, ((portfolio.peakEquityUsd - equity) / portfolio.peakEquityUsd) * 100)
-    : 0;
+  // A released book measures drawdown from the best equity since its release;
+  // the lifetime breaker (deeper than the acknowledged level) still applies.
+  const epoch = portfolio.riskState?.releaseEpoch;
+  if (epoch && equity !== null) epoch.epochPeakEquityUsd = Math.max(epoch.epochPeakEquityUsd, equity);
+  const currentDrawdownPercent = equity === null
+    ? 0
+    : epoch
+      ? epochDrawdownPercent(epoch, equity)
+      : portfolio.peakEquityUsd > 0 ? Math.max(0, ((portfolio.peakEquityUsd - equity) / portfolio.peakEquityUsd) * 100) : 0;
   const release = await getRedis().get<{ authorizedBy?: string; documentedAt?: string }>(RISK_RELEASE_KEY).catch(() => null);
   const previous = portfolio.riskState?.state ?? "ACTIVE";
   const decision = evaluateBookRisk({
@@ -127,8 +145,17 @@ async function decideRiskState(portfolio: BookPortfolio, prices: Map<string, Per
     breachAcknowledgedAtPercent: portfolio.riskState?.breachAcknowledgedAtPercent,
   });
   const released = previous === "SHADOW" && decision.state === "ACTIVE";
+  const halted = (previous === "ACTIVE" || previous === "ENTRY_HALT") && (decision.state === "REDUCE_ONLY" || decision.state === "SHADOW");
+  const now = new Date().toISOString();
   portfolio.riskState = {
     ...portfolio.riskState,
+    haltedAt: halted ? now : portfolio.riskState?.haltedAt,
+    // A new incident ends the release epoch; the next release starts a new one.
+    releaseEpoch: halted
+      ? undefined
+      : released && equity !== null
+        ? { releasedAt: now, releaseEquityUsd: equity, epochPeakEquityUsd: equity }
+        : portfolio.riskState?.releaseEpoch,
     state: decision.state,
     reasons: decision.reasons,
     allowEntries: decision.allowEntries,
@@ -184,6 +211,33 @@ async function runRiskSweep(prices: Map<string, PerpTicker>) {
   }, "risk sweep");
 }
 
+/**
+ * For a halted, flat book: judge the shadow book's evidence since the halt.
+ * When it passes, write the release record (once per incident) and return
+ * the verdict the risk policy needs; otherwise return null.
+ */
+async function releaseOnShadowEvidence(portfolio: BookPortfolio): Promise<string | null> {
+  const haltedAtMs = Date.parse(portfolio.riskState?.haltedAt ?? "") || 0;
+  const curve = (await getCurve(SHADOW_BOOK_EQUITY_CURVE_KEY)).filter((point) => Date.parse(point.at) >= haltedAtMs);
+  const evidence = evaluateShadowEvidence(curve);
+  if (!evidence.passed) return null;
+  const redis = getRedis();
+  const existing = await redis.get<{ documentedAt?: string }>(RISK_RELEASE_KEY).catch(() => null);
+  const existingAtMs = Date.parse(existing?.documentedAt ?? "") || 0;
+  if (existingAtMs < haltedAtMs || !existing) {
+    const record = {
+      authorizedBy: "AUTONOMOUS_EVIDENCE_GATE",
+      documentedAt: new Date().toISOString(),
+      note: "Shadow book passed the release gate: >=30 periods, positive 95% lower bound on mean net return, drawdown under 15%.",
+      evidence,
+    };
+    await redis.set(RISK_RELEASE_KEY, record);
+    await ExecutionLedger.recordBestEffort({ type: "BOOK_RISK_RELEASED", source: "XSEC", payload: record });
+    await Logger.warn(`[XSEC] shadow evidence passed; releasing the halted book. ${JSON.stringify(evidence.metrics)}`);
+  }
+  return PROMOTION_EVIDENCE_PASSED;
+}
+
 /** The same plan on a capital-free book, so halted periods still produce forward evidence. */
 async function runShadowRebalance(snapshot: Awaited<ReturnType<typeof buildMomentumSnapshot>>) {
   const shadow = await loadBookPortfolio(10_000, SHADOW_BOOK_PORTFOLIO_KEY);
@@ -207,7 +261,8 @@ async function runRebalance() {
       if (prices) await recordEquityPoint(portfolio, bookEquityUsd(portfolio, prices));
       await settleBookFunding(portfolio, liveFundingDeps).catch(() => undefined);
       const edge = await reviewEdge();
-      const decision = await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
+      const shadowVerdict = portfolio.riskState?.state === "SHADOW" ? await releaseOnShadowEvidence(portfolio) : null;
+      const decision = await decideRiskState(portfolio, prices, shadowVerdict ?? edge?.verdict ?? "INSUFFICIENT_DATA");
 
       if (decision.state === "REDUCE_ONLY") {
         await reduceOnlyStep(portfolio, prices, decision);
