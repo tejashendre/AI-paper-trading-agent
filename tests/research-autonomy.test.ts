@@ -6,7 +6,10 @@
  * could ever be learned into behavior.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { definition, outcomes } from "./helpers/researchFixtures";
 import { MemoryRedis } from "./helpers/memoryRedis";
 import { setRedisClient } from "@/lib/redis";
@@ -23,6 +26,9 @@ import { getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
 
 const forwardOnly = (n: number) => outcomes(n).map((o) => ({ ...o, researchOrigin: "SHADOW" }));
 const input = (rows: any[]) => ({ definition, outcomes: rows, trials: [definition], holdoutConsumed: false, feesVerified: true });
+const originalLedger = process.env.EXECUTION_LEDGER_DIR;
+before(() => { process.env.EXECUTION_LEDGER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'research-autonomy-')); });
+after(() => { if (originalLedger === undefined) delete process.env.EXECUTION_LEDGER_DIR; else process.env.EXECUTION_LEDGER_DIR = originalLedger; });
 
 describe("forward evidence route to promotion", () => {
   it("strong forward shadow evidence alone is enough", () => {
@@ -91,8 +97,9 @@ describe("autonomous promotion and demotion", () => {
     setRedisClient(memory);
     try {
       await registerCandidate(definition);
-      const good = evaluatePromotion(input(forwardOnly(40)));
-      await recordPromotionReview(definition, good, []);
+      const evidence = input(forwardOnly(40));
+      const good = evaluatePromotion(evidence);
+      await recordPromotionReview(definition, good, [], evidence);
       let current = (await getCandidateRegistry())[0];
       assert.equal(current.mode, "PAPER_ACTIVE");
       assert.deepEqual([...(await activeFamilyKeys())], [`${definition.instrumentVersions[0]}:${definition.family}:${definition.configHash}`]);

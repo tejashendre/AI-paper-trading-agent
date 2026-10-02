@@ -134,6 +134,20 @@ describe("the daemon releases the halted book by itself", () => {
     assert.equal(Math.round(book.riskState?.releaseEpoch?.releaseEquityUsd ?? 0), 8421);
   });
 
+  it('cannot publish a risk release before its durable proof is written and retries after recovery', async () => {
+    const memory = new MemoryRedis(); await haltedBook(memory, steady(40));
+    const original = process.env.EXECUTION_LEDGER_DIR;
+    const unavailable = path.join(process.cwd(), 'unavailable'); fs.writeFileSync(unavailable, 'fixture');
+    process.env.EXECUTION_LEDGER_DIR = unavailable;
+    try {
+      await m.xsec.runRebalance();
+      assert.equal(await memory.get('xsec:riskRelease'), null);
+      assert.equal((await m.book.loadBookPortfolio()).riskState?.state, 'SHADOW');
+    } finally { process.env.EXECUTION_LEDGER_DIR = original; }
+    await m.xsec.runRebalance();
+    assert.equal((await memory.get<any>('xsec:riskRelease'))?.authorizedBy, 'AUTONOMOUS_EVIDENCE_GATE');
+  });
+
   it("stays halted and writes nothing when shadow evidence is weak", async () => {
     const memory = new MemoryRedis();
     await haltedBook(memory, steady(10));

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { getRedis } from "@/lib/redis";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
+import type { ExecutionLedgerEventInput } from "@/lib/trading/executionLedger";
 import type { CompletedPositionOutcome } from "@/lib/trading/positionOutcomes";
 import { blockBootstrapMean95, deflatedSharpeRatio, returnMoments } from "./deflatedSharpe";
 export { blockBootstrapMean95 };
@@ -235,24 +236,46 @@ export function evaluateDemotion(paperOutcomes: ResearchOutcome[]) {
 export async function recordPromotionReview(definition: CandidateDefinition, report: ReturnType<typeof evaluatePromotion>,
   paperOutcomes: ResearchOutcome[] = [], promotionEvidence?: Parameters<typeof evaluatePromotion>[0]) {
   const redis = getRedis(), key = REGISTRY + ":review:" + definition.candidateId;
-  const previous = (await redis.get<{ mode?: CandidateDefinition["mode"] }>(key).catch(() => null))?.mode ?? "SHADOW";
+  const previousReview = await redis.get<{ mode?: CandidateDefinition["mode"]; demotion?: ReturnType<typeof evaluateDemotion> | null;
+    pendingTransition?: ExecutionLedgerEventInput & {id:string} }>(key);
+  const previous = previousReview?.mode ?? "SHADOW";
   let mode: CandidateDefinition["mode"] = previous === "REJECTED" ? "REJECTED" : previous === "PAPER_ACTIVE" ? "PAPER_ACTIVE"
     : report.eligible ? "PAPER_ACTIVE" : "SHADOW";
-  const demotion = mode === "PAPER_ACTIVE" ? evaluateDemotion(paperOutcomes) : null;
+  const demotion = mode === "PAPER_ACTIVE" ? evaluateDemotion(paperOutcomes) : previousReview?.demotion ?? null;
   if (demotion?.demote) mode = "REJECTED";
   const reviewedAt = new Date().toISOString();
-  await redis.set(key, { mode, report, demotion, reviewedAt });
-  await ExecutionLedger.recordBestEffort({ id: "research-review:" + report.reportHash,
-    type: "RESEARCH_REVIEWED", source: "RESEARCH", payload: { candidateId: definition.candidateId, report } });
+  let pendingTransition = previousReview?.pendingTransition;
   if (mode !== previous && (mode === "PAPER_ACTIVE" || mode === "REJECTED")) {
-    await ExecutionLedger.recordBestEffort({ id: `research-${mode}:${definition.candidateId}`,
+    pendingTransition = { id: `research-${mode}:${definition.candidateId}:${hash(mode === 'PAPER_ACTIVE' ? report.reportHash : paperOutcomes)}`,
+      timestamp: reviewedAt,
       type: mode === "PAPER_ACTIVE" ? "RESEARCH_PROMOTED" : "RESEARCH_DEMOTED", source: "RESEARCH",
       payload: { candidateId: definition.candidateId, family: definition.family, instrumentVersions: definition.instrumentVersions,
         from: previous, to: mode, route: report.metrics.route, demotion, reviewedAt,
         reportHash: report.reportHash, definitionHash: report.definitionHash,
         // Freeze inputs only on a rare transition, never on hourly reviews.
         promotionEvidence: mode === 'PAPER_ACTIVE' ? promotionEvidence : undefined,
-        paperEvidence: mode === 'REJECTED' ? paperOutcomes : undefined } });
+        paperEvidence: mode === 'REJECTED' ? paperOutcomes : undefined } };
   }
+  if (pendingTransition && mode === 'PAPER_ACTIVE') {
+    // Risk cannot increase without its immutable, reproducible proof.
+    if (!promotionEvidence || candidateDefinitionHash(promotionEvidence.definition) !== candidateDefinitionHash(definition) ||
+      evaluatePromotion(promotionEvidence).reportHash !== report.reportHash)
+      throw new Error('Activation requires the exact eligible promotion evidence');
+    await ExecutionLedger.recordOnce(pendingTransition);
+    pendingTransition = undefined;
+  }
+  await redis.set(key, { mode, report, demotion, reviewedAt, ...(pendingTransition ? {pendingTransition} : {}) });
+  if (pendingTransition) {
+    // Risk reduction must not wait for storage. Redis retains the original
+    // proof until a subsequent review can acknowledge its durable append.
+    try {
+      await ExecutionLedger.recordOnce(pendingTransition);
+      await redis.set(key, {mode, report, demotion, reviewedAt});
+    } catch (error) {
+      console.error('[RESEARCH] Demotion proof pending durable retry.', error);
+    }
+  }
+  await ExecutionLedger.recordBestEffort({ id: "research-review:" + report.reportHash,
+    type: "RESEARCH_REVIEWED", source: "RESEARCH", payload: { candidateId: definition.candidateId, report } });
   return mode;
 }

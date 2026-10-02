@@ -11,6 +11,7 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 - [x] P1: verify official FX contract fees and retain blocks when unverified.
 - [ ] P1: confirm XSEC stall cause from VPS logs and post-release behavior.
 - [x] P2: display learning-gate progress and reproduce promotion, demotion and book release with durable decision evidence in integration fixtures.
+- [x] Release review: lossless rare proofs, large-record appends, durable activation before publication and recoverable demotion proof during outages.
 - [ ] P2: review the first observed production transition against its preserved decision evidence after an approved deployment.
 - [x] Charts: verify public Bybit history limits, implement cursor pages and a bounded rolling browser window, and verify controls, refresh, failures and mobile layout.
 - [x] Dashboard: signed total gain/loss is the live primary comparison-card number; verified costs, frozen units, stale labeling and separate book accounting.

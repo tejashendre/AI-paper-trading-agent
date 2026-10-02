@@ -232,8 +232,9 @@ async function releaseOnShadowEvidence(portfolio: BookPortfolio): Promise<string
       evidence,
       evidenceCurve: curve,
     };
-    await redis.set(RISK_RELEASE_KEY, record);
-    await ExecutionLedger.recordBestEffort({ type: "BOOK_RISK_RELEASED", source: "XSEC", payload: record });
+    const durable = await ExecutionLedger.recordOnce({ id: `book-release:${haltedAtMs}`,
+      type: "BOOK_RISK_RELEASED", source: "XSEC", payload: record });
+    await redis.set(RISK_RELEASE_KEY, durable.payload);
     await Logger.warn(`[XSEC] shadow evidence passed; releasing the halted book. ${JSON.stringify(evidence.metrics)}`);
   }
   return PROMOTION_EVIDENCE_PASSED;
