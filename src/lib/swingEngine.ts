@@ -942,6 +942,51 @@ export interface SwingSignalInput {
   orderbookResult: Awaited<ReturnType<typeof MarketService.getOrderbookImbalance>> | null;
   deepSensors: Awaited<ReturnType<typeof MarketService.getDeepSensors>> | null;
   learningRules: LocalLearningRule[];
+  /** Families the research loop promoted to live paper trading (see activeFamilyKeys). */
+  activeFamilies?: Set<string>;
+}
+
+/**
+ * The candidate whose exact family and configuration were promoted to
+ * PAPER_ACTIVE. The trend baseline keeps its own entry path.
+ */
+export function selectPromotedCandidate(
+  candidates: StrategyCandidate[],
+  activeFamilies: Set<string> | undefined,
+  instrumentVersion: string
+): StrategyCandidate | null {
+  if (!activeFamilies || activeFamilies.size === 0) return null;
+  return candidates.find((c) => c.family !== "TREND_PULLBACK" &&
+    activeFamilies.has(`${instrumentVersion}:${c.family}:${c.configHash}`)) ?? null;
+}
+
+/**
+ * An entry for a promoted family, as a controlled probe through the normal
+ * path: eligibility, admission, costs, lot rules and capacity all still
+ * apply. Conviction stays the engine's own reading.
+ */
+export function promotedFamilySignal(base: SwingSignal, candidate: StrategyCandidate): SwingSignal {
+  const label = candidate.family.replace("_", " ").toLowerCase();
+  return {
+    ...base,
+    action: candidate.direction === "LONG" ? "SWING_BUY" : "SWING_SHORT",
+    entryPrice: candidate.entryPrice,
+    stopLoss: candidate.stopPrice,
+    takeProfit: candidate.targetPrice,
+    family: candidate.family,
+    configHash: candidate.configHash,
+    candidateId: candidate.candidateId,
+    featureCutoffMs: candidate.featureCutoffMs,
+    entryMode: "CONTROLLED_PROBE",
+    paperSize: "Probe",
+    decisionState: "PROBE_ENTRY",
+    directionBias: candidate.direction,
+    setupTags: [candidate.family],
+    reasoning: `Promoted ${label} setup: its forward evidence passed the research gates. ${candidate.reasons.join(" | ")}`,
+    simpleStatus: `Promoted ${label} probe`,
+    simpleReason: "This setup family earned live paper trading from its own forward shadow results.",
+    nextStep: "Enter as a small probe; live results can demote the family again.",
+  };
 }
 
 /**
@@ -1423,11 +1468,15 @@ export function evaluateSwingSignal(input: SwingSignalInput): SwingSignal {
   const trend = strategyCandidates.find(c => c.family === "TREND_PULLBACK");
   const signal = { ...baseline, family: "TREND_PULLBACK" as const, configHash,
     candidateId: trend?.candidateId, featureCutoffMs, strategyCandidates, familyRegime };
-  if (baseline.action !== "HOLD" && familyRegime !== "TREND") return { ...signal, action: "HOLD",
-    simpleStatus: "Waiting for a qualified trend",
-    simpleReason: "The trend baseline requires 4h ADX of at least 25. Range candidates collect shadow evidence.",
-    nextStep: "Keep collecting closed-bar setups and independent outcomes.", paperSize: "None" };
-  return signal;
+  const promoted = selectPromotedCandidate(strategyCandidates, input.activeFamilies, instrument.instrumentVersion);
+  if (baseline.action !== "HOLD" && familyRegime !== "TREND") {
+    const held: SwingSignal = { ...signal, action: "HOLD",
+      simpleStatus: "Waiting for a qualified trend",
+      simpleReason: "The trend baseline requires 4h ADX of at least 25. Range candidates collect shadow evidence.",
+      nextStep: "Keep collecting closed-bar setups and independent outcomes.", paperSize: "None" };
+    return promoted ? promotedFamilySignal(held, promoted) : held;
+  }
+  return signal.action === "HOLD" && promoted ? promotedFamilySignal(signal, promoted) : signal;
 }
 
 export class SwingEngine {
@@ -1435,7 +1484,7 @@ export class SwingEngine {
    * Analyzes an asset for higher-timeframe swing opportunities (15m, 1h, 4h).
    * Swings focus on robust structural moves, immune to 1m noise.
    */
-  static async analyze(assetKey: string = "BTC"): Promise<SwingSignal> {
+  static async analyze(assetKey: string = "BTC", options: { activeFamilies?: Set<string> } = {}): Promise<SwingSignal> {
     try {
       const assetMode = getAssetMode(assetKey);
       // 1. Fetch multi-timeframe candles (Higher Timeframes)
@@ -1462,7 +1511,7 @@ export class SwingEngine {
       const signal = evaluateSwingSignal({
         assetKey, assetMode, candles1mResult, candles5mResult,
         candles15m, candles1h, candles4h, candles1w,
-        livePriceSnapshot, orderbookResult, deepSensors, learningRules,
+        livePriceSnapshot, orderbookResult, deepSensors, learningRules, activeFamilies: options.activeFamilies,
       });
       try {
         const metadata = await MarketService.getInstrumentMetadata(assetKey);

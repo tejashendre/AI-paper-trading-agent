@@ -133,7 +133,9 @@ export function evaluatePromotion(input: {
     !Number.isFinite(definition.holdoutStartMs) || !Number.isFinite(definition.holdoutEndMs))
     reasons.push('UNBOUND_EVIDENCE_MANIFEST');
   const trials = new Set(input.trials.map(candidateDefinitionHash)).size;
-  const compatible = input.outcomes.filter(o =>
+  // A family's own live paper results are consequences of a promotion, not
+  // evidence for one; they feed demotion only.
+  const compatible = input.outcomes.filter(o => o.researchOrigin !== "PAPER" &&
     definition.instrumentVersions.includes(o.instrument.instrumentVersion) && o.configHash === definition.configHash &&
     o.setupFamily === definition.family && o.strategyVersion === definition.strategyVersion &&
     o.costModelVersion === definition.costModelVersion && o.riskPolicyVersion === definition.riskPolicyVersion &&
@@ -148,38 +150,104 @@ export function evaluatePromotion(input: {
     o.openedAtMs >= definition.registeredAtMs), definition.labelHorizonMs);
   const folds = buildPurgedOutcomeFolds(historical, definition.labelHorizonMs);
   const testSamples = Array.from(new Map(folds.flatMap(fold => fold.test).map(o => [o.positionId, o])).values());
+  const sharpeOf = (values: number[]) => {
+    const moments = returnMoments(values);
+    return moments.sd > 0 ? deflatedSharpeRatio({ observedSharpePerPeriod: moments.mean / moments.sd,
+      periods: values.length, skew: moments.skew, kurtosis: moments.kurtosis, trials: Math.max(1, trials), independenceFactor: 1 }) : null;
+  };
   const returns = testSamples.map(o => o.returnOnInitialMargin);
   const interval = blockBootstrapMean95(returns);
-  const moments = returnMoments(returns);
-  const sharpe = moments.sd > 0 ? deflatedSharpeRatio({ observedSharpePerPeriod: moments.mean / moments.sd,
-    periods: returns.length, skew: moments.skew, kurtosis: moments.kurtosis, trials: Math.max(1, trials), independenceFactor: 1 }) : null;
+  const sharpe = sharpeOf(returns);
   const forwardSpanMs = forward.length ? Math.max(...forward.map(o => o.closedAtMs)) - Math.min(...forward.map(o => o.openedAtMs)) : 0;
-  if (!folds.length) reasons.push("INSUFFICIENT_PURGED_HISTORY");
-  if (!interval || interval.low <= 0) reasons.push("NET_EXPECTANCY_NOT_ESTABLISHED");
-  if (!sharpe || !sharpe.passes) reasons.push("DEFLATED_SHARPE_NOT_ESTABLISHED");
-  if (forward.length < 15 || forwardSpanMs < 14 * 86400000) reasons.push("INSUFFICIENT_FORWARD_SHADOW");
-  if (forward.length && forward.reduce((sum, o) => sum + o.netPnlUsdt, 0) <= 0) reasons.push("FORWARD_SHADOW_NO_EDGE");
-  const stressed = [...testSamples, ...forward];
-  if (!stressed.length || stressed.some(o => !Number.isFinite(o.stressedNetPnlUsdt)) ||
-    stressed.reduce((sum, o) => sum + (o.stressedNetPnlUsdt ?? 0), 0) < 0) reasons.push("COST_STRESS_FAILED");
-  if (!compatible.length || compatible.some(o => o.historicalCostsAvailable !== true)) reasons.push("MISSING_CRITICAL_COST_EVIDENCE");
+  const costsObserved = (rows: ResearchOutcome[]) => rows.length > 0 && rows.every(o => o.historicalCostsAvailable === true);
+  const stressHolds = (rows: ResearchOutcome[]) => rows.length > 0 && rows.every(o => Number.isFinite(o.stressedNetPnlUsdt)) &&
+    rows.reduce((sum, o) => sum + (o.stressedNetPnlUsdt ?? 0), 0) >= 0;
+
+  // Route 1: purged historical replay folds confirmed by forward shadow.
+  const replayRoute: string[] = [];
+  if (!folds.length) replayRoute.push("INSUFFICIENT_PURGED_HISTORY");
+  if (!interval || interval.low <= 0) replayRoute.push("NET_EXPECTANCY_NOT_ESTABLISHED");
+  if (!sharpe || !sharpe.passes) replayRoute.push("DEFLATED_SHARPE_NOT_ESTABLISHED");
+  if (forward.length < 15 || forwardSpanMs < 14 * 86400000) replayRoute.push("INSUFFICIENT_FORWARD_SHADOW");
+  if (forward.length && forward.reduce((sum, o) => sum + o.netPnlUsdt, 0) <= 0) replayRoute.push("FORWARD_SHADOW_NO_EDGE");
+  if (!stressHolds([...testSamples, ...forward])) replayRoute.push("COST_STRESS_FAILED");
+  if (!costsObserved(compatible)) replayRoute.push("MISSING_CRITICAL_COST_EVIDENCE");
+
+  // Route 2: forward shadow evidence alone. It was collected after
+  // preregistration, so it cannot have been fitted to; it must stand on its
+  // own with twice the forward sample, the same expectancy, Sharpe and cost
+  // tests, and observed costs on every sample it uses.
+  const forwardReturns = forward.map(o => o.returnOnInitialMargin);
+  const forwardInterval = blockBootstrapMean95(forwardReturns);
+  const forwardSharpe = sharpeOf(forwardReturns);
+  const forwardRoute: string[] = [];
+  if (forward.length < FORWARD_ONLY_MIN_POSITIONS || forwardSpanMs < 14 * 86400000) forwardRoute.push("FORWARD_SAMPLE_TOO_SMALL");
+  if (!forwardInterval || forwardInterval.low <= 0) forwardRoute.push("FORWARD_EXPECTANCY_NOT_ESTABLISHED");
+  if (!forwardSharpe || !forwardSharpe.passes) forwardRoute.push("FORWARD_DEFLATED_SHARPE_NOT_ESTABLISHED");
+  if (!stressHolds(forward)) forwardRoute.push("FORWARD_COST_STRESS_FAILED");
+  if (!costsObserved(forward)) forwardRoute.push("FORWARD_COST_EVIDENCE_MISSING");
+
   if (compatible.some(o => o.riskLimitBreached !== false)) reasons.push("RISK_LIMIT_EVIDENCE_FAILED");
   if (!input.feesVerified) reasons.push("UNVERIFIED_FEES");
   if (input.holdoutConsumed || definition.holdoutConsumed || input.trials.some(t => t.holdoutConsumed &&
     (t.holdoutId===definition.holdoutId || sameEvidence(t,definition))))
     reasons.push("HOLDOUT_CONSUMED");
+  const route = replayRoute.length === 0 ? "REPLAY_AND_FORWARD" : forwardRoute.length === 0 ? "FORWARD_ONLY" : null;
+  if (!route) reasons.push(...replayRoute);
   const metrics = { trialCount: trials, compatiblePositions: compatible.length, historicalPositions: historical.length,
     folds: folds.length, testPositions: testSamples.length, netExpectancy95: interval,
-    deflatedSharpe: sharpe?.deflatedSharpe ?? null, forwardPositions: forward.length, forwardSpanMs };
+    deflatedSharpe: sharpe?.deflatedSharpe ?? null, forwardPositions: forward.length, forwardSpanMs,
+    forwardExpectancy95: forwardInterval, forwardDeflatedSharpe: forwardSharpe?.deflatedSharpe ?? null,
+    route, forwardRouteReasons: forwardRoute };
   const report = { eligible: reasons.length === 0, reasons, metrics, configHash: definition.configHash,
     definitionHash: candidateDefinitionHash(definition) };
   return { ...report, reportHash: hash({ report, input }) };
 }
 
-export async function recordPromotionReview(definition: CandidateDefinition, report: ReturnType<typeof evaluatePromotion>) {
+/** Live paper loss budget for a promoted family, in initial-risk units. */
+export const PAPER_LOSS_BUDGET_R = 6;
+/** Forward-only promotion needs twice the forward sample the replay route needs. */
+export const FORWARD_ONLY_MIN_POSITIONS = 30;
+
+/**
+ * Whether live paper results contradict the evidence that promoted a family:
+ * the cumulative loss reaches the R budget or, with enough positions, the 95%
+ * block-bootstrap upper bound of the mean net R is below zero.
+ */
+export function evaluateDemotion(paperOutcomes: ResearchOutcome[]) {
+  const rows = Array.from(new Map(paperOutcomes.map(o => [o.positionId, o])).values())
+    .filter(o => Number.isFinite(o.netR)).sort((a, b) => a.openedAtMs - b.openedAtMs);
+  const totalR = rows.reduce((sum, o) => sum + (o.netR as number), 0);
+  const interval = blockBootstrapMean95(rows.map(o => o.netR as number));
+  const reasons: string[] = [];
+  if (totalR <= -PAPER_LOSS_BUDGET_R) reasons.push(`PAPER_LOSS_BUDGET: ${totalR.toFixed(2)}R lost over ${rows.length} live position(s)`);
+  if (rows.length >= 15 && interval && interval.high < 0) reasons.push(`PAPER_EDGE_NEGATIVE: 95% upper bound ${interval.high.toFixed(3)}R`);
+  return { demote: reasons.length > 0, reasons, metrics: { positions: rows.length, totalR, meanR95: interval } };
+}
+
+/**
+ * Record a review and move the candidate autonomously (owner decision,
+ * 2026-10-02): eligible evidence promotes SHADOW to PAPER_ACTIVE, and live
+ * paper results that contradict it demote to REJECTED, which is final for
+ * that configuration. Every transition is written to the ledger.
+ */
+export async function recordPromotionReview(definition: CandidateDefinition, report: ReturnType<typeof evaluatePromotion>,
+  paperOutcomes: ResearchOutcome[] = []) {
   const redis = getRedis(), key = REGISTRY + ":review:" + definition.candidateId;
-  await redis.set(key, { mode: report.eligible ? "REVIEW_ELIGIBLE" : "SHADOW", report, reviewedAt: new Date().toISOString() });
+  const previous = (await redis.get<{ mode?: CandidateDefinition["mode"] }>(key).catch(() => null))?.mode ?? "SHADOW";
+  let mode: CandidateDefinition["mode"] = previous === "REJECTED" ? "REJECTED" : previous === "PAPER_ACTIVE" ? "PAPER_ACTIVE"
+    : report.eligible ? "PAPER_ACTIVE" : "SHADOW";
+  const demotion = mode === "PAPER_ACTIVE" ? evaluateDemotion(paperOutcomes) : null;
+  if (demotion?.demote) mode = "REJECTED";
+  const reviewedAt = new Date().toISOString();
+  await redis.set(key, { mode, report, demotion, reviewedAt });
   await ExecutionLedger.recordBestEffort({ id: "research-review:" + report.reportHash,
     type: "RESEARCH_REVIEWED", source: "RESEARCH", payload: { candidateId: definition.candidateId, report } });
-  // Eligibility is a review result. No automatic PAPER_ACTIVE transition exists.
+  if (mode !== previous && (mode === "PAPER_ACTIVE" || mode === "REJECTED")) {
+    await ExecutionLedger.recordBestEffort({ id: `research-${mode}:${definition.candidateId}`,
+      type: mode === "PAPER_ACTIVE" ? "RESEARCH_PROMOTED" : "RESEARCH_DEMOTED", source: "RESEARCH",
+      payload: { candidateId: definition.candidateId, family: definition.family, instrumentVersions: definition.instrumentVersions,
+        from: previous, to: mode, route: report.metrics.route, demotion, reviewedAt } });
+  }
+  return mode;
 }

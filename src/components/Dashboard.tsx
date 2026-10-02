@@ -1633,7 +1633,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Strategy research</div>
                       <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>
                         {data?.research?.trialCount || 0} registered configurations. New range setups collect shadow evidence before trading permissions.
-                        Review eligibility still requires human release approval.
+                        A setup that passes the evidence gates starts trading as a small probe on its own, and is retired if its live results contradict that evidence.
                       </p>
                       <div className={`mt-2 space-y-1 text-[9px] font-mono ${textMuted}`}>
                         {(data?.research?.candidates || []).map((candidate:any)=>(

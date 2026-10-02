@@ -19,6 +19,7 @@ import {
 } from "@/lib/trading/assetSpecs";
 import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
 import { SwingEngine } from "@/lib/swingEngine";
+import { bindResearchManifest, paperResearchOutcome, storeResearchOutcome } from "@/lib/research/researchLoop";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import {
   estimateCarryCostUsd,
@@ -728,6 +729,11 @@ async function completePositionOutcome(
     const outcome = completed.find((candidate) => candidate.legIds.includes(closeTrade.id)) ?? null;
     if (!outcome) return null;
     const firstRecord = await PortfolioManager.recordPositionOutcome(outcome, portfolioType);
+    // Live results of a registered family feed its autonomous demotion check.
+    if (firstRecord && portfolioType === "ai") {
+      await storeResearchOutcome(await bindResearchManifest(paperResearchOutcome(outcome)))
+        .catch((error) => console.warn(`[${source}] research outcome deferred:`, error));
+    }
     const eventId = `position-completed:${outcome.positionId}`;
     if (firstRecord && portfolioType === "ai" && !ExecutionLedger.hasEvent(eventId, new Date(outcome.openedAtMs).toISOString())) {
       await ExecutionLedger.recordBestEffort({

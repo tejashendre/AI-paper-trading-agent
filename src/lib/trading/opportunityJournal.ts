@@ -4,10 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { getRedis } from "@/lib/redis";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
-import { amountFromNotionalUsd, calculatePnlUsd } from "@/lib/trading/assetSpecs";
+import { amountFromNotionalUsd, calculatePnlUsd, feeScheduleFor } from "@/lib/trading/assetSpecs";
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
-import { getConfiguredInstrument } from './instrumentRegistry';
+import { getConfiguredInstrument, type InstrumentRef } from './instrumentRegistry';
 import { fetchFundingSettlements } from '@/lib/data/bybitPublic';
 import { replayStrategyCandidate } from '@/lib/research/familyReplay';
 import { storeResearchOutcome, bindResearchManifest } from '@/lib/research/researchLoop';
@@ -336,6 +336,16 @@ function simulatedNetOutcome(
   }
 }
 
+/**
+ * A forward shadow outcome has observed costs when the spread was read from
+ * the live book at the time and the fee schedule is a published baseline.
+ * Funding is checked separately against Bybit's settlement history.
+ */
+export function shadowCostsObserved(record: { halfSpreadBps?: number }, instrument: InstrumentRef): boolean {
+  return Number.isFinite(record.halfSpreadBps) && (record.halfSpreadBps as number) >= 0 &&
+    feeScheduleFor(instrument).status === 'PUBLIC_BASELINE';
+}
+
 export function selectLabelPath(candles:Candle[], startMs:number,endMs:number,intervalMs:number) {
   const path=candles.filter(c=>c.time*1000>=startMs && (c.time*1000+intervalMs)<=endMs).sort((a,b)=>a.time-b.time);
   if (!path.length || path[0].time*1000>startMs+intervalMs ||
@@ -368,7 +378,7 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
         initialRiskUsdt:Math.abs(record.entryPrice-record.stopLoss!),mode:'SHADOW',reasons:[],netRewardRisk:0},
         bars:pathCandles,barIntervalMs:intervalMs,featureStartMs:record.featureStartMs??startMs,
         labelEndMs:endMs,funding,fundingIntervalMinutes:record.fundingIntervalMinutes??480,
-        halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:false,researchOrigin:'SHADOW'});
+        halfSpreadBps:record.halfSpreadBps,historicalCostsAvailable:shadowCostsObserved(record,instrument),researchOrigin:'SHADOW'});
       if (replay.status==='COMPLETED') await storeResearchOutcome(await bindResearchManifest(replay.outcome));
     }
     return {...result,currentPrice:labelPrice};

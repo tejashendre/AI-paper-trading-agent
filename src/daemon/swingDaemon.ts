@@ -33,7 +33,7 @@ import {
 } from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
-import { ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
+import { activeFamilyKeys, ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -545,9 +545,11 @@ async function runEntryScan() {
       await updateAIPortfolio(portfolio).catch((e: unknown) => Logger.warn(`Peak/drawdown sync failed: ${e}`));
     }
 
+    // Families the research loop promoted to live paper trading; read once per scan.
+    const activeFamilies = await activeFamilyKeys().catch(() => new Set<string>());
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
-      const swingSignal = await SwingEngine.analyze(asset);
+      const swingSignal = await SwingEngine.analyze(asset, { activeFamilies });
       // Collect valid shadow hypotheses before portfolio and calendar entry vetoes.
       try {
         const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
