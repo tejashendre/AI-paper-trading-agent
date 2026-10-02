@@ -26,6 +26,7 @@ export interface ReplayInput {
 
 interface RecordedReplaySnapshot {
   observedAtMs: number;
+  sourceTimes: { quoteMs: number | null; depthMs: number | null; sensorsMs: number | null };
   quote?: MarketPriceSnapshot;
   orderbookResult: Awaited<ReturnType<typeof MarketService.getOrderbookImbalance>> | null;
   deepSensors: Awaited<ReturnType<typeof MarketService.getDeepSensors>> | null;
@@ -38,7 +39,12 @@ export function recordedSnapshotAt(rows: RecordedReplaySnapshot[], atMs: number)
     const mid = (low + high) >>> 1;
     if (rows[mid].observedAtMs <= atMs) { found = mid; low = mid + 1; } else high = mid - 1;
   }
-  return found >= 0 && atMs - rows[found].observedAtMs <= 15000 ? rows[found] : null;
+  if (found < 0) return null;
+  const row = rows[found];
+  const fresh = (time: number | null | undefined, maxAge: number) =>
+    typeof time === 'number' && Number.isFinite(time) && time > 0 && atMs >= time && atMs - time <= maxAge;
+  return fresh(row.sourceTimes?.quoteMs, 5000) && fresh(row.sourceTimes?.depthMs, 15000) &&
+    fresh(row.sourceTimes?.sensorsMs, 60000) ? row : null;
 }
 
 /** Actual archive bars and observations, offline, with no synthetic fast history. */
@@ -62,17 +68,30 @@ export function buildRecordedReplayInput(records: ResearchEvidence[]): ReplayInp
       const ratio = bidVolume / askVolume;
       const price = Number(rawQuote?.price ?? rawQuote?.lastPrice);
       const instrument = getConfiguredInstrument(asset);
-      return { observedAtMs: r.recordedAtMs,
-        quote: price > 0 ? { price, bid: Number(rawQuote?.bid ?? rawQuote?.bid1Price), ask: Number(rawQuote?.ask ?? rawQuote?.ask1Price),
+      const clock = (value: unknown) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; };
+      const quoteEvent = clock(rawQuote?.eventTimeMs ?? Date.parse(rawQuote?.updatedAt ?? ''));
+      const quoteReceived = clock(rawQuote?.receivedAtMs);
+      const quoteClocks = [quoteEvent, quoteReceived,
+        clock(rawQuote?.quoteTimes?.lastPriceMs ?? quoteEvent), clock(rawQuote?.quoteTimes?.bidAskMs ?? quoteEvent),
+        clock(rawQuote?.updatedAt ? Date.parse(rawQuote.updatedAt) : quoteEvent)];
+      const depthClocks = [depth?.observedAtMs, depth?.ts, depth?.cts].filter(v=>v!==undefined).map(clock);
+      const sensorClock = clock(funding?.observedAtMs);
+      const known = (times: (number | null)[]) => times.length > 0 && times.every((t): t is number => t !== null);
+      const quoteMs = known(quoteClocks) ? Math.min(...quoteClocks as number[]) : null;
+      const depthMs = known(depthClocks) ? Math.min(...depthClocks as number[]) : null;
+      const availableClocks = [r.recordedAtMs, ...quoteClocks, ...depthClocks, sensorClock,
+        clock(depth?.receivedAtMs),clock(funding?.receivedAtMs)].filter((t):t is number=>t!==null);
+      return { observedAtMs: Math.max(...availableClocks), sourceTimes:{quoteMs,depthMs,sensorsMs:sensorClock},
+        quote: price > 0 && quoteMs !== null && quoteEvent !== null && quoteReceived !== null ? { price, bid: Number(rawQuote?.bid ?? rawQuote?.bid1Price), ask: Number(rawQuote?.ask ?? rawQuote?.ask1Price),
           provider: 'REPLAY', source: 'HTTP' as const, transport: 'REST' as const, venue: 'REPLAY', instrument: instrument.symbol,
-          instrumentVersion: instrument.instrumentVersion, updatedAt: new Date(r.recordedAtMs).toISOString(),
-          receivedAtMs: r.recordedAtMs, eventTimeMs: r.recordedAtMs,
-          quoteTimes: { lastPriceMs: r.recordedAtMs, bidAskMs: r.recordedAtMs, markMs: null } } : undefined,
-        orderbookResult: bidVolume > 0 && askVolume > 0 ? { bidVolume, askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 } : null,
-        deepSensors: Number.isFinite(Number(funding?.fundingRate ?? rawQuote?.fundingRate)) ? {
+          instrumentVersion: instrument.instrumentVersion, updatedAt: rawQuote.updatedAt ?? new Date(quoteEvent).toISOString(),
+          receivedAtMs: quoteReceived, eventTimeMs: quoteEvent,
+          quoteTimes: rawQuote.quoteTimes ?? { lastPriceMs: quoteEvent, bidAskMs: quoteEvent, markMs: null } } : undefined,
+        orderbookResult: depthMs !== null && bidVolume > 0 && askVolume > 0 ? { bidVolume, askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 } : null,
+        deepSensors: sensorClock !== null && Number.isFinite(Number(funding?.fundingRate ?? rawQuote?.fundingRate)) ? {
           fundingRate: Number(funding?.fundingRate ?? rawQuote?.fundingRate), openInterest: Number(funding?.openInterest ?? rawQuote?.openInterest),
         } as RecordedReplaySnapshot['deepSensors'] : null };
-    });
+    }).sort((a,b)=>a.observedAtMs-b.observedAtMs);
   }
   return { assets, fastCandles, recordedSnapshots, higherTimeframeCandles };
 }

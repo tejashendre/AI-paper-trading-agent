@@ -1522,7 +1522,7 @@ export class SwingEngine {
         signal.researchCapture = appendResearchEvidence({
           directory: path.join(process.cwd(), "data", "research"),
           maxBytes: Number(process.env.RESEARCH_ARCHIVE_MAX_BYTES || DEFAULT_RESEARCH_ARCHIVE_BYTES),
-          record: { asset: assetKey, recordedAtMs: livePriceSnapshot.eventTimeMs,
+          record: { asset: assetKey, recordedAtMs: Date.now(),
             candles: { "15m": closedCandles(candles15m, "15m", livePriceSnapshot.eventTimeMs),
               "1h": closedCandles(candles1h, "1h", livePriceSnapshot.eventTimeMs),
               "4h": closedCandles(candles4h, "4h", livePriceSnapshot.eventTimeMs),

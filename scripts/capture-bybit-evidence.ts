@@ -32,12 +32,20 @@ export async function captureBybitEvidence(input: { assets: string[]; intervals:
         .sort((a, b) => a.time - b.time);
     }
     const ticker = await bybitPublicGet<{ list: unknown[] }>(`/v5/market/tickers?category=linear&symbol=${instrument.symbol}`);
+    const quoteReceivedAtMs = Date.now();
     const depth = await bybitPublicGet<unknown>(`/v5/market/orderbook?category=linear&symbol=${instrument.symbol}&limit=50`);
+    const depthReceivedAtMs = Date.now();
     const funding = await bybitPublicGet<unknown>(`/v5/market/funding/history?category=linear&symbol=${instrument.symbol}&limit=200`);
+    const row = ticker.result.list[0] as Record<string, unknown>;
+    recordedAtMs = Math.max(recordedAtMs, ticker.serverTimeMs, depth.serverTimeMs, funding.serverTimeMs, Date.now());
     // Raw transport evidence is inside the immutable metadata envelope.
     const result = appendResearchEvidence({ directory: path.resolve(input.output),
-      record: { asset, recordedAtMs, candles, quote: ticker.result.list[0], depth: depth.result, funding: funding.result,
-        metadata: { instrument, metadata, rawCandles: raw, captureSource: "BYBIT_PUBLIC_REST" } } });
+      record: { asset, recordedAtMs, candles,
+        quote: {...row,eventTimeMs:ticker.serverTimeMs,receivedAtMs:quoteReceivedAtMs},
+        depth: {...depth.result as object,observedAtMs:depth.serverTimeMs,receivedAtMs:depthReceivedAtMs},
+        funding: {...funding.result as object,fundingRate:row.fundingRate,openInterest:row.openInterest,
+          observedAtMs:ticker.serverTimeMs,receivedAtMs:quoteReceivedAtMs},
+        metadata: { instrument, metadata, rawCandles: raw, fundingHistory:funding.result, captureSource: "BYBIT_PUBLIC_REST" } } });
     reports.push({ asset, ...result, closedBarCounts: Object.fromEntries(Object.entries(candles).map(([key, bars]) => [key, bars.length])) });
     if (result.status === "STORAGE_LIMIT") break;
   }
