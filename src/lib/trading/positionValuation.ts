@@ -69,4 +69,3 @@ export function modeledPositionMark(asset: string, pos: any, currentPrice: numbe
         netPnlAtSync: grossPnl - exit.feeUsd - carryCost };
     return { grossPnl, entryFee, exitFee: exit.feeUsd, carryCost, valuation };
 }
-

@@ -41,3 +41,11 @@ export function formatSignedGain(gain: number | null): string {
   const rounded = Math.round(Math.abs(gain) * 100) / 100;
   return `${gain < 0 && rounded > 0 ? '-' : '+'}$${rounded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+export function portfolioEquityMetrics(total: number | null | undefined, initialCapital: number | undefined, margin: number) {
+  const known = typeof total === 'number' && Number.isFinite(total);
+  const capitalKnown = typeof initialCapital === 'number' && Number.isFinite(initialCapital) && initialCapital > 0;
+  const gain = known && capitalKnown ? total - initialCapital : null;
+  return { gain, returnPercent:gain !== null ? gain / initialCapital! * 100 : null,
+    marginPercent:known && total > 0 && Number.isFinite(margin) && margin >= 0 ? margin / total * 100 : null };
+}

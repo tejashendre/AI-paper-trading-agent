@@ -20,6 +20,8 @@ Replay review checkpoint: preserve actual component clocks and capture availabil
 
 Gain review checkpoint: a failed live quote preserves the actual stored loss mark and disables live coefficients; no usable mark returns an unavailable total instead of cost-basis profit. Three red-first valuation regressions pass. Full suite 324/324, audit 156/0/0, TypeScript and lint clean.
 
+Final UI review checkpoint: browser RED reproduced unknown equity coerced to -100% in diagnostic tiles. GREEN keeps unknown P&L/utilization/values unavailable while true zero equity still reports -100%. Final full suite 325/325, audit 156/0/0 and production build clean. Rendered signed gain, null valuation, 21 chart pages, rolling bound, refresh, retry and 390px layout pass. Independent review reports no remaining Critical/Important findings.
+
 
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.
