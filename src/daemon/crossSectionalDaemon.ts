@@ -445,8 +445,14 @@ async function main() {
   // Schedule the next cycle only after this one finishes, so a slow
   // rebalance delays the next mark instead of overlapping it.
   const loop = async () => {
-    await runCycle();
-    setTimeout(() => { void loop(); }, MARK_INTERVAL_MS);
+    try {
+      await runCycle();
+    } catch (error) {
+      await Logger.error(`[XSEC] cycle failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
+    } finally {
+      // The next cycle is always scheduled, whatever this one did.
+      setTimeout(() => { void loop(); }, MARK_INTERVAL_MS);
+    }
   };
   await loop();
 }
