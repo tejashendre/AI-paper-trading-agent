@@ -5,6 +5,7 @@ import { strategyFamilyConfigHash } from '@/lib/swingEngine';
 import { EXECUTION_COST_MODEL_VERSION } from '@/lib/trading/executionCostModel';
 import { TRADING_STRATEGY_VERSION } from '@/lib/trading/executionLedger';
 import { RISK_POLICY_VERSION, feeScheduleFor } from '@/lib/trading/assetSpecs';
+import type { CompletedPositionOutcome } from '@/lib/trading/positionOutcomes';
 import { CandidateDefinition, ResearchOutcome, getCandidateRegistry, registerCandidate,
   evaluatePromotion, recordPromotionReview } from './candidateRegistry';
 
@@ -63,6 +64,32 @@ function independentKey(d:CandidateDefinition,origin:string) {
     d.costModelVersion,d.riskPolicyVersion,d.evidenceManifestHash,origin].join(':');
   return RESEARCH_OUTCOMES_KEY+':independent:'+createHash('sha256').update(scope).digest('hex');
 }
+/**
+ * Families promoted to live paper trading, as `${instrumentVersion}:${family}:${configHash}`.
+ * The entry scan lets only these trade beyond the trend baseline.
+ */
+export async function activeFamilyKeys(): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for (const d of await getCandidateRegistry()) {
+    if (d.mode !== 'PAPER_ACTIVE') continue;
+    for (const version of d.instrumentVersions) keys.add(`${version}:${d.family}:${d.configHash}`);
+  }
+  return keys;
+}
+/**
+ * A completed live paper position as a research row for its family's
+ * demotion check. Costs are the realized fills and funding; a loss beyond
+ * 1.5R (a gap well past the stop) is recorded as a risk-limit breach.
+ */
+export function paperResearchOutcome(outcome: CompletedPositionOutcome): ResearchOutcome {
+  return {
+    ...outcome,
+    researchOrigin: 'PAPER',
+    historicalCostsAvailable: true,
+    stressedNetPnlUsdt: outcome.netPnlUsdt,
+    riskLimitBreached: Number.isFinite(outcome.netR) ? (outcome.netR as number) < -1.5 : false,
+  };
+}
 /** Bind a forward observation to the immutable collection window it belongs to. */
 export async function bindResearchManifest(outcome:ResearchOutcome):Promise<ResearchOutcome> {
   const definition=(await getCandidateRegistry()).find(d=>d.instrumentVersions.includes(outcome.instrument.instrumentVersion) &&
@@ -81,12 +108,15 @@ export async function reviewRegisteredCandidates(nowMs=Date.now()) {
     const asset=CONFIGURED_ASSETS.find(a=>definition.instrumentVersions.includes(getConfiguredInstrument(a).instrumentVersion));
     const report=evaluatePromotion({definition,outcomes,trials,holdoutConsumed:Boolean(definition.holdoutConsumed),
       feesVerified:asset ? feeScheduleFor(getConfiguredInstrument(asset)).status==='PUBLIC_BASELINE' : false});
-    await recordPromotionReview(definition,report);
+    const paper=outcomes.filter(o=>o.researchOrigin==='PAPER' && matchesDefinition(o,definition));
+    const mode=await recordPromotionReview(definition,report,paper);
     summaries.push({asset,family:definition.family,candidateId:definition.candidateId,
-      mode:report.eligible?'REVIEW_ELIGIBLE':'SHADOW',reasons:report.reasons,metrics:report.metrics});
+      mode,reasons:report.reasons,metrics:report.metrics});
   }
+  // Promotion and demotion are autonomous (owner decision, 2026-10-02); the
+  // evidence gates and every transition are recorded in the ledger.
   const status={version:TRADING_STRATEGY_VERSION,reviewedAt:new Date(nowMs).toISOString(),
-    activationRequiresHumanReview:true,trialCount:trials.length,candidates:summaries};
+    activationRequiresHumanReview:false,trialCount:trials.length,candidates:summaries};
   await redis.set(RESEARCH_STATUS_KEY,status);
   return status;
 }
