@@ -113,11 +113,10 @@ jobs:
 
             # Owner-approved storage option 1: re-seal the ledger without old
             # per-minute scan records while no daemon is appending. It skips
-            # itself when under 50 MB would be reclaimed; a refusal leaves the
-            # ledger unchanged and the deploy continues.
+            # itself when under 50 MB would be reclaimed. Stop every writer
+            # and fail the release if compaction or verification refuses.
             echo "Compacting the execution ledger with the writers stopped..."
-            docker compose stop swing-daemon xsec-daemon || true
-            docker compose run --rm --no-deps -T swing-daemon tsx scripts/ledger-compact.ts --apply || echo "Ledger compaction refused; the ledger is unchanged."
+            sh scripts/release-ledger-maintenance.sh
 
             docker compose up -d --no-build --remove-orphans
 

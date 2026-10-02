@@ -180,7 +180,7 @@ export function archiveLedgerDays(options: { keepDays?: number; directory?: stri
 }
 
 export interface LedgerCompactionReport {
-  status: "COMPACTED" | "WOULD_COMPACT" | "SKIPPED_BELOW_THRESHOLD" | "REFUSED_INVALID_SOURCE" | "EMPTY";
+  status: "COMPACTED" | "WOULD_COMPACT" | "SKIPPED_BELOW_THRESHOLD" | "REFUSED_INVALID_SOURCE" | "REFUSED_UNSAFE_OPERATION" | "EMPTY";
   sourceEvents: number;
   keptEvents: number;
   droppedByType: Record<string, number>;
@@ -218,6 +218,14 @@ export function compactLedger(options: {
     status: "EMPTY", sourceEvents: 0, keptEvents: 0, droppedByType: {}, droppedBytes: 0,
     bytesBefore: dayFileBytes(directory), bytesAfter: 0, previousHeadHash: null, newHeadHash: null, errors: [],
   };
+  // Only scan telemetry was approved for removal. Never permit this utility
+  // to erase financial evidence or overwrite an interrupted recovery copy.
+  if ([...drop].some(type => type !== "SCAN_COMPLETED") ||
+      fs.existsSync(`${directory}.pre-compaction`) || fs.existsSync(`${directory}.compacting`) ||
+      fs.existsSync(path.join(directory, ".append.lock")) ||
+      !Number.isFinite(options.minDropBytes ?? 0) || (options.minDropBytes ?? 0) < 0) {
+    return { ...report, status: "REFUSED_UNSAFE_OPERATION", errors: ["Unsafe removal type, active writer, recovery files or invalid threshold; no files changed."] };
+  }
   if (files.length === 0) return report;
 
   const source = ExecutionLedger.verify(directory);
@@ -243,7 +251,6 @@ export function compactLedger(options: {
   if (options.dryRun) return { ...report, status: "WOULD_COMPACT", bytesAfter: report.bytesBefore };
 
   const staging = `${directory}.compacting`;
-  fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
   let previousHash: string | null = null;
   let last: ExecutionLedgerRecord | null = null;
@@ -298,9 +305,14 @@ export function compactLedger(options: {
   }
 
   const retired = `${directory}.pre-compaction`;
-  fs.rmSync(retired, { recursive: true, force: true });
   fs.renameSync(directory, retired);
-  fs.renameSync(staging, directory);
+  try {
+    fs.renameSync(staging, directory);
+  } catch (error) {
+    // Restore the original directory if the replacement cannot be installed.
+    fs.renameSync(retired, directory);
+    throw error;
+  }
   fs.rmSync(retired, { recursive: true, force: true });
   report.newHeadHash = check.headHash;
   report.bytesAfter = dayFileBytes(directory);
