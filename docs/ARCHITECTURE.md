@@ -415,3 +415,5 @@ Promotion saves the exact eligible inputs before publishing PAPER_ACTIVE. Book r
 
 ## Recorded replay clocks (2026-10-02)
 Recorded inputs retain source event/receive times and become available only at the latest component or completed-capture time. Quote, depth and sensor freshness are measured from their original observations, at 5, 15 and 60 seconds respectively. Unknown source clocks leave that component unavailable. Runtime market shaping retains sensor/depth observation clocks, and new public captures retain raw funding history alongside timestamped current sensors. Old files remain unchanged. Sparse periodic archives cannot reconstruct intervening books or absent 1m/5m triggers, so incomplete assets remain NOT_TESTABLE and prevent research acceptance. Replay fills remain descriptive modeled bar fills.
+
+Current release-candidate evidence and the explicit approval procedure are recorded in [AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md](AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). The tested candidate is not the currently deployed release; the main-branch production step remains approval-gated.

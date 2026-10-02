@@ -2,7 +2,7 @@
 
 ## 2026-10-02 Codex handoff completion
 Scope: review the existing 20 fixes without reimplementing them; complete P0, P1, P2 and chart history in priority order with red-first regression tests. No merge or deployment without new explicit approval. Preserve account and trade history, risk ceilings and the no-LLM contract.
-- [ ] P0: review release safety, open PR and obtain CI evidence; ask about an offline ledger copy before destructive compaction.
+- [x] P0: reviewed release safety, opened PR 11 and verified Node 20 CI 37042756402 at abd2c2d; offline-copy question answered with required learning/history preservation. Final documentation-head checks also required before approval.
 - [ ] P0: deploy only after explicit approval and verify exact VPS release, ledger, continuity, scheduler, feeds and retention.
 - [x] P1: include unrealized P&L in every swing drawdown guard and update marks in the exit watchdog.
 - [x] P1 review: require complete fresh marks before scale-ins and use marked equity for their unchanged 40% aggregate margin ceiling.
@@ -22,6 +22,11 @@ Gain review checkpoint: a failed live quote preserves the actual stored loss mar
 
 Final UI review checkpoint: browser RED reproduced unknown equity coerced to -100% in diagnostic tiles. GREEN keeps unknown P&L/utilization/values unavailable while true zero equity still reports -100%. Final full suite 325/325, audit 156/0/0 and production build clean. Rendered signed gain, null valuation, 21 chart pages, rolling bound, refresh, retry and 390px layout pass. Independent review reports no remaining Critical/Important findings.
 
+Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). Production remains c90483d; no merge/deploy or destructive maintenance authorized for this branch. Preserve one full verified ledger copy offline before approved compaction, and preserve every learning/financial record in production. Only P0 deployment/live proof, XSEC causal observation, exact FX fee confirmation and first real transition verification remain open.
+
+
+<details>
+<summary>Earlier implementation checkpoints</summary>
 
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.
@@ -123,3 +128,5 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 - [ ] Push/PR/deploy: waiting for Tejas's approval
 - [x] Bug pass 2: replay data quality used wall clock (fc998c8); ledger appends forked across processes (d6be0b9); scale-in beyond target (7a92362); cost/drawdown/cost-verdict labels (15239d2); label queue starvation and 24h summary flush (994259d); XSEC loop always reschedules
 - [x] Strategy audit 156/0/0: research-quality check now verifies the gate applies its rule on the synthetic fixture (f58b3bb); 285/285 tests; tsc, lint, build, diff-check clean
+
+</details>

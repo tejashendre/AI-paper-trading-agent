@@ -4,6 +4,8 @@
 
 | Document | What it covers |
 |---|---|
+| [Autonomy hardening verification, 2 October](./AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md) | Current release candidate, completed handoff, 325-test proof, live gain cards, deeper charts, evidence limits and approval-gated release steps. |
+| [Codex handoff, 2 October](./CODEX_HANDOFF_2026-10-02.md) | Original 20 fixes and remaining production observation requirements, with a pointer to current verification. |
 | [Bybit all-asset implementation plan](./superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md) | Full specification; complete upgrade deployed as c90483d. |
 | [Complete upgrade verification](./BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md) | Review fixes, 238-test validation, evidence limits and exact-artifact deployment proof. |
 | [Strategy coverage audit, 1 October 2026](./STRATEGY_COVERAGE_AUDIT_2026-10-01.md) | Verified routing, full-position accounting, risk-state, and learning defects with linked evidence. |
