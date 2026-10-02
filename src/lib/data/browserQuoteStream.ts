@@ -35,6 +35,8 @@ export function createBrowserQuoteStream(input:{symbols:Record<string,string>;
       const state=book.get(symbol);
       if(state?.lastPrice && wsFresh(symbol)) latest[asset]={...latest[asset],price:state.lastPrice,
         provider:'BYBIT_PUBLIC_BROWSER_WS',instrument:symbol,source:'WEBSOCKET',fresh:true,
+        // Bybit's spot index: a live reference when the contract itself trades rarely.
+        indexPrice:state.indexPrice,
         updatedAt:new Date(state.lastPriceEventMs!).toISOString(),receivedAtMs:state.receivedAtMs,
         deliveryPath:'BROWSER_WEBSOCKET',eventClockDifferenceMs:state.receivedAtMs-state.lastEventMs};
       const snapshot=latest[asset];if(!snapshot)continue;
