@@ -36,7 +36,7 @@ import { liveFundingDeps } from "@/lib/data/bybitPublic";
 import { buildPositionOutcomes, CompletedPositionOutcome, outcomeSourceHash } from "@/lib/trading/positionOutcomes";
 import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
-import { updateMarkedRiskStats } from '@/lib/trading/markedEquity';
+import { markedEquity, riskMarksReady, updateMarkedRiskStats } from '@/lib/trading/markedEquity';
 import {
   decideSwingExit,
   isOppositeEdgeConfirmed,
@@ -764,6 +764,8 @@ async function scaleIntoWinner(
   result: SwingExitSweepResult
 ): Promise<boolean> {
   if (portfolioType !== "ai") return false;
+  // Scale-ins add exposure too. Missing marks must not turn losses into cost-basis equity.
+  if (!riskMarksReady(portfolio)) return false;
   if (pos.strategyType && pos.strategyType !== "swing") return false;
   if (pos.scaleInBlockedReason) return false;
   if (pos.thesisStatus && pos.thesisStatus !== "VALID") return false;
@@ -772,7 +774,7 @@ async function scaleIntoWinner(
   if (profitMultiple(asset, pos, currentPrice) < 0.9) return false;
   if ((pos.finalConviction || 0) < 60 || (pos.dataQuality || 0) < 68) return false;
 
-  const equity = Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
+  const equity = markedEquity(portfolio);
   const maxTotalMargin = equity * 0.40;
   const remainingRoom = Math.max(0, maxTotalMargin - activeMarginUsd(portfolio));
   const addMarginUsd = Math.min(portfolio.usd * 0.06, pos.usdInvested * 0.5, 600, remainingRoom);

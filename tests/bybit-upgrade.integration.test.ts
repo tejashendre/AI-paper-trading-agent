@@ -200,6 +200,39 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
     } finally { world.close(); }
   });
 
+  it('a winning probe cannot scale while another held asset has no usable mark', async () => {
+    const world = await openWorld(null);
+    try {
+      world.venue.priceOverride.set('BTCUSDT', 84200);
+      const goldSeries = world.venue.series.get('XAUUSDT')!;
+      world.venue.series.delete('XAUUSDT');
+      const portfolio = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      const base = { direction: 'LONG' as const, entryTime: new Date(T).toISOString(), signalScore: 20,
+        reasoning: 'scale-in mark fixture', strategyType: 'swing' as const, finalConviction: 85,
+        dataQuality: 100, entryMode: 'CONTROLLED_PROBE' as const, leverageUsed: 1 };
+      portfolio.usd = 8500;
+      portfolio.openPositions = {
+        BTC: { ...base, asset:'BTC', instrument:getConfiguredInstrument('BTC'), positionId:'fixture-btc',
+          amount:1000/83000, btcAmount:1000/83000, entryPrice:83000, usdInvested:1000,
+          stopLoss:82000, initialStopLoss:82000, initialRiskUsdt:1000/83, maxLossUsd:13, takeProfit:90000 },
+        GOLD: { ...base, asset:'GOLD', instrument:getConfiguredInstrument('GOLD'), positionId:'fixture-gold',
+          amount:500/4190, btcAmount:500/4190, entryPrice:4190, usdInvested:500,
+          stopLoss:4000, takeProfit:4500 },
+      };
+      await m.portfolio.PortfolioManager.updatePortfolio(portfolio, 'ai');
+      await m.daemon.runExitWatchdog();
+      assert.equal(ledgerEvents(world.ledgerDir).filter(event => event.type === 'SCALE_IN_FILLED').length, 0);
+      assert.equal((await m.portfolio.PortfolioManager.getPortfolio('ai')).openPositions.BTC.amount, 1000/83000);
+      // The transient refusal must clear once every held mark is available.
+      world.venue.series.set('XAUUSDT', goldSeries);
+      world.advanceTo(T + 6000);
+      await m.daemon.runExitWatchdog();
+      world.advanceTo(T + 12000);
+      await m.daemon.runExitWatchdog();
+      assert.equal(ledgerEvents(world.ledgerDir).filter(event => event.type === 'SCALE_IN_FILLED').length, 1);
+    } finally { world.close(); }
+  });
+
   for (const asset of Object.keys(START_PRICE) as ConfiguredAsset[]) {
     it(`${asset}: a valid fixture enters, settles funding, exits at target and completes once`, async () => {
       const world = await openWorld(asset);
