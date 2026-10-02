@@ -36,6 +36,7 @@ import { liveFundingDeps } from "@/lib/data/bybitPublic";
 import { buildPositionOutcomes, CompletedPositionOutcome, outcomeSourceHash } from "@/lib/trading/positionOutcomes";
 import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
+import { updateMarkedRiskStats } from '@/lib/trading/markedEquity';
 import {
   decideSwingExit,
   isOppositeEdgeConfirmed,
@@ -1151,6 +1152,7 @@ export async function sweepSwingExits(
   };
 
   const activeKeys = Object.keys(portfolio.openPositions || {});
+  let marksChanged = false;
 
   for (const asset of activeKeys) {
     const pos = portfolio.openPositions[asset];
@@ -1166,6 +1168,13 @@ export async function sweepSwingExits(
       if (!Number.isFinite(currentLivePrice) || currentLivePrice <= 0) {
         result.skipped++;
         continue;
+      }
+
+      if (!Number.isFinite(pos.lastMarkPrice) || Math.abs(currentLivePrice - pos.lastMarkPrice!) > currentLivePrice * 1e-8 ||
+          Date.now() - Date.parse(pos.lastMarkAt ?? '') >= 30000 || !pos.lastMarkAt) {
+        pos.lastMarkPrice = currentLivePrice;
+        pos.lastMarkAt = new Date().toISOString();
+        marksChanged = true;
       }
 
       // One watermark update, one hard stop/take-profit check, then a single
@@ -1230,6 +1239,8 @@ export async function sweepSwingExits(
     }
   }
 
+  const riskStatsChanged = updateMarkedRiskStats(portfolio);
+  if (marksChanged || riskStatsChanged) await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await redis.set(`swing:lastExitSweep:${portfolioType}`, result, { ex: 120 });
   return result;
 }

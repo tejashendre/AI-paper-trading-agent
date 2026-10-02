@@ -1,5 +1,6 @@
 import { OpenPosition, PaperMarginMode, Portfolio } from "@/lib/types";
 import type { EntryEligibility } from "./entryEligibility";
+import { markedEquity } from './markedEquity';
 import {
   estimateFeeUsd,
   estimateNotionalUsd,
@@ -75,12 +76,8 @@ function activeMarginUsd(portfolio: Portfolio): number {
   return swingMargin + scalpMargin;
 }
 
-function estimateEquity(portfolio: Portfolio): number {
-  return Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
-}
-
 function drawdownAdjustedRiskPercent(portfolio: Portfolio): number {
-  const equity = estimateEquity(portfolio);
+  const equity = markedEquity(portfolio);
   if (!portfolio.peakValue || portfolio.peakValue <= 0) return BASE_RISK_PERCENT;
 
   const drawdown = (portfolio.peakValue - equity) / portfolio.peakValue;
@@ -243,7 +240,7 @@ export class TradeAdmissionController {
       : Math.max(0, input.finalConviction - Math.max(0, input.learningAdjustment ?? 0)),
       learningAdjustment: Math.min(0, input.learningAdjustment ?? 0) };
     const spec = getAssetSpec(input.asset);
-    const equity = estimateEquity(input.portfolio);
+    const equity = markedEquity(input.portfolio);
     const currentActiveMargin = activeMarginUsd(input.portfolio);
     const learningMultiplier = learningRiskMultiplier(input.learningAdjustment);
     const setupProfile = setupRiskProfile(input);
