@@ -4,8 +4,7 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { modeledPositionMark } from '@/lib/trading/positionValuation';
-import type { PositionValuation } from '@/lib/ui/livePortfolioGain';
+import { modeledPositionMark, calculateAccountValue } from '@/lib/trading/positionValuation';
 import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/trading/positionOutcomes";
 import { buildCoverageSnapshot, DailyFunnel, ScanDecision, VetoCode } from "@/lib/trading/coverageStatus";
 import { CONFIGURED_ASSETS } from "@/lib/trading/instrumentRegistry";
@@ -339,45 +338,9 @@ export async function GET(request: Request) {
             TradeReviewJournal.getAssetSignals(),
         ]);
 
-        const calculateTrueValue = async (portfolio: any, type: "user" | "ai") => {
-            let totalValue = portfolio.usd;
-            const openAssets = Object.keys(portfolio.openPositions || {});
-            const scalpAssets = Object.keys(portfolio.scalpPositions || {});
-            const allActiveAssets = Array.from(new Set([...openAssets, ...scalpAssets]));
-            const prices: Record<string, number> = {};
-            const valuations: PositionValuation[] = [];
-            for (const asset of allActiveAssets) {
-                try {
-                    const price = await MarketService.getCurrentPrice(asset);
-                    prices[asset] = price;
-                    
-                    const calculatePosValue = (pos: any, currentPrice: number) => {
-                        if (!pos) return 0;
-                        const mark = modeledPositionMark(asset, pos, currentPrice);
-                        valuations.push(mark.valuation);
-                        return pos.usdInvested + mark.grossPnl - mark.exitFee - mark.carryCost;
-                    };
-
-                    if (portfolio.openPositions?.[asset]) {
-                        totalValue += calculatePosValue(portfolio.openPositions[asset], price);
-                    }
-                    if (portfolio.scalpPositions?.[asset]) {
-                        totalValue += calculatePosValue(portfolio.scalpPositions[asset], price);
-                    }
-                } catch (err) {
-                    console.error(`Error getting current price for ${asset} during sync:`, err);
-                    if (portfolio.openPositions?.[asset]) totalValue += portfolio.openPositions[asset].usdInvested;
-                    if (portfolio.scalpPositions?.[asset]) totalValue += portfolio.scalpPositions[asset].usdInvested;
-                }
-            }
-
-            const heldPositions = [...Object.values(portfolio.openPositions || {}), ...Object.values(portfolio.scalpPositions || {})].filter(Boolean);
-            return { totalValue, prices, valuations: valuations.length === heldPositions.length ? valuations : null };
-        };
-
         const [userSync, aiSync] = await Promise.all([
-            calculateTrueValue(userPortfolio, "user"),
-            calculateTrueValue(aiPortfolio, "ai")
+            calculateAccountValue(userPortfolio, asset => MarketService.getCurrentPrice(asset)),
+            calculateAccountValue(aiPortfolio, asset => MarketService.getCurrentPrice(asset))
         ]);
 
         // Fetch BTC price as a baseline indicator price for dashboard header compatibility

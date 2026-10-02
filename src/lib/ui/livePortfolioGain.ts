@@ -16,7 +16,7 @@ export function displayNetPnl(mark: PositionValuation, price: number): number {
 }
 
 /** Rebase on each server snapshot so booked fees, funding and completed trades are never counted twice. */
-export function livePortfolioGain(totalAtSync: number | undefined, initialCapital: number | undefined,
+export function livePortfolioGain(totalAtSync: number | null | undefined, initialCapital: number | undefined,
   valuations: PositionValuation[] | null | undefined, quotes: Record<string, any> | null, nowMs = Date.now()) {
   const empty = { totalValue: null, gain: null, live: false };
   if (typeof totalAtSync !== 'number' || !Number.isFinite(totalAtSync) ||
