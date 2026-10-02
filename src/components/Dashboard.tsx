@@ -777,13 +777,13 @@ function DashboardContent({ secret }: { secret: string }) {
               {viewMode === "user" && <span className={`text-[8px] bg-indigo-500/10 text-indigo-500 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold`}>ACTIVE</span>}
             </div>
             <h3 data-testid="human-total-gain" className={`text-2xl font-bold font-mono ${humanGain.gain === null ? textMuted : humanGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
-              {formatSignedGain(humanGain.gain)}
+              {data?.userTotalValue === null ? 'Unavailable' : formatSignedGain(humanGain.gain)}
             </h3>
             <p className={`text-xs font-mono mt-1 ${textSub}`}>
-              {humanGain.live ? 'Live' : 'Last marked'} total gain / loss
+              {data?.userTotalValue === null ? 'Awaiting a usable mark' : `${humanGain.live ? 'Live' : 'Last marked'} total gain / loss`}
             </p>
             <p className={`text-xs font-mono mt-1 ${textMuted}`}>
-              Account value: {humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+              Account value: {data?.userTotalValue === null ? 'Unavailable' : humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
             </p>
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
@@ -818,13 +818,13 @@ function DashboardContent({ secret }: { secret: string }) {
               {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
             </div>
             <h3 data-testid="swing-total-gain" className={`text-2xl font-bold font-mono ${swingGain.gain === null ? textMuted : swingGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
-              {formatSignedGain(swingGain.gain)}
+              {data?.aiTotalValue === null ? 'Unavailable' : formatSignedGain(swingGain.gain)}
             </h3>
             <p className={`text-xs font-mono mt-1 ${textSub}`}>
-              {swingGain.live ? 'Live' : 'Last marked'} swing total gain / loss
+              {data?.aiTotalValue === null ? 'Awaiting a usable mark' : `${swingGain.live ? 'Live' : 'Last marked'} swing total gain / loss`}
             </p>
             <p className={`text-xs font-mono mt-1 ${textMuted}`}>
-              Account value: {swingGain.totalValue === null ? 'Loading...' : '$' + swingGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+              Account value: {data?.aiTotalValue === null ? 'Unavailable' : swingGain.totalValue === null ? 'Loading...' : '$' + swingGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
             </p>
             {bookSummary && (
               <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>

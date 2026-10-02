@@ -18,6 +18,8 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 
 Replay review checkpoint: preserve actual component clocks and capture availability, refuse future/stale/missing source timing, and retain timestamps in new runtime/public captures. 321/321 tests and audit 156/0/0. Recorded VPS archives remain descriptive and crypto remains NOT_TESTABLE where fast bars or flow clocks are absent.
 
+Gain review checkpoint: a failed live quote preserves the actual stored loss mark and disables live coefficients; no usable mark returns an unavailable total instead of cost-basis profit. Three red-first valuation regressions pass. Full suite 324/324, audit 156/0/0, TypeScript and lint clean.
+
 
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.
