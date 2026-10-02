@@ -227,7 +227,7 @@ export async function buildCostVerdict(): Promise<CostVerdict> {
   } else {
     message =
       `Observed cost ${observedTotalBps.toFixed(1)}bps against ${modelTotalBps.toFixed(1)}bps modelled ` +
-      `(${totalRatio.toFixed(2)}x). The cost model is behaving honestly, so backtest figures can be trusted at face value.`;
+      `(${totalRatio.toFixed(2)}x). Modeled costs match measured fills, so cost assumptions in replays are realistic; this says nothing about whether the strategy has an edge.`;
   }
 
   const result: CostVerdict = {

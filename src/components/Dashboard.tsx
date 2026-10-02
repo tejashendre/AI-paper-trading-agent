@@ -1324,7 +1324,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       -${(portfolio.totalFeesPaid || 0)?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </h3>
                     <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
-                      Peak Drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (halts new entries at 10%)
+                      Worst drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (new entries halt while the current drawdown is 10% or more)
                     </p>
                   </div>
                 </div>
@@ -2201,7 +2201,11 @@ function DashboardContent({ secret }: { secret: string }) {
                     ${(portfolio?.totalExecutionCostsPaid ?? portfolio?.totalFeesPaid ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                   <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
-                    Fees ${(portfolio?.totalFeesPaid || 0).toFixed(2)} / Carry ${(portfolio?.totalCarryPaid || 0).toFixed(2)}
+                    {(() => {
+                      const total = Number(portfolio?.totalExecutionCostsPaid ?? portfolio?.totalFeesPaid ?? 0);
+                      const fees = Number(portfolio?.totalFeesPaid || 0), carry = Number(portfolio?.totalCarryPaid || 0);
+                      return `Fees $${fees.toFixed(2)} / Spread & slippage $${Math.max(0, total - fees - carry).toFixed(2)} / Carry $${carry.toFixed(2)}`;
+                    })()}
                   </span>
                 </div>
               </div>
