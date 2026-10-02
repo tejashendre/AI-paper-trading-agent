@@ -180,6 +180,26 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
     assert.deepEqual([...CONFIGURED_ASSETS].sort(), Object.keys(START_PRICE).sort());
   });
 
+  it('the watchdog persists a losing mark and updates drawdown without closing the position', async () => {
+    const world = await openWorld('BTC');
+    try {
+      await m.daemon.runEntryScan();
+      const before = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      const pos = before.openPositions.BTC;
+      assert.ok(pos);
+      const price = pos.entryPrice + (pos.stopLoss - pos.entryPrice) * 0.4;
+      world.advanceTo(T + 6000); // Expire the market service's five-second quote cache.
+      world.venue.priceOverride.set('BTCUSDT', price);
+      await m.daemon.runExitWatchdog();
+      const marked = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      assert.ok(marked.openPositions.BTC, 'a within-stop loss must remain open');
+      assert.equal((marked.openPositions.BTC as any).lastMarkPrice, price);
+      assert.equal(marked.openPositions.BTC.lastMarkAt, new Date(T + 6000).toISOString());
+      assert.ok(marked.maxDrawdownPercent > before.maxDrawdownPercent);
+      assert.equal(marked.usd, before.usd, 'marking must not realize P&L');
+    } finally { world.close(); }
+  });
+
   for (const asset of Object.keys(START_PRICE) as ConfiguredAsset[]) {
     it(`${asset}: a valid fixture enters, settles funding, exits at target and completes once`, async () => {
       const world = await openWorld(asset);

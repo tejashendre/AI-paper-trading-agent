@@ -15,6 +15,7 @@ import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
+import { riskMarksReady, updateMarkedRiskStats } from '../lib/trading/markedEquity';
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
 import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile } from "../lib/trading/executionCostModel";
 import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
@@ -479,22 +480,7 @@ async function runEntryScan() {
 
     exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
-    const swingMargin = Object.values(portfolio.openPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
-    const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
-    const estimatedEquity = portfolio.usd + swingMargin + scalpMargin;
-    let peakUpdated = false;
-    if (!portfolio.peakValue || estimatedEquity > portfolio.peakValue) {
-      portfolio.peakValue = estimatedEquity;
-      peakUpdated = true;
-    }
-    if (portfolio.peakValue > 0) {
-      const ddPct = ((portfolio.peakValue - estimatedEquity) / portfolio.peakValue) * 100;
-      if (portfolio.maxDrawdownPercent === undefined || portfolio.maxDrawdownPercent === null || ddPct > portfolio.maxDrawdownPercent) {
-        portfolio.maxDrawdownPercent = ddPct;
-        peakUpdated = true;
-      }
-    }
-    if (peakUpdated) {
+    if (updateMarkedRiskStats(portfolio)) {
       await updateAIPortfolio(portfolio).catch((e: unknown) => Logger.warn(`Peak/drawdown sync failed: ${e}`));
     }
 
@@ -767,6 +753,11 @@ async function runEntryScan() {
         swingSignal.takeProfit = alignStopTowardEntry({ price: swingSignal.takeProfit, entryPrice: swingSignal.entryPrice, metadata });
 
         const isShort = swingSignal.action === "SWING_SHORT";
+        if (!riskMarksReady(portfolio)) {
+          results.push({ asset, action: 'BLOCKED', vetoCode: 'PORTFOLIO_GUARD',
+            reason: 'Held-position risk marks are missing or stale; new risk waits for the exit watchdog.', timestamp });
+          continue;
+        }
         const portfolioGuard = PortfolioGuards.evaluateNewSwing({
           portfolio,
           asset,
@@ -1198,6 +1189,8 @@ async function runEntryScan() {
 
         const newPos: OpenPosition = {
           asset,
+          lastMarkPrice: swingSignal.livePrice,
+          lastMarkAt: new Date().toISOString(),
           entryPrice: executionPlan.entry.fillPrice,
           amount: executionPlan.entry.amount,
           btcAmount: executionPlan.entry.amount,

@@ -219,6 +219,9 @@ export interface OpenPosition extends StrategyProvenance {
   lastPartialExitTime?: string;
   maxUnrealizedPnlUsd?: number;
   maxUnrealizedPnlTime?: string;
+  /** Last validated quote used by the risk guards; cash is unchanged by marking. */
+  lastMarkPrice?: number;
+  lastMarkAt?: string;
   thesisStatus?: 'VALID' | 'WEAKENING' | 'INVALID' | 'OPPOSITE_EDGE_CONFIRMED';
   thesisReason?: string;
   lastThesisCheckTime?: string;

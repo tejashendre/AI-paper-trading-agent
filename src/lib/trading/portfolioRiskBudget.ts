@@ -1,5 +1,6 @@
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import { instrumentFee, instrumentNotional, positionInstrument, tradeInstrument } from "./assetSpecs";
+import { markedEquity } from './markedEquity';
 
 // v3: named factors in true USDT notional, factor stop-risk cap, gross notional ceiling.
 export const PORTFOLIO_RISK_POLICY_VERSION = "portfolio-budget-v3-2026-10-01";
@@ -65,16 +66,6 @@ export interface PortfolioRiskBudgetDecision {
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
-
-function activeMarginUsd(portfolio: Portfolio): number {
-  const swing = Object.values(portfolio.openPositions || {}).reduce((sum, position) => sum + Number(position?.usdInvested || 0), 0);
-  const scalp = Object.values(portfolio.scalpPositions || {}).reduce((sum, position) => sum + Number(position?.usdInvested || 0), 0);
-  return swing + scalp;
-}
-
-function equityUsd(portfolio: Portfolio): number {
-  return Math.max(0, Number(portfolio.usd || 0) + activeMarginUsd(portfolio));
-}
 
 function tradeTimestamp(trade: Trade): number {
   const value = new Date(trade.exitTime || trade.timestamp || 0).getTime();
@@ -189,7 +180,7 @@ function expectedShortfallUsd(closedTrades: Trade[], minimumSample = 20): number
 
 export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): PortfolioRiskBudgetDecision {
   const nowMs = (input.now || new Date()).getTime();
-  const equity = equityUsd(input.portfolio);
+  const equity = markedEquity(input.portfolio);
   const hourEntries = input.trades.filter((trade) => isEntry(trade) && tradeTimestamp(trade) >= nowMs - HOUR_MS);
   const dayTrades = input.trades.filter((trade) => tradeTimestamp(trade) >= nowMs - DAY_MS);
   const weekTrades = input.trades.filter((trade) => tradeTimestamp(trade) >= nowMs - WEEK_MS);
