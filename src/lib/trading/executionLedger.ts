@@ -246,10 +246,50 @@ function writeHeadAtomic(directory: string, record: ExecutionLedgerRecord): void
   }
 }
 
+const APPEND_LOCK_STALE_MS = 30_000;
+const APPEND_LOCK_WAIT_MS = 15_000;
+
+/**
+ * Hold an exclusive lock file for one append. The swing and cross-sectional
+ * daemons (and an admin reset) are separate processes writing one chain;
+ * without this, two of them can read the same head and fork it. A lock left
+ * by a process that died is taken over once it is older than 30 seconds.
+ */
+async function withAppendLock<T>(directory: string, fn: () => T): Promise<T> {
+  const lockPath = path.join(directory, ".append.lock");
+  const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const descriptor = fs.openSync(lockPath, "wx");
+      fs.writeSync(descriptor, `${process.pid} ${new Date().toISOString()}`);
+      fs.closeSync(descriptor);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > APPEND_LOCK_STALE_MS) fs.unlinkSync(lockPath);
+      } catch { /* released or taken over meanwhile */ }
+      if (Date.now() > deadline) throw new Error("Execution ledger append lock is held by another process");
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 10));
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+  }
+}
+
 async function appendRecord(input: ExecutionLedgerEventInput): Promise<ExecutionLedgerRecord> {
   const timestamp = input.timestamp || new Date().toISOString();
   const directory = ledgerDirectory();
   fs.mkdirSync(directory, { recursive: true });
+  const record = await withAppendLock(directory, () => appendUnderLock(input, timestamp, directory));
+  await mirrorToRedis(record);
+  return record;
+}
+
+function appendUnderLock(input: ExecutionLedgerEventInput, timestamp: string, directory: string): ExecutionLedgerRecord {
   const filePath = dayFile(timestamp, directory);
   const previous = readHead(directory, filePath);
   const unsigned: Omit<ExecutionLedgerRecord, "hash"> = {
@@ -282,7 +322,10 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
     fs.closeSync(descriptor);
   }
   writeHeadAtomic(directory, record);
+  return record;
+}
 
+async function mirrorToRedis(record: ExecutionLedgerRecord): Promise<void> {
   try {
     const redis = getRedis();
     await redis.lpush(RECENT_KEY, JSON.stringify(record));
@@ -297,8 +340,6 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
   } catch (error) {
     console.warn("[EXECUTION LEDGER] Redis mirror unavailable; durable file append succeeded.", error);
   }
-
-  return record;
 }
 
 export class ExecutionLedger {
