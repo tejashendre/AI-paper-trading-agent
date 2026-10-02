@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { runReplay } from "@/lib/backtest/replayEngine";
+import { runReplay, buildRecordedReplayInput } from "@/lib/backtest/replayEngine";
+import { readResearchEvidence } from '@/lib/research/researchArchive';
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
 
@@ -226,6 +227,16 @@ async function loadFastCandles(assets: string[], baseLimit: number) {
 }
 
 async function main() {
+  const archiveFlag = process.argv.indexOf('--archive');
+  if (archiveFlag >= 0) {
+    const directory = process.argv[archiveFlag + 1];
+    if (!directory) throw new Error('--archive requires an explicit captured research directory');
+    const report = runReplay(buildRecordedReplayInput(readResearchEvidence(path.resolve(directory))));
+    console.log(JSON.stringify({ source: 'RECORDED_RESEARCH_ARCHIVE', descriptiveOnly: true,
+      limitations: ['Periodic depth cannot reconstruct intervening order books', 'No intrabar watchdog or scale-in parity', 'Bar fill costs remain modeled'], ...report }, null, 2));
+    process.exitCode = report.acceptance.passed ? 0 : 1;
+    return;
+  }
   const options = parseArgs();
   const candlesByAsset = await loadCandles(options.assets, options.timeframe, options.limit);
   const fastCandles = options.timeframe === "15m"
