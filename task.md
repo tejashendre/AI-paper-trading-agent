@@ -12,7 +12,7 @@ Scope: review the existing 20 fixes without reimplementing them; complete P0, P1
 - [x] P2: display learning-gate progress and reproduce promotion, demotion and book release with durable decision evidence in integration fixtures.
 - [ ] P2: review the first observed production transition against its preserved decision evidence after an approved deployment.
 - [x] Charts: verify public Bybit history limits, implement cursor pages and a bounded rolling browser window, and verify controls, refresh, failures and mobile layout.
-- [ ] Dashboard: make signed total gain/loss the live primary number in the human/swing comparison cards, preserving separate book accounting.
+- [x] Dashboard: signed total gain/loss is the live primary comparison-card number; verified costs, frozen units, stale labeling and separate book accounting.
 
 
 ## Remaining release checkpoint

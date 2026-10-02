@@ -399,3 +399,6 @@ bias had to be corrected mid-study before the number could be trusted at all.
 Treat the direction and the robustness as the finding, and the magnitude as a
 ceiling. Whether the strategy earns its keep is a question only forward time
 answers.
+
+## Live total-gain comparison (2026-10-02)
+The human and swing comparison cards display signed total gain/loss as their primary figures. Total gain equals marked account value minus that account's initial capital; the XSEC book remains a separate account. Status returns valuation coefficients from each position's frozen economics and the existing paper exit-cost model. The browser applies fresh quote changes to that exact synchronized mark, including price-dependent impact and exit fees. Each server snapshot rebases booked entry fees, funding and completed trades once. Missing/stale/future quotes retain the synchronized value with a Last marked label; absent data displays loading rather than an invented balance. This read-only display never sizes or executes a trade.

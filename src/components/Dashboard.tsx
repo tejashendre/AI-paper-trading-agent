@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
+import { livePortfolioGain, formatSignedGain } from '@/lib/ui/livePortfolioGain';
 import { useChartHistory } from '@/lib/ui/useChartHistory';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
@@ -536,6 +537,8 @@ function DashboardContent({ secret }: { secret: string }) {
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
   const closedStats = viewMode === "ai" ? data?.aiClosedStats : data?.userClosedStats;
   const activeLivePrice = livePrices?.[activeAsset];
+  const humanGain = livePortfolioGain(data?.userTotalValue, data?.userPortfolio?.initialCapital, data?.userValuations, livePrices);
+  const swingGain = livePortfolioGain(data?.aiTotalValue, data?.aiPortfolio?.initialCapital, data?.aiValuations, livePrices);
 
   const handleTrade = async () => {
     if (isSpectator) {
@@ -773,32 +776,31 @@ function DashboardContent({ secret }: { secret: string }) {
               <span className={`text-[9px] font-bold font-mono tracking-widest uppercase ${isDark ? "text-indigo-400" : "text-indigo-600"}`}>HUMAN PORTFOLIO</span>
               {viewMode === "user" && <span className={`text-[8px] bg-indigo-500/10 text-indigo-500 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold`}>ACTIVE</span>}
             </div>
-            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.userTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            {(() => {
-              const initial = Number(data?.userPortfolio?.initialCapital || 10000);
-              const pnl = Number(data?.userTotalValue || initial) - initial;
-              return (
-                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                </p>
-              );
-            })()}
+            <h3 data-testid="human-total-gain" className={`text-2xl font-bold font-mono ${humanGain.gain === null ? textMuted : humanGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
+              {formatSignedGain(humanGain.gain)}
+            </h3>
+            <p className={`text-xs font-mono mt-1 ${textSub}`}>
+              {humanGain.live ? 'Live' : 'Last marked'} total gain / loss
+            </p>
+            <p className={`text-xs font-mono mt-1 ${textMuted}`}>
+              Account value: {humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+            </p>
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
-            {data?.userTotalValue !== undefined && data?.aiTotalValue !== undefined && (
+            {humanGain.gain !== null && swingGain.gain !== null && (
               <>
                 <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
                   isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
                 }`}>
-                  {data.userTotalValue > data.aiTotalValue ? "🏆 HUMAN IS LEADING" : data.aiTotalValue > data.userTotalValue ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
+                  {humanGain.gain! > swingGain.gain! ? "🏆 HUMAN IS LEADING" : swingGain.gain! > humanGain.gain! ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
                 </div>
                 {/* The verdict compares the human against the swing account
                     only. Without this line a reader seeing a live 24-position
                     book would reasonably assume it was counted. */}
                 <div className={`text-[8px] font-mono mt-1 text-center ${textMuted}`}>
-                  human vs swing engine · the book is a separate account
+                  total gain: human vs swing · the book is a separate account
                 </div>
               </>
             )}
@@ -815,19 +817,18 @@ function DashboardContent({ secret }: { secret: string }) {
               <span className="text-[9px] font-bold font-mono tracking-widest text-blue-500 uppercase">AI TRADING AGENT</span>
               {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
             </div>
-            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.aiTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            {(() => {
-              const initial = Number(data?.aiPortfolio?.initialCapital || 10000);
-              const pnl = Number(data?.aiTotalValue || initial) - initial;
-              return (
-                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} <span className={`font-normal ${textMuted}`}>swing</span>
-                </p>
-              );
-            })()}
+            <h3 data-testid="swing-total-gain" className={`text-2xl font-bold font-mono ${swingGain.gain === null ? textMuted : swingGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
+              {formatSignedGain(swingGain.gain)}
+            </h3>
+            <p className={`text-xs font-mono mt-1 ${textSub}`}>
+              {swingGain.live ? 'Live' : 'Last marked'} swing total gain / loss
+            </p>
+            <p className={`text-xs font-mono mt-1 ${textMuted}`}>
+              Account value: {swingGain.totalValue === null ? 'Loading...' : '$' + swingGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+            </p>
             {bookSummary && (
               <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
-                {bookSummary.totalReturnUsd >= 0 ? "+" : ""}${bookSummary.totalReturnUsd.toFixed(2)}{" "}
+                {formatSignedGain(bookSummary.totalReturnUsd)}{" "}
                 <span className={`font-normal ${textMuted}`}>
                   book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
                 </span>
@@ -842,7 +843,7 @@ function DashboardContent({ secret }: { secret: string }) {
             <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
               {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
             </h2>
-            <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Live value is shown in the portfolio card above.</p>
+            <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Total gain includes live open-position marks in the comparison cards above.</p>
             <EquityCurve
               key={`${viewMode}-${equityTrades.length}-${equityTrades[0]?.timestamp || "empty"}`}
               trades={equityTrades}
