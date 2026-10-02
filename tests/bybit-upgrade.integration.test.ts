@@ -393,6 +393,27 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
     }
   });
 
+  it("a scan's ledger record stays a compact heartbeat; full diagnostics live in the scan snapshot", async () => {
+    // Per-minute scans with every asset's full diagnostics grew the ledger by
+    // about 30 MB a day on the VPS while nothing ever read them back.
+    const world = await openWorld("GOLD");
+    try {
+      await m.daemon.runEntryScan();
+      const files = fs.readdirSync(world.ledgerDir).filter((file) => file.endsWith(".ndjson"));
+      const line = files.flatMap((file) => fs.readFileSync(path.join(world.ledgerDir, file), "utf8").split(/\r?\n/))
+        .find((row) => row.includes('"SCAN_COMPLETED"'));
+      assert.ok(line, "the scan was not recorded");
+      assert.ok(Buffer.byteLength(line) < 2048, `scan record is ${Buffer.byteLength(line)} bytes`);
+      const event = JSON.parse(line);
+      assert.equal(event.payload.results.length, 9);
+      assert.deepEqual(Object.keys(event.payload.results[0]).sort(), ["action", "asset", "vetoCode"]);
+      const snapshot = await world.memory.get<{ results: unknown[] }>("swing:lastScan:ai");
+      assert.equal(snapshot?.results.length, 9, "full diagnostics remain available in the scan snapshot");
+    } finally {
+      world.close();
+    }
+  });
+
   it("an entry freeze stops new entries while exits keep running", async () => {
     const asset: ConfiguredAsset = "GOLD";
     const symbol = CONFIGURED_INSTRUMENTS[asset].symbol;

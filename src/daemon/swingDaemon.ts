@@ -247,53 +247,6 @@ function summarizeEntryBlockers(results: SwingScanResult[]) {
     .map(([reason, count]) => ({ reason, count }));
 }
 
-function compactLedgerResult(result: SwingScanResult) {
-  const execution = result.execution as any;
-  const portfolioBudget = result.portfolioBudget as any;
-  return {
-    asset: result.asset,
-    action: result.action,
-    reason: result.reason,
-    decisionState: result.decisionState,
-    htfScore: result.htfScore,
-    triggerScore: result.triggerScore,
-    marketStructureScore: result.marketStructureScore,
-    microstructureScore: result.microstructureScore,
-    dataQuality: result.dataQuality,
-    finalConviction: result.finalConviction,
-    price: result.price,
-    signalPrice: result.signalPrice,
-    stopLoss: result.stopLoss,
-    takeProfit: result.takeProfit,
-    paperSize: result.paperSize,
-    entryMode: result.entryMode,
-    assetMode: result.assetMode,
-    setupTags: result.setupTags,
-    marketRegime: result.marketRegime,
-    learningAdjustment: result.learningAdjustment,
-    entryGate: result.entryGate,
-    targetReachability: result.targetReachability,
-    netRewardRisk: result.netRewardRisk,
-    execution: execution ? {
-      modelVersion: execution.modelVersion,
-      entryFillPrice: execution.entry?.fillPrice,
-      targetFillPrice: execution.targetExit?.fillPrice,
-      stopFillPrice: execution.stopExit?.fillPrice,
-      netRewardUsd: execution.netRewardUsd,
-      netLossUsd: execution.netLossUsd,
-      netRewardRiskRatio: execution.netRewardRiskRatio,
-      estimatedRoundTripExecutionCostUsd: execution.estimatedRoundTripExecutionCostUsd,
-    } : undefined,
-    portfolioBudget: portfolioBudget ? {
-      approved: portfolioBudget.approved,
-      reason: portfolioBudget.reason,
-      policyVersion: portfolioBudget.policyVersion,
-      diagnostics: portfolioBudget.diagnostics,
-    } : undefined,
-    timestamp: result.timestamp,
-  };
-}
-
 function emptyLifetimeStats(nowIso: string): LifetimeScanStats {
   return {
     scanCycles: 0,
@@ -1478,16 +1431,16 @@ async function runEntryScan() {
       type: "SCAN_COMPLETED",
       source: "SWING_DAEMON",
       timestamp: new Date().toISOString(),
+      // A heartbeat only: the full per-asset diagnostics are in the Redis scan
+      // snapshot, and nothing reads them back from the ledger. The full form
+      // grew the ledger by about 40 MB a day.
       payload: {
         scanId: scanSequence,
         startedAt,
         completedAt: new Date().toISOString(),
         summary: summarizeResults(results),
-        decisionSummary: summarizeDecisionStates(results),
-        blockerSummary: summarizeEntryBlockers(results),
         exitSweep,
-        opportunitySweep,
-        results: results.map(compactLedgerResult),
+        results: results.map((result) => ({ asset: result.asset, action: result.action, vetoCode: result.vetoCode ?? null })),
       },
     });
 
