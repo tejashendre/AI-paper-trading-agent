@@ -505,10 +505,14 @@ export function scoreContinuousHtfEvidence(input: {
   return { buyScore, shortScore, details };
 }
 
-export function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[]) {
+/**
+ * `nowMs` is the evaluation time (the quote's event time), never the wall
+ * clock, so a replay judges historical bars exactly as live judged them.
+ */
+export function scoreDataQuality(assetMode: SwingSignal["assetMode"], livePrice: number, signalPrice: number, candles15m: Candle[], candles1h: Candle[], candles4h: Candle[], nowMs: number) {
   let score = assetMode === "REALTIME_FAST" ? 92 : 72;
   const latest15m = candles15m[candles15m.length - 1]?.time ? candles15m[candles15m.length - 1].time * 1000 : 0;
-  const ageMinutes = latest15m ? (Date.now() - latest15m) / 60_000 : 999;
+  const ageMinutes = latest15m ? (nowMs - latest15m) / 60_000 : 999;
 
   if (!Number.isFinite(livePrice) || livePrice <= 0) score -= 45;
   if (candles15m.length < 80 || candles1h.length < 80 || candles4h.length < 80) score -= 20;
@@ -1030,7 +1034,7 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
     if (!Number.isFinite(livePrice) || livePrice <= 0) {
       return emptySignal(assetKey, "Selected market venue returned an invalid execution price");
     }
-    const dataQuality = scoreDataQuality(assetMode, livePrice, signalPrice, candles15m, candles1h, candles4h);
+    const dataQuality = scoreDataQuality(assetMode, livePrice, signalPrice, candles15m, candles1h, candles4h, referenceMs);
 
     // 2. Regime Filter Setup (Based on 1H structural data)
     const isMeanReverting = stats1h.hurstExponent < 0.55;
