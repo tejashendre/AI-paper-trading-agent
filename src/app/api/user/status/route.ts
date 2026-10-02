@@ -4,7 +4,8 @@ import { Logger } from "@/lib/logger";
 import { MarketService } from "@/lib/market";
 import { TradeLedger } from "@/lib/memory/tradeLedger";
 import { verifyAuth } from "@/lib/auth";
-import { calculateInstrumentPnl, instrumentFee, instrumentNotional, positionInstrument } from "@/lib/trading/assetSpecs";
+import { modeledPositionMark } from '@/lib/trading/positionValuation';
+import type { PositionValuation } from '@/lib/ui/livePortfolioGain';
 import { buildPositionOutcomes, summarizeCompletedPositions } from "@/lib/trading/positionOutcomes";
 import { buildCoverageSnapshot, DailyFunnel, ScanDecision, VetoCode } from "@/lib/trading/coverageStatus";
 import { CONFIGURED_ASSETS } from "@/lib/trading/instrumentRegistry";
@@ -16,46 +17,13 @@ import { FeedHealthSummary } from "@/lib/data/feedHealthSummary";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
-import { EXECUTION_COST_MODEL_VERSION, estimateCarryCostUsd, estimatePaperFill } from "@/lib/trading/executionCostModel";
+import { EXECUTION_COST_MODEL_VERSION } from "@/lib/trading/executionCostModel";
 import { PORTFOLIO_RISK_POLICY_VERSION } from "@/lib/trading/portfolioRiskBudget";
 import { PAPER_MARGIN_POLICY_VERSION } from "@/lib/trading/tradeAdmission";
 import { RESEARCH_HARNESS_VERSION } from "@/lib/research/walkForward";
 import { RESEARCH_STATUS_KEY } from '@/lib/research/researchLoop';
 
 export const dynamic = "force-dynamic";
-
-function modeledPositionMark(asset: string, pos: any, currentPrice: number) {
-    // Marked under the model frozen on the position, not today's routing.
-    const instrument = positionInstrument({ ...pos, asset });
-    const exit = estimatePaperFill({
-        asset,
-        instrument,
-        action: pos.direction === "SHORT" ? "COVER" : "SELL",
-        requestedPrice: currentPrice,
-        amount: pos.amount,
-        context: {
-            reason: "MARK",
-            assetMode: ["BTC", "ETH", "SOL"].includes(asset) ? "REALTIME_FAST" : "SLOW_SWING",
-            dataQuality: pos.dataQuality,
-            isPeakLiquidity: false,
-            liquidityState: pos.liquidityState,
-            orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
-        },
-    });
-    const grossPnl = calculateInstrumentPnl({
-        instrument, entryPrice: pos.entryPrice, exitPrice: exit.fillPrice, quantity: pos.amount, direction: pos.direction,
-    });
-    const entryFee = pos.entryFeePaid ?? instrumentFee(instrument, pos.amount, pos.entryPrice);
-    // Linear positions book funding to cash at each settlement; marking it
-    // again here would count it twice.
-    const carryCost = instrument.economicsModel === "BYBIT_LINEAR_USDT_V1" ? 0 : estimateCarryCostUsd({
-        asset,
-        notionalUsd: pos.notionalUsd ?? instrumentNotional(instrument, pos.amount, pos.entryPrice),
-        openedAt: pos.entryTime,
-        fundingRate: pos.fundingRate,
-    });
-    return { grossPnl, entryFee, exitFee: exit.feeUsd, carryCost };
-}
 
 function buildLearningDigest(localLearningRules: any[], opportunitySummary: any, setupPerformance: any) {
     const boostRules = (localLearningRules || []).filter((rule) => rule.action === "BOOST");
@@ -377,6 +345,7 @@ export async function GET(request: Request) {
             const scalpAssets = Object.keys(portfolio.scalpPositions || {});
             const allActiveAssets = Array.from(new Set([...openAssets, ...scalpAssets]));
             const prices: Record<string, number> = {};
+            const valuations: PositionValuation[] = [];
             for (const asset of allActiveAssets) {
                 try {
                     const price = await MarketService.getCurrentPrice(asset);
@@ -385,6 +354,7 @@ export async function GET(request: Request) {
                     const calculatePosValue = (pos: any, currentPrice: number) => {
                         if (!pos) return 0;
                         const mark = modeledPositionMark(asset, pos, currentPrice);
+                        valuations.push(mark.valuation);
                         return pos.usdInvested + mark.grossPnl - mark.exitFee - mark.carryCost;
                     };
 
@@ -401,7 +371,8 @@ export async function GET(request: Request) {
                 }
             }
 
-            return { totalValue, prices };
+            const heldPositions = [...Object.values(portfolio.openPositions || {}), ...Object.values(portfolio.scalpPositions || {})].filter(Boolean);
+            return { totalValue, prices, valuations: valuations.length === heldPositions.length ? valuations : null };
         };
 
         const [userSync, aiSync] = await Promise.all([
@@ -559,6 +530,7 @@ export async function GET(request: Request) {
             userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades, // Keep restored history visible while bounded
             userEquityTrades,
             userTotalValue: userSync.totalValue,
+            userValuations: userSync.valuations,
             userProfitByAsset,
 
             // AI Data
@@ -566,6 +538,7 @@ export async function GET(request: Request) {
             aiTrades: isSpectator ? aiTrades.slice(0, 100) : aiTrades, // Keep restored history visible while bounded
             aiEquityTrades,
             aiTotalValue: aiSync.totalValue,
+            aiValuations: aiSync.valuations,
             aiProfitByAsset,
             aiDetailedStats,
             aiClosedStats,
