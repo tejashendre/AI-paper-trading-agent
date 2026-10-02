@@ -344,7 +344,7 @@ Two manual workflows sit alongside it, both dry-run by default:
 | `coverage:funnel:v1:*` | swing daemon | per-asset daily decision funnels and veto counts |
 | `perp:*` | cross-sectional daemon | ticker and kline caches, all TTL'd |
 | `learning:<version>:*` | both | rules derived from closed trades, namespaced by strategy version |
-| `./data` | both | JSON backups, hash-chained execution ledger, deploy and reset snapshots |
+| `./data` | both | JSON backups, hash-chained execution ledger, research archive (256 MB, oldest days rotate out), the newest 3 deploy snapshots and the newest reset snapshot. The ledger keeps every trade, funding, research and risk event; per-minute scan records are compact heartbeats, and older ones are removed by a verified re-seal at deploy (`npm run ledger:compact`). |
 
 The three portfolios are deliberately separate accounts. The dashboard reports
 them separately for the same reason — summing two independent $10,000 accounts

@@ -91,3 +91,12 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 - [x] S4 Provably unused code removal (3c14a83: 13 unreachable modules, 37 dead exports, Monte Carlo path, 15 unread env keys; -3,107 lines net; 245/245, audit 155/1/0)
 - [x] S5 Autonomous promotion: XSEC self-release on shadow evidence (1d36e54); forward-evidence promotion, auto PAPER_ACTIVE/REJECTED, promoted-family probe entries, live PAPER rows feed demotion (b9f02ca); 269/269
 - [x] S6 Full checks: test:upgrade 270/270, audit 155/1/0, research fixture exit 0, ledger fixture valid 8, tsc --incremental false, lint, build, diff --check all clean. Not deployed; awaiting Tejas's approval to push/deploy.
+
+## 2026-10-02 Storage and real-time pass (branch claude/autonomy-hardening)
+- [x] Real-time: Bybit delta confirmation fix; FX index reference on the dashboard (659dd14)
+- [x] Storage growth: compact per-minute scan ledger record, 27.7 KB to under 2 KB (3fa6fac)
+- [x] Audit check updated to corrected delta semantics; 273/273 tests, audit 155/1/0, tsc, lint, build clean
+- [x] Storage option 1 chosen by Tejas: ledger compaction (deploy, writers stopped, >=50 MB), newest 3 deploy backups + newest reset backup, research archive 256 MB with rotation (df54fbb)
+- [ ] Push/PR/deploy: waiting for Tejas's approval
+- [x] Bug pass 2: replay data quality used wall clock (fc998c8); ledger appends forked across processes (d6be0b9); scale-in beyond target (7a92362); cost/drawdown/cost-verdict labels (15239d2); label queue starvation and 24h summary flush (994259d); XSEC loop always reschedules
+- [x] Strategy audit 156/0/0: research-quality check now verifies the gate applies its rule on the synthetic fixture (f58b3bb); 285/285 tests; tsc, lint, build, diff-check clean

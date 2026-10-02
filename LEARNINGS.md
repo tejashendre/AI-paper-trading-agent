@@ -48,3 +48,8 @@ Dense quarter-hour observations cannot share retention with unfinished 24-hour l
 - Leg-based and position-based win rates can differ sharply when partial take-profits are common (51% of legs vs 36% of positions here). Any tile showing a win rate must name its unit.
 - A gate that every input fails is not a safety feature, it is a disabled feature. The research loop hard-coded "no cost evidence" on every forward outcome, so all promotion gates were unreachable and learning could never change behavior. Test that each gate can pass on realistic good evidence, not only that it rejects bad evidence.
 - A halt keyed to "current drawdown below X" can never clear for a flat book: with no positions its drawdown is frozen. Release criteria for a flat book must come from its shadow evidence, and post-release risk must be measured from a fresh epoch while the lifetime breaker stays armed.
+- A "pure" signal function that reads Date.now() is not pure: every historical replay judged its bars against today and silently refused to trade. Pass the evaluation time in.
+- In-process write queues do not serialize separate containers sharing a volume. Any hash chain written by more than one process needs a cross-process lock; test it with real child processes.
+- A capped queue shared by high-rate and low-rate producers starves the low-rate one; deduplicate at the evidence grain (one per closed bar) and give the evidence that drives decisions priority.
+- A WARN that measures profitability on synthetic data is a category error; audit the gate's logic instead and judge profitability on real forward evidence.
+
