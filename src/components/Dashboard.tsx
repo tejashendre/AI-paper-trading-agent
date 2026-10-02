@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture } from '@/lib/research/researchDisplay';
+import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
@@ -2312,6 +2313,15 @@ function DashboardContent({ secret }: { secret: string }) {
                             <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                             <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                           </div>
+                          {!isScalp && (
+                            <p className={`text-[9px] font-mono ${textMuted}`}>
+                              {(() => {
+                                const risk = entryRiskUsage(pos);
+                                return risk.utilizationPercent === null ? 'Initial risk evidence unavailable for this position.'
+                                  : `Risk approved: $${risk.approvedUsdt!.toFixed(2)} / taken at entry: $${risk.takenUsdt!.toFixed(2)} (${risk.utilizationPercent.toFixed(1)}% used). Margin, leverage and liquidity caps still apply.`;
+                              })()}
+                            </p>
+                          )}
                           {!isScalp && (
                             <div className={`rounded-lg border px-2 py-1.5 ${thesisColor}`}>
                               <div className="flex items-center justify-between gap-2">
