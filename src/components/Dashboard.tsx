@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
+import { useChartHistory } from '@/lib/ui/useChartHistory';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
@@ -305,9 +306,6 @@ function DashboardContent({ secret }: { secret: string }) {
   const [chartInterval, setChartInterval] = useState("1h");
   const [chartTimezone, setChartTimezone] = useState<ChartTimezone>("EU");
   const [data, setData] = useState<any>(null);
-  const [chartData, setChartData] = useState<any>(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState<string | null>(null);
   const [signals, setSignals] = useState<any>(null);
   const [livePrices, setLivePrices] = useState<any>(null);
   const [liveFeed, setLiveFeed] = useState<any>(null);
@@ -479,43 +477,8 @@ function DashboardContent({ secret }: { secret: string }) {
     }
   }, [fetcher, activeAsset]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let cancelled = false;
-
-    setChartLoading(true);
-    setChartError(null);
-    setChartData(null);
-
-    const loadChart = async () => {
-      try {
-        const res = await fetcher(
-          `/api/chart?interval=${chartInterval}&limit=520&asset=${activeAsset}&portfolio=${viewMode}`,
-          { signal: controller.signal }
-        );
-        const payload = await res.json().catch(() => null);
-        if (cancelled) return;
-        if (!res.ok || !payload || payload.asset !== activeAsset || payload.interval !== chartInterval) {
-          throw new Error(payload?.error || `Chart data for ${activeAsset} is unavailable.`);
-        }
-        setChartData(payload);
-      } catch (error) {
-        if (cancelled || controller.signal.aborted) return;
-        setChartData(null);
-        setChartError(error instanceof Error ? error.message : `Chart data for ${activeAsset} is unavailable.`);
-      } finally {
-        if (!cancelled) setChartLoading(false);
-      }
-    };
-
-    loadChart();
-    const interval = setInterval(loadChart, 30_000);
-    return () => {
-      cancelled = true;
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [fetcher, activeAsset, viewMode, chartInterval]);
+  const { chartData, chartLoading, chartError, historyLoading, loadOlder, loadLatest } =
+    useChartHistory(fetcher, activeAsset, chartInterval, viewMode);
 
   // Next Scan Countdown Timer Effect
   useEffect(() => {
@@ -1025,7 +988,7 @@ function DashboardContent({ secret }: { secret: string }) {
                     ))}
                   </div>
                   <div className={`flex border rounded-lg overflow-hidden ${isDark ? "bg-[#050508] border-[#1c1c24]" : "bg-[#fafbfc] border-[#e2e8f0]"}`}>
-                    {["1m", "5m", "15m", "30m", "1h"].map(tf => (
+                    {["1m", "5m", "15m", "30m", "1h", "4h"].map(tf => (
                       <button 
                         key={tf} 
                         onClick={() => setChartInterval(tf)} 
@@ -1041,6 +1004,17 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 </div>
               </div>
+              {chartData?.candles?.length > 0 && (
+                <div className={`mb-3 flex flex-wrap items-center gap-3 text-[10px] font-mono ${textMuted}`}>
+                  <button onClick={loadOlder} disabled={historyLoading || !chartData.hasMore}
+                    className="rounded border px-3 py-2 disabled:opacity-40">
+                    {historyLoading ? 'Loading history...' : chartData.hasMore ? 'Load older candles' : 'Start of available history'}
+                  </button>
+                  <button onClick={loadLatest} disabled={historyLoading} className="rounded border px-3 py-2">Back to latest</button>
+                  <span>{chartData.candles.length.toLocaleString()} candles: {new Date(chartData.candles[0].time * 1000).toLocaleDateString()} to {new Date(chartData.candles.at(-1).time * 1000).toLocaleDateString()}</span>
+                  {chartData.historyWindow && <span>Browsing older history. Live chart refresh paused; use Back to latest to resume.</span>}
+                </div>
+              )}
               {chartData?.stale && chartData?.asOf && (
                 <div className={`mb-3 text-[9px] font-mono ${isDark ? "text-amber-400" : "text-amber-700"}`}>
                   Market closed or delayed. Last candle: {new Date(chartData.asOf).toLocaleString()}.
@@ -1052,13 +1026,13 @@ function DashboardContent({ secret }: { secret: string }) {
                 </div>
               )}
               {!chartLoading && chartError && (
-                <div className={`h-[520px] flex items-center justify-center text-xs font-mono ${isDark ? "text-red-400" : "text-red-700"}`}>
+                <div className={`py-3 text-xs font-mono ${isDark ? "text-red-400" : "text-red-700"}`}>
                   {selectedAssetConfig.name} chart unavailable: {chartError}
                 </div>
               )}
-              {!chartLoading && !chartError && chartData?.asset === activeAsset && (
+              {!chartLoading && chartData?.asset === activeAsset && (
                 <TradingChart 
-                  key={`${activeAsset}-${chartInterval}-${viewMode}`}
+                  key={`${activeAsset}-${chartInterval}-${viewMode}-${chartData.windowVersion}`}
                   candles={chartData.candles} 
                   trades={chartData.trades} 
                   indicators={chartData.indicators} 

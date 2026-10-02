@@ -55,3 +55,5 @@ Dense quarter-hour observations cannot share retention with unfinished 24-hour l
 
 
 2026-10-02 P2: A transition verdict and hash are insufficient for independent verification if its inputs later rotate. Save immutable decision inputs only at rare promotion, demotion and risk-release events. Progress displays must show all remaining gates, not imply that reaching a sample count alone activates trading. Runtime fixtures are reproducible evidence; they do not establish that a production transition has occurred.
+
+2026-10-02 charts: A public API's per-request candle limit is not a total-history limit. Historical browsing needs an exclusive timestamp cursor, retained pages during refresh and a rolling browser memory bound. Keep UTC coordinates intact and format timezone labels per historical instant, otherwise long charts mislabel DST. A read-only historical series should be labeled stale when appropriate without weakening fresh-data trading gates.

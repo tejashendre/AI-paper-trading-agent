@@ -62,13 +62,24 @@ cannot justify faster promotion or risk increases.
 The existing daemon captures closed 15m/1h/4h/W bars and periodic quote,
 depth and funding summaries at most once per asset per 15 minutes. gzip
 evidence hashes and cursors prevent repeated bar copies. The configurable
-research budget defaults to 1 GiB; capture stops visibly when full and does
-not delete financial history. `research:capture` and `research:replay` require
+research budget defaults to 256 MiB and rotates oldest research days while
+preserving financial history. `research:capture` and `research:replay` require
 explicit local paths and do not access accounts. Captured bar replay is
 descriptive: it lacks intrabar watchdog, scale-in and baseline reversal
 parity, and does not fabricate unavailable historical costs.
 
 The dashboard uses one public Bybit socket for nine ticker and trade topics,
+with separate 1,000-candle chart requests to the public historical endpoint.
+Chart cursors move strictly backwards; history never enters the live strategy
+cache. The browser retains at most 20,000 candles and rolls toward older pages
+at that bound. Live chart refresh pauses only after that rolling window drops
+recent bars, with an explicit Back to latest action. Refresh preserves loaded
+history and the viewport; asset/timeframe changes abort obsolete requests.
+Axis and crosshair labels format actual UTC instants with historical timezone
+rules. Free API page size is not a calendar limit; a contract's listing date
+and provider history availability still bound what can be displayed.
+
+The quote stream uses
 latest-state rendering at up to 10 Hz, one-second REST recovery when needed,
 bounded reconnect delay and cleanup for hidden tabs. No browser tick archive
 or model service is added. Quotes, closed-bar quality, research evidence and
