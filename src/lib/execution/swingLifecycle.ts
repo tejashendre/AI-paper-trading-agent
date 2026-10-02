@@ -41,6 +41,7 @@ import {
   isOppositeEdgeConfirmed,
   isThesisWeakening,
   PARTIAL_PROFIT_POLICY,
+  scaleInRoom,
 } from "@/lib/execution/exitPolicy";
 
 export interface SwingExitSweepResult {
@@ -815,6 +816,8 @@ async function scaleIntoWinner(
   });
   const entryFee = scaleFill.feeUsd;
   if (addMarginUsd + entryFee > portfolio.usd) return false;
+  const room = scaleInRoom({ direction: pos.direction, fillPrice: scaleFill.fillPrice, stopLoss: pos.stopLoss, takeProfit: pos.takeProfit });
+  if (!room.allowed) return false;
   const capacity = evaluateFillCapacity({
     side: pos.direction === "SHORT" ? "SELL" : "BUY",
     quantity: addAmount,

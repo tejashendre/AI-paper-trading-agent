@@ -202,3 +202,24 @@ export function isThesisWeakening(position: OpenPosition, signal: SwingSignal): 
     (position.direction === "LONG" && signal.action === "SWING_SHORT");
   return opposed && signal.finalConviction >= Math.max(62, Number(position.finalConviction || 0) - 4);
 }
+
+/** The reward/risk an added quantity must offer on its own. */
+export const SCALE_IN_MIN_ROOM_RATIO = 1.35;
+
+/**
+ * Whether a scale-in fill still has room: its own reward to the target must
+ * be at least SCALE_IN_MIN_ROOM_RATIO times its own risk to the stop. A
+ * trailing runner ignores the fixed target, so without this an add could fill
+ * beyond the target, which the blended position math alone does not catch.
+ */
+export function scaleInRoom(input: { direction: "LONG" | "SHORT"; fillPrice: number; stopLoss: number; takeProfit: number }) {
+  const sign = input.direction === "LONG" ? 1 : -1;
+  const reward = sign * (input.takeProfit - input.fillPrice);
+  const risk = sign * (input.fillPrice - input.stopLoss);
+  if (!(risk > 0)) return { allowed: false, ratio: 0, reason: "Scale-in blocked: the stop is already at or beyond the add price." };
+  if (!(reward > 0)) return { allowed: false, ratio: 0, reason: "Scale-in blocked: price is at or beyond the take-profit target." };
+  const ratio = reward / risk;
+  return ratio >= SCALE_IN_MIN_ROOM_RATIO
+    ? { allowed: true, ratio, reason: "" }
+    : { allowed: false, ratio, reason: `Scale-in blocked: the add's own reward to target is ${ratio.toFixed(2)}x its risk, below ${SCALE_IN_MIN_ROOM_RATIO}.` };
+}
