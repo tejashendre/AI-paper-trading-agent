@@ -26,11 +26,13 @@ setRedisClient(new MemoryRedis());
 })();
 `;
 
-function run(script: string, label: string, env: NodeJS.ProcessEnv): Promise<number> {
+function run(script: string, label: string, env: NodeJS.ProcessEnv): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", "tsx", script, label], { cwd: process.cwd(), env, stdio: "ignore" });
+    const child = spawn(process.execPath, ["--import", "tsx", script, label], { cwd: process.cwd(), env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
-    child.on("exit", (code) => resolve(code ?? 1));
+    child.on("exit", (code) => resolve({ code: code ?? 1, stderr }));
   });
 }
 
@@ -40,8 +42,8 @@ test("two processes appending at once keep one valid chain", { timeout: 120_000 
   fs.writeFileSync(script, writer);
   try {
     const env = { ...process.env, EXECUTION_LEDGER_DIR: directory };
-    const codes = await Promise.all([run(script, "A", env), run(script, "B", env), run(script, "C", env)]);
-    assert.deepEqual(codes, [0, 0, 0]);
+    const results = await Promise.all([run(script, "A", env), run(script, "B", env), run(script, "C", env)]);
+    assert.deepEqual(results.map((r) => r.code), [0, 0, 0], results.map((r) => r.stderr.slice(-600)).join(" | "));
     const verification = ExecutionLedger.verify(directory);
     assert.equal(verification.events, 450);
     assert.equal(verification.valid, true, verification.errors.slice(0, 3).join("; "));

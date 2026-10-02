@@ -110,6 +110,15 @@ jobs:
             export APP_COMMIT_SHA="$DEPLOY_COMMIT"
             export APP_DEPLOYED_AT="$DEPLOYED_AT"
             docker compose build --pull quant-dashboard
+
+            # Owner-approved storage option 1: re-seal the ledger without old
+            # per-minute scan records while no daemon is appending. It skips
+            # itself when under 50 MB would be reclaimed; a refusal leaves the
+            # ledger unchanged and the deploy continues.
+            echo "Compacting the execution ledger with the writers stopped..."
+            docker compose stop swing-daemon xsec-daemon || true
+            docker compose run --rm --no-deps -T swing-daemon tsx scripts/ledger-compact.ts --apply               || echo "Ledger compaction refused; the ledger is unchanged."
+
             docker compose up -d --no-build --remove-orphans
 
             echo "Cross-sectional daemon status (reported, not gated):"
