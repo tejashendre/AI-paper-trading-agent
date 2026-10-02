@@ -341,21 +341,21 @@ export async function refreshLedgerMirror(directory = ledgerDirectory()): Promis
   }
 }
 
-function sanitize(value: unknown, depth = 0): unknown {
+function sanitize(value: unknown, depth = 0, arrayLimit = 250): unknown {
   if (depth > 10) return "[MAX_DEPTH]";
   if (value === null || value === undefined) return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
   if (typeof value === "string" || typeof value === "boolean") return value;
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Error) return { name: value.name, message: value.message };
-  if (Array.isArray(value)) return value.slice(0, 250).map((entry) => sanitize(entry, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, arrayLimit).map((entry) => sanitize(entry, depth + 1, arrayLimit));
   if (typeof value === "object") {
     const output: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       if (/(secret|password|authorization|api.?key|signing.?key|token)/i.test(key)) {
         output[key] = "[REDACTED]";
       } else {
-        output[key] = sanitize(entry, depth + 1);
+        output[key] = sanitize(entry, depth + 1, arrayLimit);
       }
     }
     return output;
@@ -375,14 +375,21 @@ function readLastRecord(filePath: string): ExecutionLedgerRecord | null {
   if (!fs.existsSync(filePath)) return null;
   const stats = fs.statSync(filePath);
   if (stats.size <= 0) return null;
-  const bytes = Math.min(stats.size, 128 * 1024);
+  let bytes = Math.min(stats.size, 128 * 1024);
   const descriptor = fs.openSync(filePath, "r");
   try {
-    const buffer = Buffer.alloc(bytes);
-    fs.readSync(descriptor, buffer, 0, bytes, stats.size - bytes);
-    const lines = buffer.toString("utf8").trim().split(/\r?\n/);
-    const last = lines[lines.length - 1];
-    return last ? JSON.parse(last) as ExecutionLedgerRecord : null;
+    for (;;) {
+      const buffer = Buffer.alloc(bytes);
+      fs.readSync(descriptor, buffer, 0, bytes, stats.size - bytes);
+      const tail = buffer.toString("utf8").trimEnd();
+      const delimiter = tail.lastIndexOf('\n');
+      if (delimiter >= 0 || bytes === stats.size) {
+        const last = tail.slice(delimiter + 1);
+        return last ? JSON.parse(last) as ExecutionLedgerRecord : null;
+      }
+      // A rare evidence record can exceed the normal tail window.
+      bytes = Math.min(stats.size, bytes * 2);
+    }
   } finally {
     fs.closeSync(descriptor);
   }
@@ -474,7 +481,8 @@ function appendUnderLock(input: ExecutionLedgerEventInput, timestamp: string, di
     strategyVersion: TRADING_STRATEGY_VERSION,
     executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
     previousHash: previous?.hash || null,
-    payload: sanitize(input.payload),
+    payload: sanitize(input.payload, 0,
+      ["RESEARCH_PROMOTED", "RESEARCH_DEMOTED", "BOOK_RISK_RELEASED"].includes(input.type) ? Infinity : 250),
   };
   const record: ExecutionLedgerRecord = {
     ...unsigned,
@@ -510,6 +518,25 @@ async function mirrorToRedis(record: ExecutionLedgerRecord): Promise<void> {
 }
 
 export class ExecutionLedger {
+  /** Rare decision proofs are retried after durable append but failed acknowledgement. */
+  static recordOnce(input: ExecutionLedgerEventInput & { id: string }): Promise<ExecutionLedgerRecord> {
+    const task = writeQueue.then(async () => {
+      if (this.hasEvent(input.id, '1970-01-01')) {
+        if (!this.verify().valid) throw new Error('Existing decision proof ledger is invalid');
+        for (const file of dayFiles(ledgerDirectory())) {
+          for (const row of readDayFile(ledgerDirectory(), file).split(/\r?\n/).filter(Boolean)) {
+            const record = JSON.parse(row) as ExecutionLedgerRecord;
+            if (record.id === input.id) return record;
+          }
+        }
+        throw new Error('Existing decision proof is missing');
+      }
+      return appendRecord(input);
+    });
+    writeQueue = task.catch(() => undefined);
+    return task;
+  }
+
   static record(input: ExecutionLedgerEventInput): Promise<ExecutionLedgerRecord> {
     const task = writeQueue.then(() => appendRecord(input));
     writeQueue = task.catch(() => undefined);
