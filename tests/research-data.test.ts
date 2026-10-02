@@ -18,7 +18,7 @@ test("insufficient_history_and_purging_are_explicit", async () => {
   const overlapping = outcomes(52).map(o => ({ ...o, featureStartMs: definition.registeredAtMs }));
   assert.equal(r.buildPurgedOutcomeFolds(overlapping, definition.labelHorizonMs).length, 0);
 });
-test("research archive is lossless, bounded, deduplicated and never deletes evidence", async () => {
+test("research archive is lossless, bounded, deduplicated and never deletes the day being written", async () => {
   const archive: any = await import("../src/lib/research/researchArchive").catch(() => ({}));
   assert.equal(typeof archive.appendResearchEvidence, "function");
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bybit-research-test-"));
@@ -37,3 +37,25 @@ test("research archive is lossless, bounded, deduplicated and never deletes evid
   assert.equal(stopped.status, "STORAGE_LIMIT");
   assert.deepEqual(fs.readFileSync(path.join(directory, files[0])), before);
 });
+
+test("a full research archive rotates out its oldest days instead of stopping capture", async () => {
+  // Storage option 1 (Tejas, 2026-10-02): the archive stays within its cap,
+  // and a self-learning bot needs the newest evidence most.
+  const archive: any = await import("../src/lib/research/researchArchive");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bybit-research-rotate-"));
+  const day = (d: number) => Date.parse(`2026-10-0${d}T00:00:00Z`);
+  const record = (d: number) => ({ asset: "BTC", recordedAtMs: day(d),
+    candles: { "15m": [{ time: day(d) / 1000, open: 100 + d, high: 101 + d, low: 99 + d, close: 100 + d, volume: 10 }] },
+    quote: { price: 100 + d }, metadata: { symbol: "BTCUSDT", metadataVersion: "hash", padding: "x".repeat(400) } });
+  archive.appendResearchEvidence({ directory, record: record(1), maxBytes: 100_000 });
+  archive.appendResearchEvidence({ directory, record: record(2), maxBytes: 100_000 });
+  // Everything stored now (both days plus capture state) is exactly the cap
+  // plus a little, so a third day fits only after the oldest rotates out.
+  const stored = fs.readdirSync(directory).reduce((sum: number, f: string) => sum + fs.statSync(path.join(directory, f)).size, 0);
+  const third = archive.appendResearchEvidence({ directory, record: record(3), maxBytes: stored + 50 });
+  assert.equal(third.status, "CAPTURED");
+  assert.deepEqual(third.rotatedOut, ["2026-10-01.ndjson.gz"]);
+  assert.deepEqual(fs.readdirSync(directory).filter((f: string) => f.endsWith(".gz")).sort(), ["2026-10-02.ndjson.gz", "2026-10-03.ndjson.gz"]);
+  assert.equal(archive.readResearchEvidence(directory).length, 2, "what remains still verifies");
+});
+

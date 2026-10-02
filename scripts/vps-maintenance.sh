@@ -13,9 +13,11 @@ Safe VPS maintenance for AI Quant Trader.
 Usage:
   scripts/vps-maintenance.sh [--dry-run] [--apply] [--restart] [--project-dir PATH]
 
-Default mode is --dry-run. Apply compresses ledger days older than seven days
-and prunes unused Docker build cache, images, and stopped containers.
-Trading records, account state, recovery backups and Docker volumes are retained.
+Default mode is --dry-run. Apply compresses ledger days older than seven days,
+keeps only the newest 3 deploy backups, the newest reset backup and the newest
+3 release preflight scripts (owner-approved storage option 1, 2026-10-02), and
+prunes unused Docker build cache, images, and stopped containers. Account
+state, Redis data and the execution ledger's trade events are retained.
 
 Options:
   --dry-run          Show what would be checked and cleaned. Default.
@@ -123,9 +125,16 @@ section "Cleanup Plan"
 echo "Will prune stopped containers only."
 echo "Will prune unused images only."
 echo "Will prune unused Docker build cache: $PRUNE_UNTIL."
+echo "Will keep the newest 3 deploy backups and the newest reset backup; older ones are deleted."
 echo "Will NOT run docker volume prune."
-echo "Will NOT delete Redis data."
-echo "Will NOT delete $PROJECT_DIR/data."
+echo "Will NOT delete Redis data or account state."
+
+section "Backup Retention"
+# Backup directories are named by UTC timestamp, so a name sort is a time sort.
+for dir in $(ls -1d data/deploy-backups/*/ 2>/dev/null | sort | head -n -3); do run rm -rf "$dir"; done
+for dir in $(ls -1d data/reset-backups/*/ 2>/dev/null | sort | head -n -1); do run rm -rf "$dir"; done
+for file in $(ls -1 data/release-preflight-*.sh 2>/dev/null | xargs -r ls -1t | tail -n +4); do run rm -f "$file"; done
+du -sh data/deploy-backups data/reset-backups 2>/dev/null || true
 
 section "Ledger Compression"
 if [ "$DRY_RUN" -eq 1 ]; then
