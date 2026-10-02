@@ -950,6 +950,11 @@ function DashboardContent({ secret }: { secret: string }) {
                 </span>
               )}
             </div>
+            {typeof activeLivePrice?.indexPrice === "number" && activeLivePrice.indexPrice > 0 && (
+              <div className={`text-[8px] font-mono mt-1 ${textMuted}`} title="Bybit's spot index updates about every second. The bot trades and values positions at the contract price above.">
+                Bybit index {activeLivePrice.indexPrice.toLocaleString(undefined, { maximumFractionDigits: 5 })} (reference, not tradable)
+              </div>
+            )}
           </div>
           <div className={`rounded-xl border p-3 ${bgSubCard}`}>
             <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Bot Cycle</div>

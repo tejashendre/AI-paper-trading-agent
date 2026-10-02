@@ -78,6 +78,14 @@ export function mergeBybitTicker(
     if (eventMs < previous.lastEventMs) return previous;
     const state: BybitTickerState = { ...previous, lastEventMs: eventMs, receivedAtMs };
     applyTickerFields(state, data, eventMs);
+    // Bybit pushes only changed fields, so this delta confirms every field
+    // this session already holds as unchanged at its time. Fields never seen
+    // in the session stay unconfirmed. A dead socket sends no deltas, so it
+    // still goes stale.
+    const target = state as unknown as Record<string, number | undefined>;
+    for (const group of Object.keys(GROUP_TIME) as Array<keyof typeof GROUP_TIME>) {
+      if (target[GROUP_TIME[group]] !== undefined) target[GROUP_TIME[group]] = eventMs;
+    }
     return state;
   }
 
