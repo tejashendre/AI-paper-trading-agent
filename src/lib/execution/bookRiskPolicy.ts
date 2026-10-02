@@ -1,6 +1,8 @@
 import type { PerpTicker } from "@/lib/data/perpUniverse";
 import type { BookPosition } from "@/lib/execution/bookRebalancer";
 import { BookPlan, CROSS_SECTIONAL_STRATEGY_VERSION, RebalanceOrder } from "@/lib/strategy/crossSectionalMomentum";
+import type { EquityPoint } from "@/lib/execution/equityCurve";
+import { blockBootstrapMean95 } from "@/lib/research/deflatedSharpe";
 
 /**
  * Risk state for the cross-sectional book. A halt stops new risk; it never
@@ -18,6 +20,51 @@ export const BOOK_RISK_POLICY_VERSION = "book-risk-v1-2026-10-01";
 export const BOOK_HARD_DRAWDOWN_PERCENT = 25;
 /** The verdict research must publish before a halted book may be released. */
 export const PROMOTION_EVIDENCE_PASSED = "PROMOTION_EVIDENCE_PASSED";
+/** Shadow periods (12h each) required before a release: fifteen days. */
+export const SHADOW_EVIDENCE_MIN_PERIODS = 30;
+/** The shadow book itself must not have drawn down further than this. */
+export const SHADOW_EVIDENCE_MAX_DRAWDOWN_PERCENT = 15;
+
+/**
+ * Whether the capital-free shadow book has earned a release: enough periods,
+ * a 95% block-bootstrap lower bound on its mean net period return above zero
+ * (fees and funding are inside its equity), and a contained drawdown.
+ */
+export function evaluateShadowEvidence(curve: EquityPoint[]) {
+  const equity = curve.map((point) => point.equityUsd).filter((value) => Number.isFinite(value) && value > 0);
+  const returns = equity.slice(1).map((value, i) => value / equity[i] - 1);
+  const reasons: string[] = [];
+  if (returns.length < SHADOW_EVIDENCE_MIN_PERIODS) {
+    reasons.push(`INSUFFICIENT_SHADOW_PERIODS: ${returns.length} of ${SHADOW_EVIDENCE_MIN_PERIODS} shadow rebalance periods`);
+  }
+  const interval = blockBootstrapMean95(returns);
+  if (!interval || !(interval.low > 0)) {
+    reasons.push(`SHADOW_EDGE_NOT_ESTABLISHED: 95% lower bound of mean period return ${interval ? (interval.low * 100).toFixed(3) + "%" : "unavailable"}`);
+  }
+  let peak = equity[0] ?? 0;
+  let maxDrawdownPercent = 0;
+  for (const value of equity) {
+    peak = Math.max(peak, value);
+    maxDrawdownPercent = Math.max(maxDrawdownPercent, ((peak - value) / peak) * 100);
+  }
+  if (maxDrawdownPercent >= SHADOW_EVIDENCE_MAX_DRAWDOWN_PERCENT) {
+    reasons.push(`SHADOW_DRAWDOWN: ${maxDrawdownPercent.toFixed(2)}% reached the ${SHADOW_EVIDENCE_MAX_DRAWDOWN_PERCENT}% limit`);
+  }
+  return {
+    passed: reasons.length === 0,
+    reasons,
+    metrics: { periods: returns.length, meanReturn95: interval, maxDrawdownPercent },
+  };
+}
+
+/**
+ * Drawdown of a released book, measured from the best equity since the
+ * release. The lifetime breaker keeps running alongside it.
+ */
+export function epochDrawdownPercent(epoch: { releaseEquityUsd: number; epochPeakEquityUsd: number }, equityUsd: number): number {
+  const peak = Math.max(epoch.releaseEquityUsd, epoch.epochPeakEquityUsd);
+  return peak > 0 ? Math.max(0, ((peak - equityUsd) / peak) * 100) : 0;
+}
 const LOST_EDGE_VERDICTS = new Set(["EDGE_GONE"]);
 
 export interface BookRiskDecision {
@@ -58,9 +105,10 @@ export function evaluateBookRisk(input: {
     state = input.hasOpenPositions ? "REDUCE_ONLY" : "SHADOW";
     if (state === "SHADOW") {
       const evidence = input.edgeVerdict === PROMOTION_EVIDENCE_PASSED;
-      // The authorized release is what acknowledges the lifetime breach; a
-      // live drawdown past the breaker still blocks it.
-      if (evidence && input.releaseAuthorized && input.currentDrawdownPercent < BOOK_HARD_DRAWDOWN_PERCENT) {
+      // The authorized release is what acknowledges the lifetime breach. A
+      // SHADOW book is flat, so its drawdown cannot recover and is not a
+      // release criterion; the shadow evidence is.
+      if (evidence && input.releaseAuthorized) {
         state = "ACTIVE";
         reasons.push("RELEASED: documented release authorization and promotion evidence are both present; record the acknowledged breach level");
       } else if (evidence) {

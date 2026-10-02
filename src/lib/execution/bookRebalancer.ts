@@ -129,6 +129,10 @@ export interface BookPortfolio {
     /** Lifetime drawdown reviewed in an authorized release, if any. */
     breachAcknowledgedAtPercent?: number;
     lastUnwind?: { at: string; executed: number; detail: string };
+    /** When the current incident began; release evidence must postdate it. */
+    haltedAt?: string;
+    /** Set by a release: drawdown is then measured from the best equity since. */
+    releaseEpoch?: { releasedAt: string; releaseEquityUsd: number; epochPeakEquityUsd: number };
   };
 }
 

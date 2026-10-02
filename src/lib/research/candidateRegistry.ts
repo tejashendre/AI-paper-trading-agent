@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { getRedis } from "@/lib/redis";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import type { CompletedPositionOutcome } from "@/lib/trading/positionOutcomes";
-import { deflatedSharpeRatio, returnMoments } from "./deflatedSharpe";
+import { blockBootstrapMean95, deflatedSharpeRatio, returnMoments } from "./deflatedSharpe";
+export { blockBootstrapMean95 };
 
 export interface CandidateDefinition {
   candidateId: string;
@@ -118,23 +119,6 @@ function independentOutcomes(outcomes: ResearchOutcome[], horizonMs: number) {
       if (!Number.isFinite(start) || start < (lastEnd.get(key) ?? -Infinity)) return false;
       lastEnd.set(key, Math.max(o.closedAtMs, o.labelEndMs ?? o.openedAtMs + horizonMs)); return true;
     });
-}
-/** Deterministic moving-block bootstrap retains short-run return dependence. */
-export function blockBootstrapMean95(values: number[], seed = 20261001) {
-  if (values.length < 4 || values.some(value => !Number.isFinite(value))) return null;
-  let state = seed >>> 0;
-  const random = () => { state = (1664525 * state + 1013904223) >>> 0; return state / 4294967296; };
-  const blockSize = Math.max(2, Math.ceil(Math.sqrt(values.length))), means: number[] = [];
-  for (let trial = 0; trial < 1000; trial++) {
-    const sample: number[] = [];
-    while (sample.length < values.length) {
-      const start = Math.floor(random() * values.length);
-      for (let offset = 0; offset < blockSize && sample.length < values.length; offset++) sample.push(values[(start + offset) % values.length]);
-    }
-    means.push(sample.reduce((a, b) => a + b, 0) / sample.length);
-  }
-  means.sort((a, b) => a - b);
-  return { low: means[24], high: means[974], iterations: 1000, blockSize, seed };
 }
 export function evaluatePromotion(input: {
   definition: CandidateDefinition; outcomes: ResearchOutcome[]; trials: CandidateDefinition[];
