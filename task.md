@@ -140,7 +140,7 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 ## 2026-10-03 Release readiness
 - [x] Post-Codex review: FX fee source verified; fixed forming-candle chart regression, stopped-services failure path, stale-lock compaction block (fc07b9a, e542025, 8e44f4d)
 - [x] Automated verified ledger recovery copy before compaction (43a1d38, 0554741); 340/340, audit 156/0/0, build clean
-- [ ] Merge PR 11 to main = production deploy: waiting for Tejas's explicit approval (optional off-server ledger copy first)
+- [x] PR 11 merged as ca40909 after owner approval; deployment verified in the release section below. The verified off-server ledger recovery copy remains retained.
 
 
 ## 2026-10-03 Strategy expansion (branch claude/strategy-expansion, stacked on PR 11)
@@ -160,8 +160,10 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E12 BTC_ETH_RATIO shadow baseline (2-sigma entry, 0.5 exit, 30-day window, half capital per leg) in baselines.ts, shown on the Benchmarks panel; flat over the last 37 days (no 2-sigma event)
 
 ## 2026-10-03 Release: ship PR 11 with the strategy expansion (owner: "make the system upgrade now by shipping all the recent updates")
+- [x] PR 12 deployment intake: owner explicitly selected "Deploy PR12 and report storage". Read the handoff, verified tested head bda2b7d and CI/preflight 37125878277, and merged only PR 12 as 732454394a39c178dbf2fae5970223731fe91525. Main deploy 37126563513 and live/storage verification in progress; documentation will be pushed on this separate branch only.
 - [x] Fast-forward claude/autonomy-hardening to 4b45af6 (PR 11 now carries E0-E12)
 - [x] PR 11 CI green (preflight included), merged as ca40909 at the tested head 4b45af6
 - [x] Deploy run 37124771711 success: live 13:08Z, freeze lifted, scans error-free, XSEC rebalanced 13:08:39Z (still SHADOW), carry shadow opened 10, ledger 362 MB -> 7.9 MB verified, disk 25% used (37 GB free)
-- [ ] Research queue full after deploy (health monitor alert): capacity 4096 -> 8192 and 12 -> 48 labels per sweep on claude/research-queue-capacity; needs owner go to deploy
+- [x] PR 12 research queue fix deployed as 732454394a39c178dbf2fae5970223731fe91525, run 37126563513 success; 396/396 tests, audit 156/0/0, VPS live audit 175/0/0. At 14:09:21 UTC, over 30 minutes after release verification: queue 4123/8192, rejectedNew 0, scan 3070 age 49.29 s, ERROR 0, OPERATOR_FREEZE rows 0, book overdue false, health monitor exit 0. Source/image parity and ledger valid; history preserved.
+- [x] Oracle VPS storage audited after cleanup: 50 GiB attached disk, 48.28 GiB usable root, 12.01 GiB used and 36.25 GiB available (25% used). Bot app image 745 MB shared by three app containers; n8n images about 2.88 GB. Docker still reports 1.231 GB active cache. Full measurements and retained backups: docs/PR12_DEPLOYMENT_STORAGE_2026-10-03.md. Verification recorded on codex/pr12-deploy-verification-2026-10-03; only this documentation branch is pushed.
 - Storage (owner, same day): last deploy log showed 49G disk, 13G used (26%), data 782M, ledger 360M; container logs capped 10m x 3; this deploy prunes all build cache, unused images, backups beyond the newest 3 and compacts the ledger
