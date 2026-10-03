@@ -150,7 +150,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [ ] E2 Benchmarks: buy-and-hold and daily-trend baseline next to the bot
 - [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
 - [x] E4 Crowding filter live: src/lib/strategy/crowding.ts, CROWDING veto; blocks a side only when account ratio and funding are both top/bottom decile with that side paying; fails open; vetoed candidates journaled for counterfactual
-- [ ] E5 Liquidation recording from Bybit allLiquidation stream
+- [x] E5 Liquidation recording: allLiquidation for the nine symbols in websocketDataMesh, per-minute totals to data/research/liquidations under the 256 MB cap
 - [ ] E6 Volatility scaling (down-only) for the XSEC book
 - [ ] E7 Daily trend family (blended 20/60/120, SHADOW)
 - [ ] E8 Session-open breakout family (SHADOW) and crowd-fade family (SHADOW)

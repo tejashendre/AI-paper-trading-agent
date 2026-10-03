@@ -226,3 +226,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E4 crowding filter
 - New CROWDING veto after the portfolio guard: blocks a long when the share of accounts long (500 hourly points) and funding (last 200 settlements plus the current rate) are both in their top decile with longs paying; mirror for shorts. 15 min cache, fails open with a log line.
 - Live probe today: all nine symbols return data; nothing crowded (silver 97th pct long share, but funding mid-range). 7/7 tests.
+
+## 2026-10-03 E5 liquidation recording
+- websocketDataMesh subscribes allLiquidation.<symbol> (live check: all nine accepted), aggregates per symbol-minute (count, long and short liquidated USDT) and appends closed minutes every 60s to data/research/liquidations/<day>.ndjson.gz; counted in the research cap, oldest days rotate.
+- Research only; not a live input. tests/liquidation-recorder.test.ts 3/3.
