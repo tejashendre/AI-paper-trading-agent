@@ -18,6 +18,8 @@ import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 import { riskMarksReady, updateMarkedRiskStats } from '../lib/trading/markedEquity';
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
 import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile, projectedFundingCostUsdt } from "../lib/trading/executionCostModel";
+import { getConfiguredInstrument } from "../lib/trading/instrumentRegistry";
+import { evaluateCrowding, loadCrowdingInputs } from "../lib/strategy/crowding";
 import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
@@ -812,6 +814,27 @@ async function runEntryScan() {
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
+          continue;
+        }
+
+        // Crowding filter: never join an extremely crowded side. Fails open
+        // (logged) when positioning data is unavailable; blocked candidates
+        // are journaled, so the filter's counterfactual is measured too.
+        const crowding = await loadCrowdingInputs(getConfiguredInstrument(asset).symbol, swingSignal.fundingRate)
+          .then((inputs) => evaluateCrowding(isShort ? "SHORT" : "LONG", inputs))
+          .catch(async (error) => {
+            await Logger.warn(`[SWING] ${asset} crowding data unavailable: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+          });
+        if (crowding?.crowded) {
+          results.push({
+            asset, action: "BLOCKED", vetoCode: "CROWDING", reason: crowding.reason,
+            simpleStatus: "Crowded side skipped", simpleReason: crowding.reason,
+            nextStep: "The bot will wait until positioning on this side is no longer extreme.", decisionState: "BLOCKED_RISK",
+            score: swingSignal.score, fundingRate: swingSignal.fundingRate, price: swingSignal.entryPrice,
+            signalPrice: swingSignal.signalPrice, stopLoss: swingSignal.stopLoss, takeProfit: swingSignal.takeProfit,
+            setupTags: swingSignal.setupTags, ...strategyProvenance, timestamp,
+          });
           continue;
         }
 
