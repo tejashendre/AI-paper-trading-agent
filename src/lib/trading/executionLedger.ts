@@ -222,7 +222,7 @@ export function compactLedger(options: {
   // to erase financial evidence or overwrite an interrupted recovery copy.
   if ([...drop].some(type => type !== "SCAN_COMPLETED") ||
       fs.existsSync(`${directory}.pre-compaction`) || fs.existsSync(`${directory}.compacting`) ||
-      fs.existsSync(path.join(directory, ".append.lock")) ||
+      liveAppendLock(directory) ||
       !Number.isFinite(options.minDropBytes ?? 0) || (options.minDropBytes ?? 0) < 0) {
     return { ...report, status: "REFUSED_UNSAFE_OPERATION", errors: ["Unsafe removal type, active writer, recovery files or invalid threshold; no files changed."] };
   }
@@ -427,6 +427,19 @@ const APPEND_LOCK_WAIT_MS = 15_000;
  * without this, two of them can read the same head and fork it. A lock left
  * by a process that died is taken over once it is older than 30 seconds.
  */
+/**
+ * Whether an append lock is held by a live writer. A lock older than the
+ * append stale limit was left by a killed process; appends already take it
+ * over, so it must not block maintenance forever either.
+ */
+function liveAppendLock(directory: string): boolean {
+  try {
+    return Date.now() - fs.statSync(path.join(directory, ".append.lock")).mtimeMs <= APPEND_LOCK_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
 async function withAppendLock<T>(directory: string, fn: () => T): Promise<T> {
   const lockPath = path.join(directory, ".append.lock");
   const deadline = Date.now() + APPEND_LOCK_WAIT_MS;

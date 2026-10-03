@@ -122,4 +122,20 @@ describe("ledger compaction", () => {
     assert.equal(compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 }).status, "COMPACTED");
     assert.equal(compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 }).status, "SKIPPED_BELOW_THRESHOLD");
   });
+
+  it("refuses unsafe work, but a lock left by a killed writer does not block it forever", async () => {
+    const dir = await seededLedger();
+    assert.equal(compactLedger({ directory: dir, dropTypes: ["ENTRY_FILLED"], minDropBytes: 0 }).status, "REFUSED_UNSAFE_OPERATION",
+      "only scan telemetry may ever be removed");
+    const lock = path.join(dir, ".append.lock");
+    fs.writeFileSync(lock, "4242 live");
+    assert.equal(compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 }).status, "REFUSED_UNSAFE_OPERATION",
+      "a live writer holds the lock");
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+    assert.equal(compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 }).status, "COMPACTED",
+      "a lock older than the append stale limit is a dead writer's leftover");
+    assert.equal(ExecutionLedger.verify(dir).valid, true);
+  });
 });
+
