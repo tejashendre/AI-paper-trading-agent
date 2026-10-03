@@ -149,7 +149,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E1 Health alerts: scripts/health-monitor.mjs + .github/workflows/health-monitor.yml (every 30 min, runs from main after merge); also alerts on a risk lock (cost-passing candidates all vetoed, no fill for 72h)
 - [ ] E2 Benchmarks: buy-and-hold and daily-trend baseline next to the bot
 - [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
-- [ ] E4 Crowding filter: account long/short ratio + funding extremes block the crowded side
+- [x] E4 Crowding filter live: src/lib/strategy/crowding.ts, CROWDING veto; blocks a side only when account ratio and funding are both top/bottom decile with that side paying; fails open; vetoed candidates journaled for counterfactual
 - [ ] E5 Liquidation recording from Bybit allLiquidation stream
 - [ ] E6 Volatility scaling (down-only) for the XSEC book
 - [ ] E7 Daily trend family (blended 20/60/120, SHADOW)

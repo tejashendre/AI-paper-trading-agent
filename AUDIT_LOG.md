@@ -222,3 +222,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E3 funding tilt
 - Admission charged one day of |funding| to both sides. Now projectedFundingCostUsdt charges the paying side its full current rate over 48h (p90 of 49 real holds was 44h, median 17h) and the receiving side only the 0.01% floor, never a credit. Oil longs (receivers) get easier, gold longs (payers) stricter.
 - Replay already books real settlements. tests/funding-tilt.test.ts 4/4.
+
+## 2026-10-03 E4 crowding filter
+- New CROWDING veto after the portfolio guard: blocks a long when the share of accounts long (500 hourly points) and funding (last 200 settlements plus the current rate) are both in their top decile with longs paying; mirror for shorts. 15 min cache, fails open with a log line.
+- Live probe today: all nine symbols return data; nothing crowded (silver 97th pct long share, but funding mid-range). 7/7 tests.

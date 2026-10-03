@@ -36,6 +36,7 @@ export type VetoCode =
   | "VENUE_SIZE"
   | "EXECUTION_COST"
   | "PORTFOLIO_RISK_BUDGET"
+  | "CROWDING"
   | "ERROR";
 
 export const FUNNEL_STAGES = ["closedBars", "evaluations", "candidates", "provenancePass", "costPass", "riskPass", "fills"] as const;
@@ -65,10 +66,11 @@ const STAGES_BY_VETO: Record<VetoCode, FunnelStage[]> = {
   VENUE_SIZE: THROUGH_PROVENANCE,
   EXECUTION_COST: THROUGH_PROVENANCE,
   PORTFOLIO_RISK_BUDGET: [...THROUGH_PROVENANCE, "costPass"],
+  CROWDING: THROUGH_PROVENANCE,
 };
 const DATA_VETOES = new Set<VetoCode>(["DATA_NOT_ELIGIBLE", "WARMING_UP", "SIGNAL_UNAVAILABLE", "FEED_UNHEALTHY"]);
 const COST_VETOES = new Set<VetoCode>(["LIQUIDITY", "VENUE_SIZE", "EXECUTION_COST"]);
-const RISK_VETOES = new Set<VetoCode>(["OPERATOR_FREEZE", "PORTFOLIO_GUARD", "INVALID_STOP", "ADMISSION", "LEARNING", "IDENTITY", "PORTFOLIO_RISK_BUDGET", "MIGRATION_CONFLICT"]);
+const RISK_VETOES = new Set<VetoCode>(["OPERATOR_FREEZE", "PORTFOLIO_GUARD", "INVALID_STOP", "ADMISSION", "LEARNING", "IDENTITY", "PORTFOLIO_RISK_BUDGET", "MIGRATION_CONFLICT", "CROWDING"]);
 
 /** One asset's outcome in one scan; recorded once per decision id. */
 export interface ScanDecision {
