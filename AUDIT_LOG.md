@@ -255,3 +255,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E10 maker-entry shadow
 - src/lib/research/makerShadow.ts compareMakerEntry: post-only limit at the signal price fills only when a 5m bar trades through by one tick within 30 minutes; stop wins ambiguous bars including the fill bar; misses are 0R. Taker pays half spread plus taker fee. Recorded per candidate (research:makerShadow, cap 2000); /api/benchmarks makerEntryShadow summary and panel line.
 - Decision rule for switching entry style stays with the evidence: no live order path changes. 6 tests; 394/394.
+
+## 2026-10-03 E11 research backfill
+- src/lib/research/backfill.ts pages closed 1h and 1d klines, funding and the 1d account ratio from each contract's launch time into <archive>/backfill/<SYMBOL>.json.gz, written only if the archive stays under its cap. Live run: 43 s, 3.2 MB total (BTC 57,194 hourly bars since 2020).
+- XSEC daemon refreshes it 5 min after start and then daily, outside runCycle and the book lock. Research input only; promotion still needs forward evidence. 395/395, audit 156/0/0.

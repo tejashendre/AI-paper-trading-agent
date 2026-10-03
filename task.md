@@ -156,5 +156,5 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E8 SESSION_BREAKOUT shadow family on the six TradFi perps (London 08:00, COMEX 08:20/08:25, NYMEX 09:00 local): first close outside the opening hour within 3h; stop range midpoint, target 2 ranges. Crowd-fade entry family not built: E4 filter covers the point and ratio history is not replayable
 - [x] E9 Carry-with-momentum shadow book (xsec:carryShadow:*), every rebalance in every risk state; goes flat without agreement; shown under the XSEC panel with its evidence count
 - [x] E10 Maker-entry shadow: every 24h candidate evaluation also scores a post-only limit (fill only on a 1-tick trade-through within 30 min, misses = 0R) against an immediate taker entry; summary on the Benchmarks panel
-- [ ] E11 Historical backfill command for research
+- [x] E11 Research backfill: npm run research:backfill and a daily off-lock refresh in the XSEC daemon; 1h/1d closed candles, funding, daily account ratio since listing; 3.2 MB for all nine (live run)
 - [x] E12 BTC_ETH_RATIO shadow baseline (2-sigma entry, 0.5 exit, 30-day window, half capital per leg) in baselines.ts, shown on the Benchmarks panel; flat over the last 37 days (no 2-sigma event)
