@@ -511,7 +511,7 @@ async function runEntryScan() {
           timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
           dataQuality: swingSignal.dataQuality, direction: candidate.direction,
           mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
-          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
+          vetoCode: candidate.family === "TREND_PULLBACK" ? "BASELINE_SHADOW" : "SHADOW_ONLY",
         })));
 
       } catch (error) {

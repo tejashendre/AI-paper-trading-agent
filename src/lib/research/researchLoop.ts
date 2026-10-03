@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getRedis } from '@/lib/redis';
 import { CONFIGURED_ASSETS, getConfiguredInstrument } from '@/lib/trading/instrumentRegistry';
 import { strategyFamilyConfigHash } from '@/lib/swingEngine';
+import { SESSION_OPENS } from '@/lib/strategy/sessionOpen';
 import { EXECUTION_COST_MODEL_VERSION, executionCostModelVersionFor } from '@/lib/trading/executionCostModel';
 import { TRADING_STRATEGY_VERSION } from '@/lib/trading/executionLedger';
 import { RISK_POLICY_VERSION, feeScheduleFor } from '@/lib/trading/assetSpecs';
@@ -13,7 +14,8 @@ export const RESEARCH_OUTCOMES_KEY = `research:${TRADING_STRATEGY_VERSION}:outco
 export const RESEARCH_STATUS_KEY = `research:${TRADING_STRATEGY_VERSION}:status`;
 export async function ensureResearchBaselines(nowMs=Date.now()) {
   const existing=await getCandidateRegistry();
-  for (const asset of CONFIGURED_ASSETS) for (const family of ['TREND_PULLBACK','RANGE_REVERSION'] as const) {
+  for (const asset of CONFIGURED_ASSETS) for (const family of ['TREND_PULLBACK','RANGE_REVERSION','SESSION_BREAKOUT'] as const) {
+    if (family==='SESSION_BREAKOUT' && !SESSION_OPENS[asset]) continue;
     const configHash=strategyFamilyConfigHash(family,asset), instrument=getConfiguredInstrument(asset);
     const costModelVersion=executionCostModelVersionFor(instrument);
     const identity=[instrument.instrumentVersion,family,configHash,TRADING_STRATEGY_VERSION];

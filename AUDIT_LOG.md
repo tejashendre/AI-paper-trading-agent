@@ -239,3 +239,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E6 XSEC volatility scaling
 - volatilityScale (bookRiskPolicy.ts): min(1, 20% / realized annual vol) from the last 60 recorded equity periods; 1 with fewer than 20 returns. crossSectionalDaemon scales grossExposure for the live plan (live curve) and the shadow plan (shadow curve). Never above 1, so no ceiling moves.
 - Applied live rather than as a parallel book: it only shrinks exposure, and the release gate's sign test is scale-invariant. 5 tests; 377/377, audit 156/0/0.
+
+## 2026-10-03 E8 session-open breakout family
+- evaluateStrategyFamilies now builds a list of family specs (trend or range by ADX, plus SESSION_BREAKOUT) and finalizes each with the shared cost model and 1.35 net R floor. Existing family config hashes verified unchanged (BTC trend 9c09834a..., OIL range e68a3854...), so their evidence carries over.
+- SESSION_BREAKOUT registers SHADOW cohorts for the six TradFi assets; it trades only via promotion (controlled probe). Two count tests updated deliberately (18 to 24 cohorts; 3 fresh EURUSD cohorts). 382/382.
