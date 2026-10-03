@@ -116,7 +116,7 @@ jobs:
             # itself when under 50 MB would be reclaimed. Stop every writer
             # and fail the release if compaction or verification refuses.
             echo "Compacting the execution ledger with the writers stopped..."
-            if ! sh scripts/release-ledger-maintenance.sh; then
+            if ! sh scripts/release-ledger-maintenance.sh "$BACKUP_DIR"; then
               # The previous containers still exist; bring them back so exits
               # keep running (new entries stay frozen), then fail the release.
               echo "Ledger maintenance refused; restarting the previous release and failing this deploy."
