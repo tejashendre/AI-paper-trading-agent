@@ -210,3 +210,7 @@ Reviewed Codex's 14 commits (e08d65f..b092cfa) on claude/autonomy-hardening, PR 
 
 ## 2026-10-03 merge readiness (no merge, no deploy)
 Tejas asked to make everything merge-ready if nothing is pending. Pending item found: Codex's runbook required a verified full ledger copy before the first destructive compaction, but it was manual and the deploy backup omitted the ledger. Automated it (43a1d38): release-ledger-maintenance.sh takes the deploy backup dir, dry-runs, and only on WOULD_COMPACT copies the ledger into the backup and verifies the copy's chain before compacting; extended Codex's stubbed-docker release test to cover copy, skip, failed stop, failed copy verification and failed compaction (0554741). Final: 340/340 tests, audit 156/0/0, tsc, lint, build, diff-check clean. Merging to main deploys automatically, so the merge itself waits for Tejas's explicit deploy approval.
+
+## 2026-10-03 E0 loss-streak probation (claude/strategy-expansion)
+- Found live: the swing bot has not traded since 2026-10-02 01:09 UTC because its last four closes were full stops ($2-6 each), and the streak breaker asked for "a reset or reviewed probation cohort" that no code provides; BTC had 171 candidates in 7 days, all vetoed PORTFOLIO_RISK_BUDGET.
+- Fix: after a 72h cool-off from the newest loss, one probation position at a time; a win ends the streak, another full stop restarts the cool-off. No limit raised. tests/loss-streak-probation.test.ts; 346/346 tests, audit 156/0/0.
