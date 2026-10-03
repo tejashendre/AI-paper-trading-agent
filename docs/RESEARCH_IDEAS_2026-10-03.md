@@ -148,3 +148,25 @@ a profit promise or financial advice.
 better informed. Then 2 (volatility scaling, as a shadow book), 3 (daily trend
 family) and 6 (start recording liquidations now, since history cannot be
 recovered later). 5, 7 and 8 next; Tier 3 when data allows.
+
+## Addendum: strategy families checked on real Bybit data (2026-10-03)
+
+Existing families: swing trend pullback (live), range reversion (shadow),
+crypto cross-sectional 72h momentum (halted). Checks below are descriptive,
+preregistered and include taker costs; scripts are kept outside the repo.
+
+| Candidate | Finding | Verdict |
+|---|---|---|
+| FX carry via Bybit FX perpetuals | Funding over 25 days: EURUSD -1.5%/yr, GBPUSD 0.0%, USDJPY -0.4%. Funding does not carry the interest-rate differential. | Not implementable here. |
+| Commodity funding asymmetry | Oil (CLUSDT) longs received about 33%/yr (shorts paid on 98% of settlements); gold longs paid about 16%/yr, silver about 12%/yr. | Use as a holding-cost tilt for multi-day positions in every family, not a standalone strategy. |
+| Crypto cross-sectional funding carry (weekly, long 6 lowest / short 6 highest funding of 40 liquid perps, 29 weeks) | Funding leg +0.22%/week, positive every week; price leg -0.61%/week; total -13.5%, max drawdown 25%, t = -0.44. High-funding coins kept trending up. Survivorship bias: today's universe. | Do not build standalone. Possible shadow variant: carry only when 72h momentum agrees. |
+| Daily cross-asset trend (see table above) | Drawdown cut by about two thirds; returns depend on lookback. | Build as a blended-lookback SHADOW family (Tier 1, item 3). |
+
+Still untested candidates, in order of evidence and data availability:
+crowding/contrarian filter from the account long/short ratio (history from
+2020, backtestable now); BTC/ETH ratio mean reversion (history from 2021;
+gold/silver only since March 2026); session-open breakouts on TradFi perps
+around the London, COMEX and NYMEX opens (15m history since March 2026);
+liquidation-cascade reactions (record first). Not available or not
+recommended: FX carry, naive crypto carry, market making or high-frequency
+strategies (paper fills and free data cannot model queue position or latency).
