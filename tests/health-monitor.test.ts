@@ -40,15 +40,16 @@ test("health monitor reports each silent failure in plain English", async (t) =>
 
   await t.test("an asset whose cost-passing candidates are all blocked by risk gates alerts", () => {
     const { status, book } = healthy();
-    (status as Record<string, unknown>).assetCoverage = [
+    const coverage: Array<Record<string, unknown>> = [
       { asset: "BTC", funnel7d: { costPass: 171, riskPass: 0, "veto:NO_SETUP": 2743, "veto:PORTFOLIO_RISK_BUDGET": 171 } },
       { asset: "GOLD", funnel7d: { costPass: 5, riskPass: 1 } },
     ];
+    (status as Record<string, unknown>).assetCoverage = coverage;
     assert.deepEqual(evaluateHealth({ status, book, nowMs: NOW }).length, 1);
     // Once any asset fills again the alert clears, although the 7-day funnel still remembers.
-    (status as { assetCoverage: Array<Record<string, unknown>> }).assetCoverage[1].lastFillAt = iso(60);
+    coverage[1].lastFillAt = iso(60);
     assert.deepEqual(evaluateHealth({ status, book, nowMs: NOW }), []);
-    (status as { assetCoverage: Array<Record<string, unknown>> }).assetCoverage[1].lastFillAt = iso(73 * 60);
+    coverage[1].lastFillAt = iso(73 * 60);
     const problems: string[] = evaluateHealth({ status, book, nowMs: NOW });
     assert.deepEqual(problems, ["BTC: 171 candidates passed cost checks in 7 days and risk gates blocked all of them (top veto PORTFOLIO_RISK_BUDGET)."]);
   });
