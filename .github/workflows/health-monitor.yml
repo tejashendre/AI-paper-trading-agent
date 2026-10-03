@@ -1,0 +1,30 @@
+name: Bot health monitor
+
+# Read-only. A failed run means the bot stopped doing its job; GitHub emails
+# the owner about failed scheduled runs by default.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: health-monitor
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/health-monitor.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check the live dashboard
+        run: node scripts/health-monitor.mjs

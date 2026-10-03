@@ -146,7 +146,7 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 ## 2026-10-03 Strategy expansion (branch claude/strategy-expansion, stacked on PR 11)
 Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.md (Tier 1 items 1-4, Tier 2 items 5-8, strategy list items 1-8) and activate what is possible now. Activation rule (full-auto decision 2026-10-02): risk-reducing and data-collecting features active immediately; new trading strategies start SHADOW and promote only through the evidence gates. Not built: FX carry (Bybit FX funding is about zero), standalone crypto carry (tested negative). Out of scope: deploy, raising risk ceilings, LLM.
 - [x] E0 Loss-streak lock found live (4 small full stops on 2026-09-23..10-02 blocked every entry with no release path): 72h cool-off, then one probation position at a time
-- [ ] E1 Health alerts: scheduled GitHub workflow + monitor script
+- [x] E1 Health alerts: scripts/health-monitor.mjs + .github/workflows/health-monitor.yml (every 30 min, runs from main after merge); also alerts on a risk lock (cost-passing candidates all vetoed, no fill for 72h)
 - [ ] E2 Benchmarks: buy-and-hold and daily-trend baseline next to the bot
 - [ ] E3 Funding-aware holding cost in admission (sign-aware, multi-day)
 - [ ] E4 Crowding filter: account long/short ratio + funding extremes block the crowded side

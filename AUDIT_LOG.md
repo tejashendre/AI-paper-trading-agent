@@ -214,3 +214,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E0 loss-streak probation (claude/strategy-expansion)
 - Found live: the swing bot has not traded since 2026-10-02 01:09 UTC because its last four closes were full stops ($2-6 each), and the streak breaker asked for "a reset or reviewed probation cohort" that no code provides; BTC had 171 candidates in 7 days, all vetoed PORTFOLIO_RISK_BUDGET.
 - Fix: after a 72h cool-off from the newest loss, one probation position at a time; a win ends the streak, another full stop restarts the cool-off. No limit raised. tests/loss-streak-probation.test.ts; 346/346 tests, audit 156/0/0.
+
+## 2026-10-03 E1 health alerts
+- scripts/health-monitor.mjs reads /api/user/status and /api/book with the public SPECTATOR token: stale scan (>5 min), scan errors, quiet ledger (>10 min), research queue drops, stale quotes (>10 min; FX and commodities exempt Fri 21:00 to Sun 22:00 UTC), overdue XSEC rebalance, and a risk lock (an asset with 20+ cost-passing candidates all risk-vetoed while the bot has had no fill for 72h).
+- Workflow runs every 30 min once on main; a failed run emails the owner. Live run today: healthy (GOLD filled 39h ago); it would have flagged the E0 lock after 72h. 6/6 tests.
