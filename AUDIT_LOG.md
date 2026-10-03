@@ -230,3 +230,8 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E5 liquidation recording
 - websocketDataMesh subscribes allLiquidation.<symbol> (live check: all nine accepted), aggregates per symbol-minute (count, long and short liquidated USDT) and appends closed minutes every 60s to data/research/liquidations/<day>.ndjson.gz; counted in the research cap, oldest days rotate.
 - Research only; not a live input. tests/liquidation-recorder.test.ts 3/3.
+
+## 2026-10-03 E2 benchmarks and E7 daily trend shadow
+- src/lib/research/baselines.ts recomputes EQUAL_WEIGHT_HOLD and TREND_DAILY from Bybit daily closes and funding, net of taker fees on turnover; /api/benchmarks caches it 1h; Benchmarks panel under the XSEC book.
+- Live since 2026-08-26 on $10,000: hold the nine +2.00% (max DD 3.48%), trend -0.40% (max DD 1.20%); bot swing about +0.66%, XSEC -15.8%. FX perps only listed 2026-09-08, so trend has no FX signal until 121 daily closes.
+- TREND_DAILY forward evidence counts from 2026-10-04 through the XSEC shadow gate (30 periods, bootstrap lower bound > 0, DD < 15%). It holds no capital: giving it capital is a new sleeve and so new total risk, which is the owner's call. 6 new tests.
