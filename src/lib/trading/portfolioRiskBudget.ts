@@ -42,6 +42,7 @@ export interface PortfolioRiskBudgetDecision {
     accountingDriftUsd: number;
     factorExposure: Record<string, FactorExposure>;
     grossNotionalUsdt: number;
+    lossStreakProbation: boolean;
   };
   limits: {
     maxEntriesAsset1h: number;
@@ -64,6 +65,13 @@ export interface PortfolioRiskBudgetDecision {
 }
 
 const HOUR_MS = 60 * 60 * 1000;
+/**
+ * A full-stop loss streak blocks entries for this long after its newest loss.
+ * After that the book may hold one probation position at a time: a win ends
+ * the streak, another full stop extends it and restarts the cool-off. Without
+ * this the streak could only be cleared by a reset, so the bot stopped for good.
+ */
+export const LOSS_STREAK_COOL_OFF_HOURS = 72;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 
@@ -224,6 +232,8 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   const correlatedFullStopLosses = countLeadingFullStopLosses(
     allClosed.filter((trade) => riskCluster(trade.asset) === candidateCluster)
   );
+  const newestClosedMs = allClosed.length ? tradeTimestamp(allClosed[0]) : 0;
+  const newestClusterMs = tradeTimestamp(allClosed.find((trade) => riskCluster(trade.asset) === candidateCluster) ?? ({} as Trade));
   const accountingReconciliation = Number(input.portfolio.grossProfit || 0) - Number(input.portfolio.grossLoss || 0);
   const accountingDriftUsd = Math.abs(Number(input.portfolio.totalPnl || 0) - accountingReconciliation);
   const currentDrawdownPercent = input.portfolio.peakValue > 0
@@ -273,6 +283,7 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
     accountingDriftUsd,
     factorExposure,
     grossNotionalUsdt,
+    lossStreakProbation: false,
   };
 
   const reject = (reason: string): PortfolioRiskBudgetDecision => ({
@@ -294,8 +305,18 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
   if (dayClosed.length >= 3 && costToGrossEdgeRatio !== null && costToGrossEdgeRatio > limits.maxCostToGrossEdgeRatio) return reject("Execution costs consumed too much of the rolling daily gross edge.");
   if (netPnl24h <= -limits.maxDailyLossUsd) return reject("Rolling 24-hour loss circuit breaker is active.");
   if (netPnl7d <= -limits.maxWeeklyLossUsd) return reject("Rolling seven-day loss circuit breaker is active.");
-  if (consecutiveFullStopLosses >= limits.maxConsecutiveFullStopLosses) return reject("Portfolio full-stop loss streak requires a reset or reviewed probation cohort before another entry.");
-  if (correlatedFullStopLosses >= limits.maxCorrelatedFullStopLosses) return reject(`${candidateCluster} full-stop loss streak is quarantined pending a reset or reviewed probation cohort.`);
+  const streaks = [
+    { active: consecutiveFullStopLosses >= limits.maxConsecutiveFullStopLosses, newestMs: newestClosedMs, label: "Portfolio" },
+    { active: correlatedFullStopLosses >= limits.maxCorrelatedFullStopLosses, newestMs: newestClusterMs, label: candidateCluster },
+  ].filter((streak) => streak.active);
+  for (const streak of streaks) {
+    const coolOffEndsMs = streak.newestMs + LOSS_STREAK_COOL_OFF_HOURS * HOUR_MS;
+    if (nowMs < coolOffEndsMs) {
+      return reject(`${streak.label} full-stop loss streak: entries resume on probation after the ${LOSS_STREAK_COOL_OFF_HOURS}h cool-off (${new Date(coolOffEndsMs).toISOString()}).`);
+    }
+    if (openPositions.length > 0) return reject(`${streak.label} full-stop loss streak probation allows one open position at a time.`);
+  }
+  diagnostics.lossStreakProbation = streaks.length > 0;
   const factorRisk = (factorExposure[candidateExposureKey]?.plannedRiskUsdt ?? 0) + input.candidateMaxLossUsd;
   if (factorRisk > limits.maxFactorPlannedRiskUsd) {
     return reject(`FACTOR_RISK: ${candidateExposureKey} planned stop risk would be $${factorRisk.toFixed(2)}, above the $${limits.maxFactorPlannedRiskUsd.toFixed(2)} cap.`);
@@ -311,7 +332,9 @@ export function evaluatePortfolioRiskBudget(input: PortfolioRiskBudgetInput): Po
 
   return {
     approved: true,
-    reason: "Rolling turnover, loss, correlation, accounting, and stress budgets allow this entry.",
+    reason: diagnostics.lossStreakProbation
+      ? "Loss-streak probation: one position after the cool-off; a win ends the streak, another full stop restarts the cool-off."
+      : "Rolling turnover, loss, correlation, accounting, and stress budgets allow this entry.",
     policyVersion: PORTFOLIO_RISK_POLICY_VERSION,
     diagnostics,
     limits,
