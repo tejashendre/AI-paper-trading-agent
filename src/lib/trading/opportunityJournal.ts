@@ -25,7 +25,14 @@ const EVALUATIONS_24H_KEY = `${OPPORTUNITY_NAMESPACE}:evaluations:24h`;
 const SUMMARY_KEY = `${OPPORTUNITY_NAMESPACE}:summary`;
 const DEDUPE_KEY_PREFIX = `${OPPORTUNITY_NAMESPACE}:last:`;
 const MAX_HISTORY = 500;
-const MAX_PENDING = 4096;
+/**
+ * Sized from production on 2026-10-03: about 200 observations an hour, each
+ * held until its 24h label (up to four horizon labels for a baseline record).
+ * 4096 records held only about 20 hours and 12 labels a sweep (720 an hour)
+ * fell behind the roughly 800 an hour needed, so new observations were dropped.
+ */
+export const MAX_PENDING = 8192;
+export const MAX_EVALUATIONS_PER_SWEEP = 48;
 export const OPPORTUNITY_QUEUE_STATUS_KEY = `${OPPORTUNITY_NAMESPACE}:queueStatus`;
 const QUEUE_LOCK = `${OPPORTUNITY_NAMESPACE}:queueLock`;
 const MAX_EVALUATIONS = 1000;
@@ -546,7 +553,7 @@ export class OpportunityJournal {
     const evaluations: OpportunityEvaluation[] = [];
 
     for (const record of pending) {
-      if (evaluations.length>=12 || Date.now()>=deadline) {keep.push(record);continue;}
+      if (evaluations.length>=MAX_EVALUATIONS_PER_SWEEP || Date.now()>=deadline) {keep.push(record);continue;}
       const due = dueHorizons(record);
       if (due.length === 0) {
         keep.push(record);
@@ -556,7 +563,7 @@ export class OpportunityJournal {
       // A matured historical label uses its closed path, without a live quote dependency.
       const currentPrice = record.entryPrice;
 
-      if (evaluations.length >= 12) {keep.push(record);continue;}
+      if (evaluations.length >= MAX_EVALUATIONS_PER_SWEEP) {keep.push(record);continue;}
       for (const horizon of due) {
         const path = await evaluatePath(record, horizon, currentPrice);
         if (!path) continue;
