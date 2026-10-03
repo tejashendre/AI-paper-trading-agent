@@ -259,3 +259,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E11 research backfill
 - src/lib/research/backfill.ts pages closed 1h and 1d klines, funding and the 1d account ratio from each contract's launch time into <archive>/backfill/<SYMBOL>.json.gz, written only if the archive stays under its cap. Live run: 43 s, 3.2 MB total (BTC 57,194 hourly bars since 2020).
 - XSEC daemon refreshes it 5 min after start and then daily, outside runCycle and the book lock. Research input only; promotion still needs forward evidence. 395/395, audit 156/0/0.
+
+## 2026-10-03 strategy expansion complete (not deployed)
+- Slices E0-E12 committed on claude/strategy-expansion (stacked on PR 11's branch). Final: 395/395 tests, audit 156/0/0, tsc, lint, next build, diff check clean; no em dashes in added lines.
+- Not merged, not deployed: merging to main deploys. Scheduled health monitor only runs once on main.

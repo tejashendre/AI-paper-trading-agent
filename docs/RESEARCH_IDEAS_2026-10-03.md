@@ -170,3 +170,22 @@ around the London, COMEX and NYMEX opens (15m history since March 2026);
 liquidation-cascade reactions (record first). Not available or not
 recommended: FX carry, naive crypto carry, market making or high-frequency
 strategies (paper fills and free data cannot model queue position or latency).
+
+## Build status (branch claude/strategy-expansion, 2026-10-03; not deployed)
+
+| Item | Status |
+|---|---|
+| Found while building: loss-streak breaker with no release path | Fixed: 72h cool-off, then one probation position at a time |
+| 1 Alerts | Built: scripts/health-monitor.mjs, workflow every 30 min (runs from main) |
+| 2 Volatility scaling | Built for the XSEC book (down-only, live and shadow). Swing sizing already scales by ATR stop distance |
+| 3 Daily trend | Built as TREND_DAILY shadow baseline; forward evidence from 2026-10-04 |
+| 4 Benchmarks | Built: /api/benchmarks and the Benchmarks panel |
+| 5 Crowding filter | Built and live: CROWDING veto (both ratio and funding at the decile extreme, crowded side pays) |
+| 6 Liquidations | Recording per minute from allLiquidation; test after 30+ days |
+| 7 Post-only entries | Built as a shadow comparison with a one-tick trade-through rule; live orders unchanged |
+| 8 Backfill | Built: npm run research:backfill plus a daily refresh, 3.2 MB |
+| Funding tilt | Built and live: sign-aware projected funding over 48h in admission |
+| Crypto carry with momentum | Built as a capital-free XSEC shadow book |
+| BTC/ETH ratio reversion | Built as a shadow baseline |
+| Session-open breakouts | Built as SESSION_BREAKOUT shadow family (six TradFi perps) |
+| FX carry, standalone crypto carry | Not built: funding does not carry rates; tested negative |
