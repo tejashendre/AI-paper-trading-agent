@@ -16,7 +16,7 @@ import { EdgeVerdict } from "@/lib/research/edgeDecay";
 import { estimateBookCapacity } from "@/lib/execution/capacity";
 import { evaluateShadowEvidence } from '@/lib/execution/bookRiskPolicy';
 import { getEquityCurve } from '@/lib/execution/equityCurve';
-import { SHADOW_BOOK_EQUITY_CURVE_KEY } from '@/lib/execution/bookRebalancer';
+import { CARRY_SHADOW_EQUITY_CURVE_KEY, CARRY_SHADOW_PORTFOLIO_KEY, SHADOW_BOOK_EQUITY_CURVE_KEY } from '@/lib/execution/bookRebalancer';
 
 interface StoredEdgeVerdict {
   at: string;
@@ -99,10 +99,17 @@ export async function GET() {
     const shadow = shadowBook && shadowBook.totalRebalances > 0 ? describeShadowEvidence(shadowBook, prices) : null;
     const haltedAtMs = Date.parse(portfolio.riskState?.haltedAt ?? '') || 0;
     const releaseEvidence = evaluateShadowEvidence((await getEquityCurve(SHADOW_BOOK_EQUITY_CURVE_KEY)).filter(p => Date.parse(p.at) >= haltedAtMs));
+    // Research variant: carry only where 72h momentum agrees. Hypothetical, no capital.
+    const carryBook = await loadBookPortfolio(10_000, CARRY_SHADOW_PORTFOLIO_KEY).catch(() => null);
+    const carryShadow = carryBook && carryBook.totalRebalances > 0 ? {
+      ...describeShadowEvidence(carryBook, prices),
+      evidence: evaluateShadowEvidence(await getEquityCurve(CARRY_SHADOW_EQUITY_CURVE_KEY)),
+    } : null;
 
     return NextResponse.json({
       risk,
       shadow,
+      carryShadow,
       strategy: {
         name: "Cross-Sectional Momentum",
         version: portfolio.strategyVersion,

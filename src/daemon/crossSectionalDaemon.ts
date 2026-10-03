@@ -18,11 +18,13 @@
 import { Logger } from "../lib/logger";
 import { getRedis } from "../lib/redis";
 import { buildMomentumSnapshot, fetchTickers } from "../lib/data/perpUniverse";
-import { decideBook, DEFAULT_STRATEGY } from "../lib/strategy/crossSectionalMomentum";
+import { buildCarryMomentumBook, decideBook, DEFAULT_STRATEGY, planCarryRebalance } from "../lib/strategy/crossSectionalMomentum";
 import {
   applyBookPlan,
   BookPortfolio,
   bookEquityUsd,
+  CARRY_SHADOW_EQUITY_CURVE_KEY,
+  CARRY_SHADOW_PORTFOLIO_KEY,
   currentWeights,
   getEquityCurve,
   LAST_REBALANCE_KEY,
@@ -255,6 +257,19 @@ async function scaledConfig(curveKey: string | null, label: string) {
   return { ...CONFIG, grossExposure: CONFIG.grossExposure * vol.scale };
 }
 
+/** Carry-with-momentum research variant on its own capital-free book, in every risk state. */
+async function runCarryShadowRebalance(snapshot: Awaited<ReturnType<typeof buildMomentumSnapshot>>) {
+  const book = await loadBookPortfolio(10_000, CARRY_SHADOW_PORTFOLIO_KEY);
+  await settleBookFunding(book, liveFundingDeps).catch(() => undefined);
+  await recordEquityPoint(book, bookEquityUsd(book, snapshot.prices), CARRY_SHADOW_EQUITY_CURVE_KEY);
+  const funding = new Map([...snapshot.prices].map(([symbol, ticker]) => [symbol, ticker.fundingRate]));
+  const weights = currentWeights(book, snapshot.prices);
+  const targets = buildCarryMomentumBook(snapshot.momentum, funding, CONFIG);
+  const plan = planCarryRebalance(weights, targets, CONFIG, snapshot.momentum.size);
+  applyBookPlan({ portfolio: book, plan, prices: snapshot.prices, config: CONFIG });
+  await saveBookPortfolio(book, CARRY_SHADOW_PORTFOLIO_KEY);
+}
+
 /** The same plan on a capital-free book, so halted periods still produce forward evidence. */
 async function runShadowRebalance(snapshot: Awaited<ReturnType<typeof buildMomentumSnapshot>>) {
   const shadow = await loadBookPortfolio(10_000, SHADOW_BOOK_PORTFOLIO_KEY);
@@ -308,6 +323,8 @@ async function runRebalance() {
         await logRebalance(result, plan);
       }
       if (decision.state !== "ACTIVE") await runShadowRebalance(snapshot);
+      await runCarryShadowRebalance(snapshot).catch((error) =>
+        Logger.warn(`[XSEC] carry shadow skipped: ${error instanceof Error ? error.message : String(error)}`));
       await getRedis().set(LAST_REBALANCE_KEY, Date.now());
     }, "rebalance");
   } catch (error) {
