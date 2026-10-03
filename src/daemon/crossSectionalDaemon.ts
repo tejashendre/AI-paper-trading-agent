@@ -60,6 +60,9 @@ import {
   settlePendingSlippageSamples,
 } from "../lib/execution/costModelReconciliation";
 import { summariseRealisedEdge } from "../lib/research/edgeDecay";
+import path from "node:path";
+import { refreshAllBackfill } from "../lib/research/backfill";
+import { DEFAULT_RESEARCH_ARCHIVE_BYTES } from "../lib/research/researchArchive";
 
 const CONFIG = DEFAULT_STRATEGY;
 const REBALANCE_INTERVAL_MS = CONFIG.holdHours * 60 * 60 * 1000;
@@ -491,6 +494,14 @@ async function main() {
     }
   };
   await loop();
+  // Research history refresh, daily and off the book lock: a slow or failed
+  // download never delays a mark or a rebalance.
+  const backfill = () => void refreshAllBackfill({ archiveDirectory: path.join(process.cwd(), "data", "research"), nowMs: Date.now(),
+    maxBytes: Number(process.env.RESEARCH_ARCHIVE_MAX_BYTES || DEFAULT_RESEARCH_ARCHIVE_BYTES) })
+    .then((result) => Logger.info(`[XSEC] research backfill refreshed, ${result.failed} failure(s)`))
+    .catch(() => undefined);
+  setTimeout(backfill, 5 * 60_000);
+  setInterval(backfill, 24 * 3_600_000);
 }
 
 export { decideRiskState, rebalanceStatus, runCycle, runRebalance, runRiskSweep };
