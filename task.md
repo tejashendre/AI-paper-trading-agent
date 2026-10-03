@@ -39,7 +39,7 @@ Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING
 - [x] Task 9: exact economic learning cohorts, independent completed positions and capped risk adjustments.
 - [x] Task 10: bounded preregistration, research gates, compressed archive and descriptive offline replay.
 - [x] Task 11: browser stream, REST recovery, distinct quote/bar quality labels and research status display.
-- [ ] Task 12: final integration checks, independent branch review and authorized deployment.
+- [x] Task 12: final integration checks and independent review done (PR 11, 340/340, audit 156/0/0); authorized deployment tracked under 2026-10-03 Release readiness.
 - [ ] Market evidence required before activation: untouched holdout, verified FX fees, complete historical costs and 15 independent forward completions across at least 14 days.
 
 - [x] Audit asset coverage, decision gates, execution, and learning with current runtime evidence.
@@ -48,7 +48,7 @@ Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING
 - [x] Verified current routing, entry provenance, whole-position learning discrepancy, and live book restriction.
 - [x] Saved docs/STRATEGY_COVERAGE_AUDIT_2026-10-01.md plus sanitized runtime and diagnostic evidence.
 - [x] Ran existing strategy audit (179 pass, 1 warning, 0 fail), actual-code diagnostics, and TypeScript check.
-- [ ] Proposed first repair slice: centralize instrument provenance and test all nine correct instrument paths plus forged/stale negatives.
+- [x] Proposed first repair slice: done as Release A Tasks 1-4 (instrument registry, eligibility gate, nine-path tests).
 
 Trading changes and deployment remain pending. User priority is broader coverage across all configured asset classes. Next planning evidence: audit Sections 1, 2, and the acceptance sequence. Preserve historical learning and account records.
 
@@ -57,7 +57,7 @@ Trading changes and deployment remain pending. User priority is broader coverage
 - [x] Verify Trading metadata, REST candles, and actual WS ticker snapshots/deltas for all nine configured Bybit instruments.
 - [x] Write and self-review the complete [implementation plan](docs/superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md), with tests, migration, research, and rollout gates.
 - [x] Link the current plan from documentation and project state, preserving the prior audit and research evidence.
-- [ ] Implement Release A, beginning with Task 1's shared registry and public client, then immutable position economics. Do not deploy a routing-only change before settlement and migration checks pass.
+- [x] Implement Release A: done and deployed 2026-10-01 (PRs 8-10).
 
 Latest user direction: Bybit for every configured asset. Plan includes EURUSDUSDT, GBPUSDUSDT, and USDJPYUSDT instead of the earlier Kraken/Yahoo alternatives. Implementing trading changes is a later action; this completed slice writes the implementation handoff only.
 
@@ -131,7 +131,7 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 - [x] Storage growth: compact per-minute scan ledger record, 27.7 KB to under 2 KB (3fa6fac)
 - [x] Audit check updated to corrected delta semantics; 273/273 tests, audit 155/1/0, tsc, lint, build clean
 - [x] Storage option 1 chosen by Tejas: ledger compaction (deploy, writers stopped, >=50 MB), newest 3 deploy backups + newest reset backup, research archive 256 MB with rotation (df54fbb)
-- [ ] Push/PR/deploy: waiting for Tejas's approval
+- [x] Push/PR: pushed to claude/autonomy-hardening, PR 11 open; deploy tracked under 2026-10-03 Release readiness.
 - [x] Bug pass 2: replay data quality used wall clock (fc998c8); ledger appends forked across processes (d6be0b9); scale-in beyond target (7a92362); cost/drawdown/cost-verdict labels (15239d2); label queue starvation and 24h summary flush (994259d); XSEC loop always reschedules
 - [x] Strategy audit 156/0/0: research-quality check now verifies the gate applies its rule on the synthetic fixture (f58b3bb); 285/285 tests; tsc, lint, build, diff-check clean
 
