@@ -142,11 +142,6 @@ export async function fetchHourlySeries(symbol: string, hours: number): Promise<
   return series;
 }
 
-/** Backwards-compatible accessor for callers that only need the closes. */
-export async function fetchHourlyCloses(symbol: string, hours: number): Promise<number[]> {
-  return (await fetchHourlySeries(symbol, hours)).closes;
-}
-
 /**
  * Screen the universe and compute each survivor's trailing return.
  *

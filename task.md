@@ -1,11 +1,45 @@
 # Active work
 
+## 2026-10-02 final release intake
+Owner approved final upload and merge after fixes and requested real-time completion of the remaining work. Complete the official FX public baseline with frozen-cost and cohort regressions before release; preserve old records. Verify the running release afterward. Genuine promotion still requires the unchanged forward evidence window; no artificial promotion or shortened check is authorized.
+- [x] Resolve FX public-baseline fees with official symbol-scope evidence and frozen-cost regressions: 334/334 tests, audit 156/0/0, types/lint/build clean.
+- [ ] Release the reviewed, passing head and verify production continuity.
+- [ ] Record observed live learning status and exact evidence required for an earned transition.
+
+## 2026-10-02 Codex handoff completion
+Scope: review the existing 20 fixes without reimplementing them; complete P0, P1, P2 and chart history in priority order with red-first regression tests. No merge or deployment without new explicit approval. Preserve account and trade history, risk ceilings and the no-LLM contract.
+- [x] P0: reviewed release safety, opened PR 11 and verified Node 20 CI 37042756402 at abd2c2d; offline-copy question answered with required learning/history preservation. Final documentation-head checks also required before approval.
+- [ ] P0: deploy only after explicit approval and verify exact VPS release, ledger, continuity, scheduler, feeds and retention.
+- [x] P1: include unrealized P&L in every swing drawdown guard and update marks in the exit watchdog.
+- [x] P1 review: require complete fresh marks before scale-ins and use marked equity for their unchanged 40% aggregate margin ceiling.
+- [x] P1: expose approved versus executed probe risk; retain sizing policy pending an owner decision.
+- [x] P1: replay recorded research data and distinguish missing evidence from zero fills.
+- [x] P1: verify official FX contract fees and retain blocks when unverified.
+- [ ] P1: confirm XSEC stall cause from VPS logs and post-release behavior.
+- [x] P2: display learning-gate progress and reproduce promotion, demotion and book release with durable decision evidence in integration fixtures.
+- [x] Release review: lossless rare proofs, large-record appends, durable activation before publication and recoverable demotion proof during outages.
+- [ ] P2: review the first observed production transition against its preserved decision evidence after an approved deployment.
+- [x] Charts: verify public Bybit history limits, implement cursor pages and a bounded rolling browser window, and verify controls, refresh, failures and mobile layout.
+- [x] Dashboard: signed total gain/loss is the live primary comparison-card number; verified costs, frozen units, stale labeling and separate book accounting.
+
+Replay review checkpoint: preserve actual component clocks and capture availability, refuse future/stale/missing source timing, and retain timestamps in new runtime/public captures. 321/321 tests and audit 156/0/0. Recorded VPS archives remain descriptive and crypto remains NOT_TESTABLE where fast bars or flow clocks are absent.
+
+Gain review checkpoint: a failed live quote preserves the actual stored loss mark and disables live coefficients; no usable mark returns an unavailable total instead of cost-basis profit. Three red-first valuation regressions pass. Full suite 324/324, audit 156/0/0, TypeScript and lint clean.
+
+Final UI review checkpoint: browser RED reproduced unknown equity coerced to -100% in diagnostic tiles. GREEN keeps unknown P&L/utilization/values unavailable while true zero equity still reports -100%. Final full suite 325/325, audit 156/0/0 and production build clean. Rendered signed gain, null valuation, 21 chart pages, rolling bound, refresh, retry and 390px layout pass. Independent review reports no remaining Critical/Important findings.
+
+Release candidate: [verification and approval procedure](docs/AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). Owner approved final upload and merge after fixes. Production remains c90483d until release. Preserve one full verified ledger copy offline before approved compaction, and preserve every learning/financial record in production. FX public-baseline fees are resolved with separate immutable cohorts. P0 deployment/live proof, XSEC observation and first earned transition observation remain to be checked on the running release.
+
+
+<details>
+<summary>Earlier implementation checkpoints</summary>
+
 ## Remaining release checkpoint
 - [x] Task 8: closed-bar trend and shadow range families across all nine assets.
 - [x] Task 9: exact economic learning cohorts, independent completed positions and capped risk adjustments.
 - [x] Task 10: bounded preregistration, research gates, compressed archive and descriptive offline replay.
 - [x] Task 11: browser stream, REST recovery, distinct quote/bar quality labels and research status display.
-- [ ] Task 12: final integration checks, independent branch review and authorized deployment.
+- [x] Task 12: final integration checks and independent review done (PR 11, 340/340, audit 156/0/0); authorized deployment tracked under 2026-10-03 Release readiness.
 - [ ] Market evidence required before activation: untouched holdout, verified FX fees, complete historical costs and 15 independent forward completions across at least 14 days.
 
 - [x] Audit asset coverage, decision gates, execution, and learning with current runtime evidence.
@@ -14,7 +48,7 @@
 - [x] Verified current routing, entry provenance, whole-position learning discrepancy, and live book restriction.
 - [x] Saved docs/STRATEGY_COVERAGE_AUDIT_2026-10-01.md plus sanitized runtime and diagnostic evidence.
 - [x] Ran existing strategy audit (179 pass, 1 warning, 0 fail), actual-code diagnostics, and TypeScript check.
-- [ ] Proposed first repair slice: centralize instrument provenance and test all nine correct instrument paths plus forged/stale negatives.
+- [x] Proposed first repair slice: done as Release A Tasks 1-4 (instrument registry, eligibility gate, nine-path tests).
 
 Trading changes and deployment remain pending. User priority is broader coverage across all configured asset classes. Next planning evidence: audit Sections 1, 2, and the acceptance sequence. Preserve historical learning and account records.
 
@@ -23,7 +57,7 @@ Trading changes and deployment remain pending. User priority is broader coverage
 - [x] Verify Trading metadata, REST candles, and actual WS ticker snapshots/deltas for all nine configured Bybit instruments.
 - [x] Write and self-review the complete [implementation plan](docs/superpowers/plans/2026-10-01-bybit-all-assets-upgrade.md), with tests, migration, research, and rollout gates.
 - [x] Link the current plan from documentation and project state, preserving the prior audit and research evidence.
-- [ ] Implement Release A, beginning with Task 1's shared registry and public client, then immutable position economics. Do not deploy a routing-only change before settlement and migration checks pass.
+- [x] Implement Release A: done and deployed 2026-10-01 (PRs 8-10).
 
 Latest user direction: Bybit for every configured asset. Plan includes EURUSDUSDT, GBPUSDUSDT, and USDJPYUSDT instead of the earlier Kraken/Yahoo alternatives. Implementing trading changes is a later action; this completed slice writes the implementation handoff only.
 
@@ -79,5 +113,48 @@ Next optional slice: implement the documented subsecond quote display with separ
 - [x] Extend real-daemon integration, coverage funnels and research visibility for the complete path.
 - [x] Subsecond browser quotes with reconnect/fallback and separate transport/candle-quality indicators.
 - [x] Whole-branch review and single regression/fix pass; 238/238 tests, TypeScript/lint/build/audit/fixtures.
-- [ ] State-preserving cloud release and deployed runtime/UI verification.
+- [x] State-preserving cloud release and deployed runtime/UI verification: PR #10, c90483d, deployment 36894427081 successful. All 103 historical fills/manual BTC preserved; XSEC flat; all nine data-ready, 18 SHADOW research configurations, desktop/mobile and source parity verified. See docs/BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md.
 Authorization continues the existing end-to-end deployment request. New family activation and XSEC risk release remain separately evidence-gated. Profit is an evaluation result, not a feature promise.
+
+## 2026-10-02 Autonomy hardening (branch claude/autonomy-hardening)
+Intent (confirmed by Tejas: "Full auto"): find and fix bugs system-wide, remove provably unused code, repair the XSEC rebalance stall and its healthcheck, fix dashboard errors, and make learning plus promotion autonomous end to end, including the bot releasing the halted XSEC book once shadow evidence passes the gates. No LLM.
+Out of scope: raising risk ceilings, leverage or drawdown breakers; account resets; rewriting fills or ledger; live money; push or deploy without approval.
+- [x] S1 XSEC rebalance stall: reproduced (silent lock skip), serialized cycle + bounded lock wait, 13h healthcheck, /api/book rebalanceSchedule (a74840b)
+- [x] S2 Dashboard errors: win-rate units, empty-book copy, unwind labeled as rebalance, overdue note (a74840b; 245/245)
+- [x] S3 System bug audit: fixed XSEC stall, dashboard units/copy, dead learning loop, impossible XSEC release, stale venue labels (247bae5); swing daemon lock is serialized in-process (no bug). Known limitation kept: swing drawdown guards use cost-basis equity (no unrealized P&L)
+- [x] S4 Provably unused code removal (3c14a83: 13 unreachable modules, 37 dead exports, Monte Carlo path, 15 unread env keys; -3,107 lines net; 245/245, audit 155/1/0)
+- [x] S5 Autonomous promotion: XSEC self-release on shadow evidence (1d36e54); forward-evidence promotion, auto PAPER_ACTIVE/REJECTED, promoted-family probe entries, live PAPER rows feed demotion (b9f02ca); 269/269
+- [x] S6 Full checks: test:upgrade 270/270, audit 155/1/0, research fixture exit 0, ledger fixture valid 8, tsc --incremental false, lint, build, diff --check all clean. Not deployed; awaiting Tejas's approval to push/deploy.
+
+## 2026-10-02 Storage and real-time pass (branch claude/autonomy-hardening)
+- [x] Real-time: Bybit delta confirmation fix; FX index reference on the dashboard (659dd14)
+- [x] Storage growth: compact per-minute scan ledger record, 27.7 KB to under 2 KB (3fa6fac)
+- [x] Audit check updated to corrected delta semantics; 273/273 tests, audit 155/1/0, tsc, lint, build clean
+- [x] Storage option 1 chosen by Tejas: ledger compaction (deploy, writers stopped, >=50 MB), newest 3 deploy backups + newest reset backup, research archive 256 MB with rotation (df54fbb)
+- [x] Push/PR: pushed to claude/autonomy-hardening, PR 11 open; deploy tracked under 2026-10-03 Release readiness.
+- [x] Bug pass 2: replay data quality used wall clock (fc998c8); ledger appends forked across processes (d6be0b9); scale-in beyond target (7a92362); cost/drawdown/cost-verdict labels (15239d2); label queue starvation and 24h summary flush (994259d); XSEC loop always reschedules
+- [x] Strategy audit 156/0/0: research-quality check now verifies the gate applies its rule on the synthetic fixture (f58b3bb); 285/285 tests; tsc, lint, build, diff-check clean
+
+</details>
+
+## 2026-10-03 Release readiness
+- [x] Post-Codex review: FX fee source verified; fixed forming-candle chart regression, stopped-services failure path, stale-lock compaction block (fc07b9a, e542025, 8e44f4d)
+- [x] Automated verified ledger recovery copy before compaction (43a1d38, 0554741); 340/340, audit 156/0/0, build clean
+- [ ] Merge PR 11 to main = production deploy: waiting for Tejas's explicit approval (optional off-server ledger copy first)
+
+
+## 2026-10-03 Strategy expansion (branch claude/strategy-expansion, stacked on PR 11)
+Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.md (Tier 1 items 1-4, Tier 2 items 5-8, strategy list items 1-8) and activate what is possible now. Activation rule (full-auto decision 2026-10-02): risk-reducing and data-collecting features active immediately; new trading strategies start SHADOW and promote only through the evidence gates. Not built: FX carry (Bybit FX funding is about zero), standalone crypto carry (tested negative). Out of scope: deploy, raising risk ceilings, LLM.
+- [x] E0 Loss-streak lock found live (4 small full stops on 2026-09-23..10-02 blocked every entry with no release path): 72h cool-off, then one probation position at a time
+- [x] E1 Health alerts: scripts/health-monitor.mjs + .github/workflows/health-monitor.yml (every 30 min, runs from main after merge); also alerts on a risk lock (cost-passing candidates all vetoed, no fill for 72h)
+- [x] E2 Benchmarks: /api/benchmarks + Benchmarks panel; bot swing and XSEC next to equal-weight hold and the trend baseline since 2026-08-26, net of taker fees and real funding
+- [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
+- [x] E4 Crowding filter live: src/lib/strategy/crowding.ts, CROWDING veto; blocks a side only when account ratio and funding are both top/bottom decile with that side paying; fails open; vetoed candidates journaled for counterfactual
+- [x] E5 Liquidation recording: allLiquidation for the nine symbols in websocketDataMesh, per-minute totals to data/research/liquidations under the 256 MB cap
+- [x] E6 XSEC volatility scaling, down-only: gross exposure x min(1, 20% / realized vol of the book's last 60 periods), live and shadow books each from their own curve
+- [x] E7 TREND_DAILY shadow (src/lib/research/baselines.ts): blended 20/60/120 signs, 20% vol target, forward evidence from 2026-10-04 through evaluateShadowEvidence; no capital (a new sleeve would add risk: owner decision)
+- [x] E8 SESSION_BREAKOUT shadow family on the six TradFi perps (London 08:00, COMEX 08:20/08:25, NYMEX 09:00 local): first close outside the opening hour within 3h; stop range midpoint, target 2 ranges. Crowd-fade entry family not built: E4 filter covers the point and ratio history is not replayable
+- [x] E9 Carry-with-momentum shadow book (xsec:carryShadow:*), every rebalance in every risk state; goes flat without agreement; shown under the XSEC panel with its evidence count
+- [x] E10 Maker-entry shadow: every 24h candidate evaluation also scores a post-only limit (fill only on a 1-tick trade-through within 30 min, misses = 0R) against an immediate taker entry; summary on the Benchmarks panel
+- [x] E11 Research backfill: npm run research:backfill and a daily off-lock refresh in the XSEC daemon; 1h/1d closed candles, funding, daily account ratio since listing; 3.2 MB for all nine (live run)
+- [x] E12 BTC_ETH_RATIO shadow baseline (2-sigma entry, 0.5 exit, 30-day window, half capital per leg) in baselines.ts, shown on the Benchmarks panel; flat over the last 37 days (no 2-sigma event)

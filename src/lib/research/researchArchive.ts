@@ -3,7 +3,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 
-export const DEFAULT_RESEARCH_ARCHIVE_BYTES = 1024 ** 3;
+/** 256 MiB: the owner's storage cap (2026-10-02); oldest days rotate out. */
+export const DEFAULT_RESEARCH_ARCHIVE_BYTES = 256 * 1024 ** 2;
 export interface ResearchEvidence {
   asset: string;
   recordedAtMs: number;
@@ -50,16 +51,27 @@ export function appendResearchEvidence(input: { directory: string; record: Resea
   const storedRecord = { ...record, candles };
   const storedHash = createHash("sha256").update(JSON.stringify(storedRecord)).digest("hex");
   const payload = gzipSync(Buffer.from(JSON.stringify({ schemaVersion: 1, recordHash: storedHash, record: storedRecord }) + "\n"));
-  const bytes = archiveBytes(directory);
+  const date = new Date(record.recordedAtMs).toISOString().slice(0, 10);
   const nextState = { ...state, [record.asset]: { recordHash, cursors, quoteBucket } };
   const stateBytes = Buffer.byteLength(JSON.stringify(nextState));
   const oldStateBytes = fs.existsSync(statePath) ? fs.statSync(statePath).size : 0;
-  if (bytes + payload.length + stateBytes - oldStateBytes > maxBytes) return { status: "STORAGE_LIMIT", bytes, maxBytes, recordHash };
-  const date = new Date(record.recordedAtMs).toISOString().slice(0, 10);
+  const fits = () => archiveBytes(directory) + payload.length + stateBytes - oldStateBytes <= maxBytes;
+  // Over the cap, whole older days rotate out, oldest first; the day being
+  // written is never touched. Only when that day alone fills the cap does
+  // capture pause.
+  const rotatedOut: string[] = [];
+  const olderDays = fs.readdirSync(directory).filter(f => /^\d{4}-\d{2}-\d{2}\.ndjson\.gz$/.test(f) && f.slice(0, 10) < date).sort();
+  while (!fits() && olderDays.length) {
+    const oldest = olderDays.shift()!;
+    fs.rmSync(path.join(directory, oldest), { force: true });
+    rotatedOut.push(oldest);
+  }
+  const bytes = archiveBytes(directory);
+  if (!fits()) return { status: "STORAGE_LIMIT", bytes, maxBytes, recordHash, rotatedOut };
   const filename = path.join(directory, date + ".ndjson.gz");
   fs.appendFileSync(filename, payload);
   const temporary = statePath + ".tmp";
   fs.writeFileSync(temporary, JSON.stringify(nextState));
   fs.renameSync(temporary, statePath);
-  return { status: "CAPTURED", recordHash, bytes: bytes + payload.length, maxBytes };
+  return { status: "CAPTURED", recordHash, bytes: bytes + payload.length, maxBytes, rotatedOut };
 }

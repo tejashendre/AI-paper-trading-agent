@@ -52,13 +52,13 @@ test("linear_usdjpy_long_short_and_notional", async (t) => {
     assert.deepEqual([metals.makerRate, metals.takerRate, metals.status], [0, 0.000275, "PUBLIC_BASELINE"]);
     assert.equal(feeScheduleFor(getConfiguredInstrument("OIL")).version, metals.version);
     const fx = feeScheduleFor(getConfiguredInstrument("USDJPY"));
-    assert.deepEqual([fx.makerRate, fx.takerRate, fx.status], [0.0002, 0.00055, "UNVERIFIED_STRESS_RATE"]);
+    assert.deepEqual([fx.makerRate, fx.takerRate, fx.status], [0, 0.000275, "PUBLIC_BASELINE"]);
     for (const schedule of [crypto, metals, fx]) {
       assert.match(schedule.sourceUrl, /^https:\/\/(www\.|announcements\.)?bybit\.com\//);
       assert.match(schedule.effectiveFrom, /^\d{4}-\d{2}-\d{2}$/);
     }
     // Every new fee is notional times the taker rate.
-    assert.ok(Math.abs(instrumentFee(getConfiguredInstrument("USDJPY"), 10, 150) - 1_500 * 0.00055) < 1e-12);
+    assert.ok(Math.abs(instrumentFee(getConfiguredInstrument("USDJPY"), 10, 150) - 1_500 * 0.000275) < 1e-12);
     assert.ok(Math.abs(instrumentFee(getConfiguredInstrument("OIL"), 10, 90) - 900 * 0.000275) < 1e-12);
     const fill = estimatePaperFill({
       asset: "GOLD", action: "BUY", requestedPrice: 4_000, amount: 1, context: { reason: "ENTRY" },

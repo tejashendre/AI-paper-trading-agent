@@ -23,6 +23,8 @@
     "redis:housekeeping": "tsx scripts/redis-housekeeping.ts",
     "reset:arena": "tsx scripts/reset-arena.ts",
     "ledger:archive": "tsx scripts/ledger-archive.ts",
+    "ledger:compact": "tsx scripts/ledger-compact.ts",
+    "research:backfill": "tsx scripts/research-backfill.ts",
     "test:upgrade": "node scripts/run-upgrade-tests.mjs"
   },
   "dependencies": {

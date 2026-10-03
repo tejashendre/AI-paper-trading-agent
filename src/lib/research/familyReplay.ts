@@ -4,7 +4,7 @@ import type { StrategyCandidate } from '@/lib/swingEngine';
 import { STRATEGY_DATA_SCHEMA_VERSION } from '@/lib/swingEngine';
 import { calculateInstrumentPnl, RISK_POLICY_VERSION } from '@/lib/trading/assetSpecs';
 import { TradeAdmissionController } from '@/lib/trading/tradeAdmission';
-import { buildPaperExecutionPlan, estimatePaperFill, EXECUTION_COST_MODEL_VERSION,
+import { buildPaperExecutionPlan, estimatePaperFill, executionCostModelVersionFor,
   getExecutionCostProfile, expectedFundingTimes, fundingCashflow, FundingSettlement } from '@/lib/trading/executionCostModel';
 import { decideSwingExit, PARTIAL_PROFIT_POLICY } from '@/lib/execution/exitPolicy';
 import { TRADING_STRATEGY_VERSION } from '@/lib/trading/executionLedger';
@@ -20,6 +20,7 @@ export interface CandidateReplayInput {
   fundingIntervalMinutes: number;
   historicalCostsAvailable: boolean;
   halfSpreadBps?: number;
+  feeScheduleVersion?: string;
   researchOrigin?: 'REPLAY' | 'SHADOW';
 }
 /** Hypothetical research only. Admission, fees, R exits and partial thresholds
@@ -43,7 +44,7 @@ export function replayStrategyCandidate(input: CandidateReplayInput) {
   const base = getExecutionCostProfile(c.asset);
   const profile = {...base, halfSpreadBps:Math.max(base.halfSpreadBps, input.halfSpreadBps ?? 0)};
   const plan = buildPaperExecutionPlan({asset:c.asset, direction:c.direction, entryPrice:c.entryPrice,
-    stopLoss:c.stopPrice, takeProfit:c.targetPrice, amount:admission.amount, profile});
+    stopLoss:c.stopPrice, takeProfit:c.targetPrice, amount:admission.amount, profile,feeScheduleVersion:input.feeScheduleVersion});
   if (plan.netRewardRiskRatio < 1.35 || plan.netLossUsd > admission.riskAmountUsd * 1.01)
     return {status:'COST_OR_RISK_BLOCKED' as const, assumptions:['NET_REWARD_OR_RISK_LIMIT']};
   const positionId = createHash('sha256').update([c.candidateId, openedAtMs, input.labelEndMs].join(':')).digest('hex');
@@ -57,6 +58,7 @@ export function replayStrategyCandidate(input: CandidateReplayInput) {
     if (!requestedEntry || !fillBars.length) return null;
     const entryTimeMs = delayed ? fillBars[0].time*1000 : openedAtMs;
     const entry = estimatePaperFill({asset:c.asset, instrument:c.instrument, amount:admission.amount,
+      feeScheduleVersion:input.feeScheduleVersion,
       action:c.direction === 'LONG' ? 'BUY':'SHORT', requestedPrice:requestedEntry, profile:costs, context:{reason:'ENTRY'}});
     const pos = {asset:c.asset, instrument:c.instrument, direction:c.direction, entryPrice:entry.fillPrice,
       entryTime:new Date(entryTimeMs).toISOString(), amount:admission.amount, usdInvested:admission.requiredMarginUsd,
@@ -68,6 +70,7 @@ export function replayStrategyCandidate(input: CandidateReplayInput) {
     const legs:{at:number; quantity:number}[]=[];
     const exit = (price:number, qty:number, at:number, reason:'STOP_LOSS'|'TAKE_PROFIT'|'PARTIAL_EXIT'|'END_REPLAY') => {
       const fill=estimatePaperFill({asset:c.asset,instrument:c.instrument,amount:qty, requestedPrice:price,
+        feeScheduleVersion:input.feeScheduleVersion,
         action:c.direction==='LONG'?'SELL':'COVER',profile:costs,context:{reason}});
       gross += calculateInstrumentPnl({instrument:c.instrument,entryPrice:entry.fillPrice,exitPrice:fill.fillPrice,quantity:qty,direction:c.direction});
       fees += fill.feeUsd; remaining-=qty; legs.push({at,quantity:qty});
@@ -114,7 +117,7 @@ export function replayStrategyCandidate(input: CandidateReplayInput) {
   const outcome:ResearchOutcome={positionId,asset:c.instrument.asset,instrument:c.instrument,direction:c.direction,
     openedAtMs,closedAtMs:baseResult.closedAtMs,featureStartMs:input.featureStartMs,labelEndMs:input.labelEndMs,
     strategyVersion:TRADING_STRATEGY_VERSION,setupFamily:c.family,configHash:c.configHash,regime:c.regime,
-    entryMode:'SHADOW',dataSchemaVersion:STRATEGY_DATA_SCHEMA_VERSION,costModelVersion:EXECUTION_COST_MODEL_VERSION,
+    entryMode:'SHADOW',dataSchemaVersion:STRATEGY_DATA_SCHEMA_VERSION,costModelVersion:executionCostModelVersionFor(c.instrument,input.feeScheduleVersion),
     riskPolicyVersion:RISK_POLICY_VERSION,setupTags:[c.family],grossPnlUsdt:baseResult.gross,feesUsdt:baseResult.fees,
     fundingCashflowUsdt:baseResult.funding,netPnlUsdt:baseResult.net,initialRiskUsdt:plan.netLossUsd,
     netR:baseResult.net/plan.netLossUsd,returnOnInitialMargin:baseResult.net/admission.requiredMarginUsd,

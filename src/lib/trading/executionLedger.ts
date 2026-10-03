@@ -11,6 +11,10 @@ export const EXECUTION_LEDGER_SCHEMA_VERSION = 1;
 export type ExecutionLedgerEventType =
   | "RESEARCH_CANDIDATE_REGISTERED"
   | "RESEARCH_REVIEWED"
+  | "LEDGER_COMPACTED"
+  | "RESEARCH_PROMOTED"
+  | "RESEARCH_DEMOTED"
+  | "BOOK_RISK_RELEASED"
   | "SYSTEM_RESET"
   | "SCAN_COMPLETED"
   | "ENTRY_APPROVED"
@@ -52,6 +56,8 @@ export interface ExecutionLedgerRecord {
   executionCostModelVersion: string;
   previousHash: string | null;
   payload: unknown;
+  /** Set by compaction: this event's hash in the chain it was copied from. */
+  originalHash?: string;
   hash: string;
 }
 
@@ -173,21 +179,183 @@ export function archiveLedgerDays(options: { keepDays?: number; directory?: stri
   return { archived, bytesBefore, bytesAfter: dayFileBytes(directory), skipped };
 }
 
-function sanitize(value: unknown, depth = 0): unknown {
+export interface LedgerCompactionReport {
+  status: "COMPACTED" | "WOULD_COMPACT" | "SKIPPED_BELOW_THRESHOLD" | "REFUSED_INVALID_SOURCE" | "REFUSED_UNSAFE_OPERATION" | "EMPTY";
+  sourceEvents: number;
+  keptEvents: number;
+  droppedByType: Record<string, number>;
+  droppedBytes: number;
+  bytesBefore: number;
+  bytesAfter: number;
+  previousHeadHash: string | null;
+  newHeadHash: string | null;
+  errors: string[];
+}
+
+/**
+ * Re-seal the ledger without the given event types (the owner chose this on
+ * 2026-10-02 to drop the old per-minute scan records). Every other event is
+ * copied with its id, content and timestamp, re-chained, and carries its old
+ * hash as `originalHash`. The new chain starts with a LEDGER_COMPACTED
+ * checkpoint naming the old head. The source must verify first, the result
+ * must verify before it replaces the source, and the old files are then
+ * removed. Run only while no process is appending (the deploy stops the
+ * daemons first).
+ */
+export function compactLedger(options: {
+  directory?: string;
+  dropTypes: string[];
+  /** Skip unless at least this many raw bytes would be reclaimed. */
+  minDropBytes?: number;
+  nowIso?: string;
+  /** Report what would be reclaimed without changing anything. */
+  dryRun?: boolean;
+}): LedgerCompactionReport {
+  const directory = options.directory ?? ledgerDirectory();
+  const drop = new Set(options.dropTypes);
+  const files = dayFiles(directory);
+  const report: LedgerCompactionReport = {
+    status: "EMPTY", sourceEvents: 0, keptEvents: 0, droppedByType: {}, droppedBytes: 0,
+    bytesBefore: dayFileBytes(directory), bytesAfter: 0, previousHeadHash: null, newHeadHash: null, errors: [],
+  };
+  // Only scan telemetry was approved for removal. Never permit this utility
+  // to erase financial evidence or overwrite an interrupted recovery copy.
+  if ([...drop].some(type => type !== "SCAN_COMPLETED") ||
+      fs.existsSync(`${directory}.pre-compaction`) || fs.existsSync(`${directory}.compacting`) ||
+      liveAppendLock(directory) ||
+      !Number.isFinite(options.minDropBytes ?? 0) || (options.minDropBytes ?? 0) < 0) {
+    return { ...report, status: "REFUSED_UNSAFE_OPERATION", errors: ["Unsafe removal type, active writer, recovery files or invalid threshold; no files changed."] };
+  }
+  if (files.length === 0) return report;
+
+  const source = ExecutionLedger.verify(directory);
+  report.sourceEvents = source.events;
+  report.previousHeadHash = source.headHash;
+  if (!source.valid) {
+    return { ...report, status: "REFUSED_INVALID_SOURCE", errors: source.errors.slice(0, 20) };
+  }
+
+  // First pass: what would be reclaimed.
+  for (const file of files) {
+    for (const line of readDayFile(directory, file).split(/\r?\n/)) {
+      if (!line) continue;
+      const type = (JSON.parse(line) as ExecutionLedgerRecord).type;
+      if (!drop.has(type)) continue;
+      report.droppedByType[type] = (report.droppedByType[type] ?? 0) + 1;
+      report.droppedBytes += Buffer.byteLength(line) + 1;
+    }
+  }
+  if (report.droppedBytes === 0 || report.droppedBytes < (options.minDropBytes ?? 50 * 1024 * 1024)) {
+    return { ...report, status: "SKIPPED_BELOW_THRESHOLD", bytesAfter: report.bytesBefore };
+  }
+  if (options.dryRun) return { ...report, status: "WOULD_COMPACT", bytesAfter: report.bytesBefore };
+
+  const staging = `${directory}.compacting`;
+  fs.mkdirSync(staging, { recursive: true });
+  let previousHash: string | null = null;
+  let last: ExecutionLedgerRecord | null = null;
+  const sign = (unsigned: Omit<ExecutionLedgerRecord, "hash">): ExecutionLedgerRecord => {
+    const record = { ...unsigned, hash: computeExecutionEventHash(unsigned) };
+    previousHash = record.hash;
+    last = record;
+    return record;
+  };
+
+  files.forEach((file, fileIndex) => {
+    const out: string[] = [];
+    const records = readDayFile(directory, file).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as ExecutionLedgerRecord);
+    if (fileIndex === 0) {
+      out.push(JSON.stringify(sign({
+        schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
+        id: `ledger-compacted:${report.previousHeadHash}`,
+        timestamp: records[0]?.timestamp ?? options.nowIso ?? new Date().toISOString(),
+        type: "LEDGER_COMPACTED",
+        source: "MAINTENANCE",
+        strategyVersion: TRADING_STRATEGY_VERSION,
+        executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
+        previousHash: null,
+        payload: {
+          compactedAt: options.nowIso ?? new Date().toISOString(),
+          compactedFromHeadHash: report.previousHeadHash,
+          sourceEvents: report.sourceEvents,
+          sourceVerified: true,
+          droppedTypes: [...drop],
+          droppedByType: report.droppedByType,
+          reason: "Owner-approved storage reduction: per-minute scan records removed; every other event kept with its original hash.",
+        },
+      })));
+    }
+    for (const record of records) {
+      if (drop.has(record.type)) continue;
+      const { hash, previousHash: _oldPrevious, originalHash, ...content } = record;
+      out.push(JSON.stringify(sign({ ...content, previousHash, originalHash: originalHash ?? hash })));
+      report.keptEvents++;
+    }
+    if (out.length === 0) return;
+    const text = `${out.join("\n")}\n`;
+    const target = path.join(staging, file);
+    fs.writeFileSync(target, file.endsWith(".gz") ? zlib.gzipSync(Buffer.from(text), { level: 9 }) : text);
+  });
+  if (last) writeHeadAtomic(staging, last);
+
+  const check = ExecutionLedger.verify(staging);
+  if (!check.valid || check.events !== report.keptEvents + 1) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    return { ...report, status: "REFUSED_INVALID_SOURCE", errors: ["Compacted chain failed verification", ...check.errors.slice(0, 20)] };
+  }
+
+  const retired = `${directory}.pre-compaction`;
+  fs.renameSync(directory, retired);
+  try {
+    fs.renameSync(staging, directory);
+  } catch (error) {
+    // Restore the original directory if the replacement cannot be installed.
+    fs.renameSync(retired, directory);
+    throw error;
+  }
+  fs.rmSync(retired, { recursive: true, force: true });
+  report.newHeadHash = check.headHash;
+  report.bytesAfter = dayFileBytes(directory);
+  report.status = "COMPACTED";
+  return report;
+}
+
+/**
+ * Point the Redis mirror (head and recent events) at the ledger on disk,
+ * e.g. after a compaction re-sealed the chain.
+ */
+export async function refreshLedgerMirror(directory = ledgerDirectory()): Promise<void> {
+  const files = dayFiles(directory);
+  const tail: ExecutionLedgerRecord[] = [];
+  for (let i = files.length - 1; i >= 0 && tail.length < 1000; i--) {
+    const records = readDayFile(directory, files[i]).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as ExecutionLedgerRecord);
+    tail.unshift(...records.slice(-(1000 - tail.length)));
+  }
+  const redis = getRedis();
+  await redis.del(RECENT_KEY);
+  for (const record of tail) await redis.lpush(RECENT_KEY, JSON.stringify(record));
+  const head = tail[tail.length - 1];
+  if (head) {
+    await redis.set(HEAD_KEY, { hash: head.hash, timestamp: head.timestamp, type: head.type,
+      strategyVersion: head.strategyVersion, executionCostModelVersion: head.executionCostModelVersion });
+  }
+}
+
+function sanitize(value: unknown, depth = 0, arrayLimit = 250): unknown {
   if (depth > 10) return "[MAX_DEPTH]";
   if (value === null || value === undefined) return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
   if (typeof value === "string" || typeof value === "boolean") return value;
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Error) return { name: value.name, message: value.message };
-  if (Array.isArray(value)) return value.slice(0, 250).map((entry) => sanitize(entry, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, arrayLimit).map((entry) => sanitize(entry, depth + 1, arrayLimit));
   if (typeof value === "object") {
     const output: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       if (/(secret|password|authorization|api.?key|signing.?key|token)/i.test(key)) {
         output[key] = "[REDACTED]";
       } else {
-        output[key] = sanitize(entry, depth + 1);
+        output[key] = sanitize(entry, depth + 1, arrayLimit);
       }
     }
     return output;
@@ -207,14 +375,21 @@ function readLastRecord(filePath: string): ExecutionLedgerRecord | null {
   if (!fs.existsSync(filePath)) return null;
   const stats = fs.statSync(filePath);
   if (stats.size <= 0) return null;
-  const bytes = Math.min(stats.size, 128 * 1024);
+  let bytes = Math.min(stats.size, 128 * 1024);
   const descriptor = fs.openSync(filePath, "r");
   try {
-    const buffer = Buffer.alloc(bytes);
-    fs.readSync(descriptor, buffer, 0, bytes, stats.size - bytes);
-    const lines = buffer.toString("utf8").trim().split(/\r?\n/);
-    const last = lines[lines.length - 1];
-    return last ? JSON.parse(last) as ExecutionLedgerRecord : null;
+    for (;;) {
+      const buffer = Buffer.alloc(bytes);
+      fs.readSync(descriptor, buffer, 0, bytes, stats.size - bytes);
+      const tail = buffer.toString("utf8").trimEnd();
+      const delimiter = tail.lastIndexOf('\n');
+      if (delimiter >= 0 || bytes === stats.size) {
+        const last = tail.slice(delimiter + 1);
+        return last ? JSON.parse(last) as ExecutionLedgerRecord : null;
+      }
+      // A rare evidence record can exceed the normal tail window.
+      bytes = Math.min(stats.size, bytes * 2);
+    }
   } finally {
     fs.closeSync(descriptor);
   }
@@ -243,10 +418,65 @@ function writeHeadAtomic(directory: string, record: ExecutionLedgerRecord): void
   }
 }
 
+const APPEND_LOCK_STALE_MS = 30_000;
+const APPEND_LOCK_WAIT_MS = 15_000;
+
+/**
+ * Hold an exclusive lock file for one append. The swing and cross-sectional
+ * daemons (and an admin reset) are separate processes writing one chain;
+ * without this, two of them can read the same head and fork it. A lock left
+ * by a process that died is taken over once it is older than 30 seconds.
+ */
+/**
+ * Whether an append lock is held by a live writer. A lock older than the
+ * append stale limit was left by a killed process; appends already take it
+ * over, so it must not block maintenance forever either.
+ */
+function liveAppendLock(directory: string): boolean {
+  try {
+    return Date.now() - fs.statSync(path.join(directory, ".append.lock")).mtimeMs <= APPEND_LOCK_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function withAppendLock<T>(directory: string, fn: () => T): Promise<T> {
+  const lockPath = path.join(directory, ".append.lock");
+  const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const descriptor = fs.openSync(lockPath, "wx");
+      fs.writeSync(descriptor, `${process.pid} ${new Date().toISOString()}`);
+      fs.closeSync(descriptor);
+      break;
+    } catch (error) {
+      // EEXIST is the normal "held" signal; Windows reports a lock file that
+      // is mid-deletion as EPERM or EACCES, which is the same contention.
+      if (!["EEXIST", "EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > APPEND_LOCK_STALE_MS) fs.unlinkSync(lockPath);
+      } catch { /* released or taken over meanwhile */ }
+      if (Date.now() > deadline) throw new Error("Execution ledger append lock is held by another process");
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 10));
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+  }
+}
+
 async function appendRecord(input: ExecutionLedgerEventInput): Promise<ExecutionLedgerRecord> {
   const timestamp = input.timestamp || new Date().toISOString();
   const directory = ledgerDirectory();
   fs.mkdirSync(directory, { recursive: true });
+  const record = await withAppendLock(directory, () => appendUnderLock(input, timestamp, directory));
+  await mirrorToRedis(record);
+  return record;
+}
+
+function appendUnderLock(input: ExecutionLedgerEventInput, timestamp: string, directory: string): ExecutionLedgerRecord {
   const filePath = dayFile(timestamp, directory);
   const previous = readHead(directory, filePath);
   const unsigned: Omit<ExecutionLedgerRecord, "hash"> = {
@@ -264,7 +494,8 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
     strategyVersion: TRADING_STRATEGY_VERSION,
     executionCostModelVersion: EXECUTION_COST_MODEL_VERSION,
     previousHash: previous?.hash || null,
-    payload: sanitize(input.payload),
+    payload: sanitize(input.payload, 0,
+      ["RESEARCH_PROMOTED", "RESEARCH_DEMOTED", "BOOK_RISK_RELEASED"].includes(input.type) ? Infinity : 250),
   };
   const record: ExecutionLedgerRecord = {
     ...unsigned,
@@ -279,7 +510,10 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
     fs.closeSync(descriptor);
   }
   writeHeadAtomic(directory, record);
+  return record;
+}
 
+async function mirrorToRedis(record: ExecutionLedgerRecord): Promise<void> {
   try {
     const redis = getRedis();
     await redis.lpush(RECENT_KEY, JSON.stringify(record));
@@ -294,11 +528,28 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
   } catch (error) {
     console.warn("[EXECUTION LEDGER] Redis mirror unavailable; durable file append succeeded.", error);
   }
-
-  return record;
 }
 
 export class ExecutionLedger {
+  /** Rare decision proofs are retried after durable append but failed acknowledgement. */
+  static recordOnce(input: ExecutionLedgerEventInput & { id: string }): Promise<ExecutionLedgerRecord> {
+    const task = writeQueue.then(async () => {
+      if (this.hasEvent(input.id, '1970-01-01')) {
+        if (!this.verify().valid) throw new Error('Existing decision proof ledger is invalid');
+        for (const file of dayFiles(ledgerDirectory())) {
+          for (const row of readDayFile(ledgerDirectory(), file).split(/\r?\n/).filter(Boolean)) {
+            const record = JSON.parse(row) as ExecutionLedgerRecord;
+            if (record.id === input.id) return record;
+          }
+        }
+        throw new Error('Existing decision proof is missing');
+      }
+      return appendRecord(input);
+    });
+    writeQueue = task.catch(() => undefined);
+    return task;
+  }
+
   static record(input: ExecutionLedgerEventInput): Promise<ExecutionLedgerRecord> {
     const task = writeQueue.then(() => appendRecord(input));
     writeQueue = task.catch(() => undefined);

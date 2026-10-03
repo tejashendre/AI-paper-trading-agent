@@ -48,22 +48,46 @@ test("ticker_snapshot_delta_reconnect_and_quiet_price", async (t) => {
     assert.equal(mergeBybitTicker(null, delta(T0, { lastPrice: "4190" }), T0), null);
   });
 
-  await t.test("a funding-only delta does not refresh price or bid/ask times", () => {
+  // Bybit pushes only changed fields in a delta, so a delta confirms every
+  // field it omits as unchanged at its own time. A quiet but live market (the
+  // FX contracts trade rarely) must not look stale; a dead socket still does,
+  // because no deltas arrive at all.
+  await t.test("a delta confirms the fields it omits as unchanged at its time", () => {
     const base = mergeBybitTicker(null, snapshot(T0), T0)!;
     const next = mergeBybitTicker(base, delta(T0 + 4_000, { fundingRate: "0.0002", openInterest: "5100" }), T0 + 4_001)!;
     assert.equal(next.fundingRate, 0.0002);
     assert.equal(next.sensorEventMs, T0 + 4_000);
-    assert.equal(next.lastPriceEventMs, T0, "last price time unchanged");
-    assert.equal(next.bidAskEventMs, T0, "bid/ask time unchanged");
-    assert.equal(next.lastPrice, base.lastPrice);
+    assert.equal(next.lastPrice, base.lastPrice, "values are unchanged");
+    assert.equal(next.bid, base.bid);
+    assert.equal(next.lastPriceEventMs, T0 + 4_000, "last price confirmed current");
+    assert.equal(next.bidAskEventMs, T0 + 4_000, "bid/ask confirmed current");
+    assert.equal(next.markEventMs, T0 + 4_000, "mark confirmed current");
   });
 
-  await t.test("a price delta refreshes only the fields it carries", () => {
-    const base = mergeBybitTicker(null, snapshot(T0), T0)!;
-    const next = mergeBybitTicker(base, delta(T0 + 2_000, { bid1Price: "4190.00", ask1Price: "4190.10" }), T0 + 2_000)!;
-    assert.equal(next.bid, 4190);
-    assert.equal(next.bidAskEventMs, T0 + 2_000);
-    assert.equal(next.lastPriceEventMs, T0);
+  await t.test("a field never seen in this session is not confirmed by a delta", () => {
+    const base = mergeBybitTicker(null, snapshot(T0, { bid1Price: "", ask1Price: "", bid1Size: "", ask1Size: "" }), T0)!;
+    assert.equal(base.bidAskEventMs, undefined);
+    const next = mergeBybitTicker(base, delta(T0 + 2_000, { indexPrice: "4189.5" }), T0 + 2_000)!;
+    assert.equal(next.bidAskEventMs, undefined);
+    assert.equal(next.lastPriceEventMs, T0 + 2_000);
+  });
+
+  await t.test("a quiet but live contract keeps streaming instead of falling back to REST", async () => {
+    const fake = makeFakeBybit();
+    const restoreDeps = setMarketServiceDeps(fake.deps);
+    const network = forbidNetwork();
+    try {
+      // Last trade a minute ago, but index deltas confirm the book every second.
+      let state = mergeBybitTicker(null, snapshot(SERVER_NOW - 60_000), SERVER_NOW - 60_000)!;
+      state = mergeBybitTicker(state, delta(SERVER_NOW - 500, { indexPrice: "4189.40" }), SERVER_NOW - 500)!;
+      await fake.deps.cache.set(liveQuoteKey("GOLD"), state);
+      const quote = await MarketService.getCurrentPriceSnapshot("GOLD");
+      assert.equal(quote.transport, "WS");
+      assert.equal(quote.quoteTimes.lastPriceMs, SERVER_NOW - 500);
+    } finally {
+      network.restore();
+      restoreDeps();
+    }
   });
 
   await t.test("an older delta is ignored", () => {

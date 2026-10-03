@@ -1,11 +1,16 @@
 "use client";
-import { AuthGate, createAuthFetch } from "./AuthGate";
+import { AuthGate } from "./AuthGate";
 import CrossSectionalBook from "@/components/CrossSectionalBook";
+import Benchmarks from "@/components/Benchmarks";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { RefreshCcw, Activity, Play, Sun, Moon, Lock, Info } from "lucide-react";
+import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
-import { describeResearchCapture } from '@/lib/research/researchDisplay';
+import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
+import { livePortfolioGain, formatSignedGain, portfolioEquityMetrics } from '@/lib/ui/livePortfolioGain';
+import { useChartHistory } from '@/lib/ui/useChartHistory';
+import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
+import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
@@ -303,9 +308,6 @@ function DashboardContent({ secret }: { secret: string }) {
   const [chartInterval, setChartInterval] = useState("1h");
   const [chartTimezone, setChartTimezone] = useState<ChartTimezone>("EU");
   const [data, setData] = useState<any>(null);
-  const [chartData, setChartData] = useState<any>(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState<string | null>(null);
   const [signals, setSignals] = useState<any>(null);
   const [livePrices, setLivePrices] = useState<any>(null);
   const [liveFeed, setLiveFeed] = useState<any>(null);
@@ -321,13 +323,10 @@ function DashboardContent({ secret }: { secret: string }) {
   // Client-Side Simulation States
   const [backtestResult, setBacktestResult] = useState<any>(null);
   const [backtesting, setBacktesting] = useState(false);
-  const [monteCarloResult, setMonteCarloResult] = useState<any>(null);
-  const [simulatingMC, setSimulatingMC] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
-  const [showActivityDetails, setShowActivityDetails] = useState(true);
   // Plain-language mode. The engine already computes readable sentences on
   // every scan (simpleStatus / simpleReason / nextStep) and the UI was showing
   // the raw scores instead, which made the dashboard unreadable to anyone who
@@ -480,43 +479,8 @@ function DashboardContent({ secret }: { secret: string }) {
     }
   }, [fetcher, activeAsset]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let cancelled = false;
-
-    setChartLoading(true);
-    setChartError(null);
-    setChartData(null);
-
-    const loadChart = async () => {
-      try {
-        const res = await fetcher(
-          `/api/chart?interval=${chartInterval}&limit=520&asset=${activeAsset}&portfolio=${viewMode}`,
-          { signal: controller.signal }
-        );
-        const payload = await res.json().catch(() => null);
-        if (cancelled) return;
-        if (!res.ok || !payload || payload.asset !== activeAsset || payload.interval !== chartInterval) {
-          throw new Error(payload?.error || `Chart data for ${activeAsset} is unavailable.`);
-        }
-        setChartData(payload);
-      } catch (error) {
-        if (cancelled || controller.signal.aborted) return;
-        setChartData(null);
-        setChartError(error instanceof Error ? error.message : `Chart data for ${activeAsset} is unavailable.`);
-      } finally {
-        if (!cancelled) setChartLoading(false);
-      }
-    };
-
-    loadChart();
-    const interval = setInterval(loadChart, 30_000);
-    return () => {
-      cancelled = true;
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [fetcher, activeAsset, viewMode, chartInterval]);
+  const { chartData, chartLoading, chartError, historyLoading, loadOlder, loadLatest } =
+    useChartHistory(fetcher, activeAsset, chartInterval, viewMode);
 
   // Next Scan Countdown Timer Effect
   useEffect(() => {
@@ -540,13 +504,9 @@ function DashboardContent({ secret }: { secret: string }) {
       if (type === "BACKTEST_SUCCESS") {
         setBacktestResult(resData);
         setBacktesting(false);
-      } else if (type === "MONTE_CARLO_SUCCESS") {
-        setMonteCarloResult(resData);
-        setSimulatingMC(false);
       } else if (type === "ERROR") {
         alert(`Simulation Error: ${error}`);
         setBacktesting(false);
-        setSimulatingMC(false);
       }
     };
     return () => { workerRef.current?.terminate(); };
@@ -576,9 +536,10 @@ function DashboardContent({ secret }: { secret: string }) {
     ? (data?.aiEquityTrades || [])
     : (data?.userEquityTrades || []);
   const totalValue = viewMode === "ai" ? data?.aiTotalValue : data?.userTotalValue;
-  const profitByAsset = viewMode === "ai" ? data?.aiProfitByAsset : data?.userProfitByAsset;
   const closedStats = viewMode === "ai" ? data?.aiClosedStats : data?.userClosedStats;
   const activeLivePrice = livePrices?.[activeAsset];
+  const humanGain = livePortfolioGain(data?.userTotalValue, data?.userPortfolio?.initialCapital, data?.userValuations, livePrices);
+  const swingGain = livePortfolioGain(data?.aiTotalValue, data?.aiPortfolio?.initialCapital, data?.aiValuations, livePrices);
 
   const handleTrade = async () => {
     if (isSpectator) {
@@ -677,21 +638,6 @@ function DashboardContent({ secret }: { secret: string }) {
       alert(`Backtest fetch error: ${e}`);
       setBacktesting(false);
     }
-  };
-
-  const runMonteCarloSim = async () => {
-    if (!chartData || chartData.candles.length === 0) return;
-    setSimulatingMC(true);
-    const candles = chartData.candles;
-    const currentPrice = candles[candles.length - 1].close;
-    const closes = candles.slice(-30).map((c: any) => c.close);
-    const mean = closes.reduce((a: number, b: number) => a + b, 0) / closes.length;
-    const variance = closes.reduce((a: number, b: number) => a + Math.pow(b - mean, 2), 0) / closes.length;
-    const stdDevPercent = Math.sqrt(variance) / currentPrice;
-    workerRef.current?.postMessage({
-      type: "MONTE_CARLO",
-      data: { currentPrice, volatility: stdDevPercent, paths: 1500, steps: 24 }
-    });
   };
 
   if (loading) {
@@ -831,32 +777,31 @@ function DashboardContent({ secret }: { secret: string }) {
               <span className={`text-[9px] font-bold font-mono tracking-widest uppercase ${isDark ? "text-indigo-400" : "text-indigo-600"}`}>HUMAN PORTFOLIO</span>
               {viewMode === "user" && <span className={`text-[8px] bg-indigo-500/10 text-indigo-500 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold`}>ACTIVE</span>}
             </div>
-            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.userTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            {(() => {
-              const initial = Number(data?.userPortfolio?.initialCapital || 10000);
-              const pnl = Number(data?.userTotalValue || initial) - initial;
-              return (
-                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                </p>
-              );
-            })()}
+            <h3 data-testid="human-total-gain" className={`text-2xl font-bold font-mono ${humanGain.gain === null ? textMuted : humanGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
+              {data?.userTotalValue === null ? 'Unavailable' : formatSignedGain(humanGain.gain)}
+            </h3>
+            <p className={`text-xs font-mono mt-1 ${textSub}`}>
+              {data?.userTotalValue === null ? 'Awaiting a usable mark' : `${humanGain.live ? 'Live' : 'Last marked'} total gain / loss`}
+            </p>
+            <p className={`text-xs font-mono mt-1 ${textMuted}`}>
+              Account value: {data?.userTotalValue === null ? 'Unavailable' : humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+            </p>
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
-            {data?.userTotalValue !== undefined && data?.aiTotalValue !== undefined && (
+            {humanGain.gain !== null && swingGain.gain !== null && (
               <>
                 <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
                   isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
                 }`}>
-                  {data.userTotalValue > data.aiTotalValue ? "🏆 HUMAN IS LEADING" : data.aiTotalValue > data.userTotalValue ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
+                  {humanGain.gain! > swingGain.gain! ? "🏆 HUMAN IS LEADING" : swingGain.gain! > humanGain.gain! ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
                 </div>
                 {/* The verdict compares the human against the swing account
                     only. Without this line a reader seeing a live 24-position
                     book would reasonably assume it was counted. */}
                 <div className={`text-[8px] font-mono mt-1 text-center ${textMuted}`}>
-                  human vs swing engine · the book is a separate account
+                  total gain: human vs swing · the book is a separate account
                 </div>
               </>
             )}
@@ -873,19 +818,18 @@ function DashboardContent({ secret }: { secret: string }) {
               <span className="text-[9px] font-bold font-mono tracking-widest text-blue-500 uppercase">AI TRADING AGENT</span>
               {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
             </div>
-            <h3 className={`text-xl font-bold font-mono ${textPrimary}`}>${data?.aiTotalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "10,000.00"}</h3>
-            {(() => {
-              const initial = Number(data?.aiPortfolio?.initialCapital || 10000);
-              const pnl = Number(data?.aiTotalValue || initial) - initial;
-              return (
-                <p className={`text-[10px] font-mono font-bold mt-1 ${pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} <span className={`font-normal ${textMuted}`}>swing</span>
-                </p>
-              );
-            })()}
+            <h3 data-testid="swing-total-gain" className={`text-2xl font-bold font-mono ${swingGain.gain === null ? textMuted : swingGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
+              {data?.aiTotalValue === null ? 'Unavailable' : formatSignedGain(swingGain.gain)}
+            </h3>
+            <p className={`text-xs font-mono mt-1 ${textSub}`}>
+              {data?.aiTotalValue === null ? 'Awaiting a usable mark' : `${swingGain.live ? 'Live' : 'Last marked'} swing total gain / loss`}
+            </p>
+            <p className={`text-xs font-mono mt-1 ${textMuted}`}>
+              Account value: {data?.aiTotalValue === null ? 'Unavailable' : swingGain.totalValue === null ? 'Loading...' : '$' + swingGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+            </p>
             {bookSummary && (
               <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
-                {bookSummary.totalReturnUsd >= 0 ? "+" : ""}${bookSummary.totalReturnUsd.toFixed(2)}{" "}
+                {formatSignedGain(bookSummary.totalReturnUsd)}{" "}
                 <span className={`font-normal ${textMuted}`}>
                   book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
                 </span>
@@ -900,7 +844,7 @@ function DashboardContent({ secret }: { secret: string }) {
             <h2 className={`text-[10px] font-bold font-mono ${textSub} mb-4 uppercase tracking-wider`}>
               {viewMode === "ai" ? "AI Agent" : "Human Portfolio"} Performance Growth Curve
             </h2>
-            <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Live value is shown in the portfolio card above.</p>
+            <p className={`text-[9px] font-mono mb-3 ${textMuted}`}>Closed-trade history only. Total gain includes live open-position marks in the comparison cards above.</p>
             <EquityCurve
               key={`${viewMode}-${equityTrades.length}-${equityTrades[0]?.timestamp || "empty"}`}
               trades={equityTrades}
@@ -972,6 +916,11 @@ function DashboardContent({ secret }: { secret: string }) {
                 </span>
               )}
             </div>
+            {typeof activeLivePrice?.indexPrice === "number" && activeLivePrice.indexPrice > 0 && (
+              <div className={`text-[8px] font-mono mt-1 ${textMuted}`} title="Bybit's spot index updates about every second. The bot trades and values positions at the contract price above.">
+                Bybit index {activeLivePrice.indexPrice.toLocaleString(undefined, { maximumFractionDigits: 5 })} (reference, not tradable)
+              </div>
+            )}
           </div>
           <div className={`rounded-xl border p-3 ${bgSubCard}`}>
             <div className={`text-[8px] font-bold font-mono uppercase tracking-wider ${textMuted}`}>Bot Cycle</div>
@@ -1041,7 +990,7 @@ function DashboardContent({ secret }: { secret: string }) {
                     ))}
                   </div>
                   <div className={`flex border rounded-lg overflow-hidden ${isDark ? "bg-[#050508] border-[#1c1c24]" : "bg-[#fafbfc] border-[#e2e8f0]"}`}>
-                    {["1m", "5m", "15m", "30m", "1h"].map(tf => (
+                    {["1m", "5m", "15m", "30m", "1h", "4h"].map(tf => (
                       <button 
                         key={tf} 
                         onClick={() => setChartInterval(tf)} 
@@ -1057,6 +1006,17 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 </div>
               </div>
+              {chartData?.candles?.length > 0 && (
+                <div className={`mb-3 flex flex-wrap items-center gap-3 text-[10px] font-mono ${textMuted}`}>
+                  <button onClick={loadOlder} disabled={historyLoading || !chartData.hasMore}
+                    className="rounded border px-3 py-2 disabled:opacity-40">
+                    {historyLoading ? 'Loading history...' : chartData.hasMore ? 'Load older candles' : 'Start of available history'}
+                  </button>
+                  <button onClick={loadLatest} disabled={historyLoading} className="rounded border px-3 py-2">Back to latest</button>
+                  <span>{chartData.candles.length.toLocaleString()} candles: {new Date(chartData.candles[0].time * 1000).toLocaleDateString()} to {new Date(chartData.candles.at(-1).time * 1000).toLocaleDateString()}</span>
+                  {chartData.historyWindow && <span>Browsing older history. Live chart refresh paused; use Back to latest to resume.</span>}
+                </div>
+              )}
               {chartData?.stale && chartData?.asOf && (
                 <div className={`mb-3 text-[9px] font-mono ${isDark ? "text-amber-400" : "text-amber-700"}`}>
                   Market closed or delayed. Last candle: {new Date(chartData.asOf).toLocaleString()}.
@@ -1068,13 +1028,13 @@ function DashboardContent({ secret }: { secret: string }) {
                 </div>
               )}
               {!chartLoading && chartError && (
-                <div className={`h-[520px] flex items-center justify-center text-xs font-mono ${isDark ? "text-red-400" : "text-red-700"}`}>
+                <div className={`py-3 text-xs font-mono ${isDark ? "text-red-400" : "text-red-700"}`}>
                   {selectedAssetConfig.name} chart unavailable: {chartError}
                 </div>
               )}
-              {!chartLoading && !chartError && chartData?.asset === activeAsset && (
+              {!chartLoading && chartData?.asset === activeAsset && (
                 <TradingChart 
-                  key={`${activeAsset}-${chartInterval}-${viewMode}`}
+                  key={`${activeAsset}-${chartInterval}-${viewMode}-${chartData.windowVersion}`}
                   candles={chartData.candles} 
                   trades={chartData.trades} 
                   indicators={chartData.indicators} 
@@ -1282,7 +1242,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Swing Engine NLV</div>
                     <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
-                      ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {typeof totalValue === 'number' && Number.isFinite(totalValue) ? '$' + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : totalValue === null ? 'Unavailable' : 'Loading...'}
                     </h3>
                     <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
                       Available Cash: ${portfolio.usd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1293,8 +1253,9 @@ function DashboardContent({ secret }: { secret: string }) {
                     <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>True Equity P&L (Net of Fees)</div>
                     {(() => {
                       const initialCapital = portfolio.initialCapital || 10000;
-                      const truePnl = totalValue - initialCapital;
-                      const truePnlPercent = (truePnl / initialCapital) * 100;
+                      const metrics = portfolioEquityMetrics(totalValue, initialCapital, 0);
+                      const truePnl = metrics.gain, truePnlPercent = metrics.returnPercent;
+                      if (truePnl === null || truePnlPercent === null) return <p className={`text-lg font-bold font-mono mt-1 ${textMuted}`}>Unavailable</p>;
                       const isProfit = truePnl >= 0;
                       return (
                         <>
@@ -1321,14 +1282,14 @@ function DashboardContent({ secret }: { secret: string }) {
                         totalExposure += estimateDisplayNotional(pos.asset, pos.amount, currentPrice);
                         totalMargin += pos.usdInvested || 0;
                       });
-                      const marginUtilization = totalValue > 0 ? (totalMargin / totalValue) * 100 : 0;
+                      const marginUtilization = portfolioEquityMetrics(totalValue, portfolio.initialCapital, totalMargin).marginPercent;
                       return (
                         <>
                           <h3 className={`text-lg font-extrabold font-mono mt-1 ${textPrimary}`}>
                             ${totalExposure?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </h3>
-                          <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
-                            Paper Margin Used: {marginUtilization.toFixed(1)}% (Max 40% Guard)
+                          <p className={`text-[10px] font-mono mt-0.5 ${marginUtilization !== null && marginUtilization > 20 ? "text-amber-500 font-bold" : textMuted}`}>
+                            Paper Margin Used: {marginUtilization === null ? 'Unavailable' : marginUtilization.toFixed(1) + '%'} (Max 40% Guard)
                           </p>
                         </>
                       );
@@ -1341,7 +1302,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       -${(portfolio.totalFeesPaid || 0)?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </h3>
                     <p className={`text-[10px] font-mono ${textMuted} mt-0.5`}>
-                      Peak Drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (halts new entries at 10%)
+                      Worst drawdown: {(portfolio.maxDrawdownPercent || 0).toFixed(2)}% (new entries halt while the current drawdown is 10% or more)
                     </p>
                   </div>
                 </div>
@@ -1527,6 +1488,7 @@ function DashboardContent({ secret }: { secret: string }) {
                 )}
 
                 {viewMode === "ai" && <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />}
+                {viewMode === "ai" && <Benchmarks isDark={isDark} />}
 
                 {viewMode === "ai" && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
@@ -1655,13 +1617,17 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Strategy research</div>
                       <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>
                         {data?.research?.trialCount || 0} registered configurations. New range setups collect shadow evidence before trading permissions.
-                        Review eligibility still requires human release approval.
+                        A setup that passes the evidence gates starts trading as a small probe on its own, and is retired if its live results contradict that evidence.
                       </p>
                       <div className={`mt-2 space-y-1 text-[9px] font-mono ${textMuted}`}>
                         {(data?.research?.candidates || []).map((candidate:any)=>(
-                          <div key={candidate.candidateId} className="flex flex-wrap justify-between gap-1">
-                            <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
-                            <span>{candidate.mode} | {candidate.metrics?.forwardPositions||0} independent shadow completions</span>
+                          <div key={candidate.candidateId} className="space-y-1 border-b pb-1">
+                            <div className="flex flex-wrap justify-between gap-1">
+                              <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
+                              <span>{candidate.mode}</span>
+                            </div>
+                            <p>{promotionProgress(candidate.metrics ?? {})}</p>
+                            {candidate.reasons?.length > 0 && <p>Blocked: {candidate.reasons.join(', ')}</p>}
                           </div>
                         ))}
                       </div>
@@ -2119,7 +2085,7 @@ function DashboardContent({ secret }: { secret: string }) {
               <h2 className={`text-[10px] font-bold font-mono ${textSub} border-b ${borderCol} pb-3 uppercase tracking-wider`}>Swing Engine Asset Balances</h2>
               <p className={`text-[9px] font-mono ${textMuted}`}>The nine markets the swing engine trades. Cross-sectional book positions are listed in the Cross-Sectional Book panel.</p>
               <div className="text-xl font-bold font-mono text-green-400">
-                ${totalValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {typeof totalValue === 'number' && Number.isFinite(totalValue) ? '$' + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : totalValue === null ? 'Unavailable' : 'Loading...'}
               </div>
 
               {/* Free (Cash) and Used Capital Display */}
@@ -2218,7 +2184,11 @@ function DashboardContent({ secret }: { secret: string }) {
                     ${(portfolio?.totalExecutionCostsPaid ?? portfolio?.totalFeesPaid ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                   <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
-                    Fees ${(portfolio?.totalFeesPaid || 0).toFixed(2)} / Carry ${(portfolio?.totalCarryPaid || 0).toFixed(2)}
+                    {(() => {
+                      const total = Number(portfolio?.totalExecutionCostsPaid ?? portfolio?.totalFeesPaid ?? 0);
+                      const fees = Number(portfolio?.totalFeesPaid || 0), carry = Number(portfolio?.totalCarryPaid || 0);
+                      return `Fees $${fees.toFixed(2)} / Spread & slippage $${Math.max(0, total - fees - carry).toFixed(2)} / Carry $${carry.toFixed(2)}`;
+                    })()}
                   </span>
                 </div>
               </div>
@@ -2243,11 +2213,18 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
                     <span className={`text-[8px] font-mono uppercase font-bold text-emerald-400 mb-1`}>Swing Brain</span>
-                    <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {data.aiDetailedStats.swing.trades > 0 ? ((data.aiDetailedStats.swing.wins / data.aiDetailedStats.swing.trades) * 100).toFixed(1) : 0}%</span>
-                    <span className={`text-[10px] font-mono ${data.aiDetailedStats.swing.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      PnL: ${data.aiDetailedStats.swing.pnl.toFixed(2)}
-                    </span>
-                    <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>Total: {data.aiDetailedStats.swing.trades} Swings</span>
+                    {(() => {
+                      const tile = swingWinRateTile(data.aiClosedStats, data.aiDetailedStats.swing);
+                      return (
+                        <>
+                          <span className={`text-[10px] font-mono ${textPrimary}`}>WR: {tile.winRateText}</span>
+                          <span className={`text-[10px] font-mono ${tile.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            PnL: ${tile.pnl.toFixed(2)}
+                          </span>
+                          <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>{tile.countText}</span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -2318,6 +2295,15 @@ function DashboardContent({ secret }: { secret: string }) {
                             <div>Entry: <span className={textPrimary}>${pos.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                             <div>Live: <span className={textPrimary}>${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></div>
                           </div>
+                          {!isScalp && (
+                            <p className={`text-[9px] font-mono ${textMuted}`}>
+                              {(() => {
+                                const risk = entryRiskUsage(pos);
+                                return risk.utilizationPercent === null ? 'Initial risk evidence unavailable for this position.'
+                                  : `Risk approved: $${risk.approvedUsdt!.toFixed(2)} / taken at entry: $${risk.takenUsdt!.toFixed(2)} (${risk.utilizationPercent.toFixed(1)}% used). Margin, leverage and liquidity caps still apply.`;
+                              })()}
+                            </p>
+                          )}
                           {!isScalp && (
                             <div className={`rounded-lg border px-2 py-1.5 ${thesisColor}`}>
                               <div className="flex items-center justify-between gap-2">

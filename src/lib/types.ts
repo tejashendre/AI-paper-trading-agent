@@ -219,6 +219,9 @@ export interface OpenPosition extends StrategyProvenance {
   lastPartialExitTime?: string;
   maxUnrealizedPnlUsd?: number;
   maxUnrealizedPnlTime?: string;
+  /** Last validated quote used by the risk guards; cash is unchanged by marking. */
+  lastMarkPrice?: number;
+  lastMarkAt?: string;
   thesisStatus?: 'VALID' | 'WEAKENING' | 'INVALID' | 'OPPOSITE_EDGE_CONFIRMED';
   thesisReason?: string;
   lastThesisCheckTime?: string;
@@ -440,26 +443,6 @@ export interface Trade extends StrategyProvenance {
   exitReason?: 'STOP_LOSS' | 'TAKE_PROFIT' | 'TRAILING_STOP_PROFIT' | 'BREAKEVEN_STOP' | 'SIGNAL_INVALIDATION' | 'TIME_STOP' | 'DATA_SAFETY_EXIT' | 'SIGNAL_REVERSAL' | 'MANUAL' | 'SCALP_TARGET' | 'SCALP_STOP' | 'SCALP_REVERSAL';
 }
 
-// ===================== Performance ==============================
-
-export interface PerformanceMetrics {
-  totalReturn: number;
-  totalReturnPercent: number;
-  sharpeRatio: number;
-  sortinoRatio: number;
-  calmarRatio: number;
-  winRate: number;
-  profitFactor: number;
-  expectancy: number;
-  averageWin: number;
-  averageLoss: number;
-  maxDrawdown: number;
-  maxDrawdownPercent: number;
-  totalTrades: number;
-  winningTrades: number;
-  losingTrades: number;
-}
-
 // ========================= Logging ==============================
 
 export interface LogEntry {
@@ -468,29 +451,6 @@ export interface LogEntry {
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS' | 'TRADE';
   message: string;
   details?: unknown;
-}
-
-// ===================== API Responses ============================
-
-export interface DashboardData {
-  portfolio: Portfolio;
-  trades: Trade[];
-  btcPrice: number;
-  totalValue: number;
-  performance: PerformanceMetrics;
-  lastSignal: CompositeSignal | null;
-  logs: LogEntry[];
-}
-
-export interface ChartData {
-  candles: Candle[];
-  indicators: IndicatorSeries;
-  trades: { time: number; action: string; price: number }[];
-}
-
-export interface SignalSnapshot {
-  composite: CompositeSignal;
-  risk: RiskParameters | null;
 }
 
 // ================== Free Data Mesh (Autonomous AI) ===============
@@ -565,177 +525,6 @@ export type MarketRegime =
   | 'CHOPPY'
   | 'SCALP';
 
-/** Volatility regime categorization. */
-export type VolatilityRegime = 'ULTRA_LOW' | 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
-
-/** Directional bias for the AI to reason about. */
-export type DirectionalBias = 'STRONG_BULL' | 'LEAN_BULL' | 'NEUTRAL' | 'LEAN_BEAR' | 'STRONG_BEAR';
-
-/** Support/resistance zone identified from price action. */
-export interface PriceZone {
-  level: number;
-  type: 'SUPPORT' | 'RESISTANCE';
-  strength: number;       // 0-1
-  touchCount: number;
-  lastTouch: number;      // Unix timestamp
-}
-
-/** The AI's structured understanding of the current market state. */
-export interface MarketWorldModel {
-  asset: string;
-  currentPrice: number;
-  openInterest?: number;           // Deep Sensor: Total open futures contracts
-  fundingRate?: number;            // Deep Sensor: Perpetual futures funding rate
-  regime: MarketRegime;
-  directionalBias: DirectionalBias;
-  biasScore: number;               // -100 to +100 (negative = bearish)
-  tradeability: number;            // 0-100 (should the AI trade at all?)
-  volatilityRegime: VolatilityRegime;
-  atrPercent: number;              // ATR as percentage of price
-  trendStrength: number;           // 0-100
-  momentumScore: number;           // -100 to +100
-  meanReversionSignal: number;     // -100 to +100 (positive = oversold bounce likely)
-  priceZones: PriceZone[];
-  nearestSupport: number | null;
-  nearestResistance: number | null;
-  keyLevels: string[];             // Human-readable level descriptions
-  dataQuality: number;             // 0-100 from feed health
-  sentimentScore: number | null;   // 0-100 Fear & Greed
-  newsCatalyst?: {
-    sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'PANIC';
-    score: number;
-    reasoning: string;
-  };
-  hurstExponent: number;
-  volatilityPercentile: number;
-  warnings: string[];
-  generatedAt: string;
-}
-
-// ================== Autonomous Brain & Risk (Section 3) ==========
-
-/** Immutable physics of the trading account. */
-export interface RiskGovernorLimits {
-  maxLeverage: number;
-  maxDrawdownPercent: number;
-  maxPositionSizeUsd: number;
-  minStopLossPercent: number;
-  maxStopLossPercent: number;
-  maxDailyTrades: number;
-  haltTradingIfDataBad: boolean;
-}
-
-/** The raw decision output from the LLM Brain. */
-export interface BrainDecision {
-  action: 'BUY' | 'SELL' | 'SHORT' | 'COVER' | 'HOLD' | 'REQUEST_DATA';
-  dataRequest?: {
-    timeframe: string;
-    indicator?: string;
-  };
-  confidence: number;            // 0.0 - 1.0
-  conviction: 'LOW' | 'MEDIUM' | 'HIGH';
-  thesis: string;                // The AI's justification
-  takeProfitPrice: number | null;
-  stopLossPrice: number | null;
-  suggestedSizeUsd: number | null; // AI can request a size, Risk Governor approves/denies
-  timeHorizon: 'SCALP' | 'DAY' | 'SWING';
-  expected15mDirection: 'UP' | 'DOWN' | 'SIDEWAYS';
-  expected1hDirection: 'UP' | 'DOWN' | 'SIDEWAYS';
-  expected4hDirection: 'UP' | 'DOWN' | 'SIDEWAYS';
-}
-
-/** The final, risk-approved decision ready for execution. */
-export interface AutonomousDecision extends BrainDecision {
-  id: string;
-  asset: string;
-  approvedSizeUsd: number;
-  riskAdjustedStopLoss: number | null;
-  riskAdjustedTakeProfit: number | null;
-  blockedByRisk: boolean;
-  riskBlockReason: string | null;
-  timestamp: string;
-}
-
-// ================== Realistic Paper Exchange (Section 4) =========
-
-/** Estimation of expected slippage based on volatility. */
-export interface SlippageEstimate {
-  expectedSlippagePercent: number;
-  expectedSlippageUsd: number;
-  worstCaseSlippageUsd: number;
-}
-
-/** Simulated execution fill quality. */
-export type ExecutionQuality = 'PERFECT' | 'SLIPPED' | 'REJECTED_ILLIQUID' | 'GAP_THROUGH';
-
-/** Result of a paper order fill attempt. */
-export interface OrderFill {
-  success: boolean;
-  fillPrice: number;
-  requestedPrice: number;
-  slippageIncurredUsd: number;
-  feeIncurredUsd: number;
-  quality: ExecutionQuality;
-  rejectionReason: string | null;
-  timestamp: string;
-}
-
-// ================== Memory & Learning (Section 5) ================
-
-export type DirectionExpectation = "UP" | "DOWN" | "SIDEWAYS";
-
-export interface PredictionRecord {
-  decisionId: string;
-  asset: string;
-  timestamp: string;
-  entryPrice: number;
-  action: string;
-  confidence: number;
-  predicted15m: DirectionExpectation;
-  predicted1h: DirectionExpectation;
-  predicted4h: DirectionExpectation;
-  actual15m?: DirectionExpectation;
-  actual1h?: DirectionExpectation;
-  actual4h?: DirectionExpectation;
-  price15m?: number;
-  price1h?: number;
-  price4h?: number;
-  score15m?: number;
-  score1h?: number;
-  score4h?: number;
-  directionScore?: number;
-  calibrationScore?: number;
-  resolved: boolean;
-  pruned?: boolean;
-  prunedReason?: string;
-}
-
-export interface PredictionScoreRecord {
-  id: string;
-  decisionId: string;
-  asset: string;
-  horizon: "15m" | "1h" | "4h";
-  predicted: DirectionExpectation;
-  actual: DirectionExpectation;
-  score: number;
-  confidence: number;
-  calibrationScore: number;
-  resolvedAt: string;
-  action: string;
-}
-
-export interface PredictionPerformanceSummary {
-  totalResolved: number;
-  totalOpen: number;
-  accuracy: number;
-  calibrationScore: number;
-  accuracy15m: number;
-  accuracy1h: number;
-  accuracy4h: number;
-  recentCorrect: number;
-  recentWrong: number;
-}
-
 /** A ledger entry representing the AI's prediction and the ultimate reality. */
 export interface TradeJournalEntry {
   tradeId: string;
@@ -750,23 +539,4 @@ export interface TradeJournalEntry {
   wasPredictionCorrect: boolean;
   mistakesMade: string[];
   lessonsLearned: string[];
-}
-
-export interface DynamicParameters {
-  rsiOverbought: number;      // Default: 65
-  rsiOversold: number;        // Default: 40
-  macdHistogramMin: number;   // Default: 0
-  stochRsiOverbought: number; // Default: 85
-  stochRsiOversold: number;   // Default: 15
-  vwapDeviationPercent: number; // Default: 0.5
-}
-
-/** Summarized memory extracted by the reflection engine. */
-export interface ReflectionSummary {
-  timestamp: string;
-  tradesAnalyzed: number;
-  winRate: number;
-  topMistake: string;
-  actionableRule: string; // E.g., "Stop buying breakouts in MEAN_REVERTING regimes."
-  optimizedParameters?: DynamicParameters;
 }

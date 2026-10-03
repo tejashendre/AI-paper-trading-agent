@@ -150,3 +150,21 @@ export function returnMoments(returns: number[]): { mean: number; sd: number; sk
   const kurtosis = returns.reduce((s, v) => s + ((v - mean) / sd) ** 4, 0) / n;
   return { mean, sd, skew, kurtosis };
 }
+
+/** Deterministic moving-block bootstrap retains short-run return dependence. */
+export function blockBootstrapMean95(values: number[], seed = 20261001) {
+  if (values.length < 4 || values.some(value => !Number.isFinite(value))) return null;
+  let state = seed >>> 0;
+  const random = () => { state = (1664525 * state + 1013904223) >>> 0; return state / 4294967296; };
+  const blockSize = Math.max(2, Math.ceil(Math.sqrt(values.length))), means: number[] = [];
+  for (let trial = 0; trial < 1000; trial++) {
+    const sample: number[] = [];
+    while (sample.length < values.length) {
+      const start = Math.floor(random() * values.length);
+      for (let offset = 0; offset < blockSize && sample.length < values.length; offset++) sample.push(values[(start + offset) % values.length]);
+    }
+    means.push(sample.reduce((a, b) => a + b, 0) / sample.length);
+  }
+  means.sort((a, b) => a - b);
+  return { low: means[24], high: means[974], iterations: 1000, blockSize, seed };
+}

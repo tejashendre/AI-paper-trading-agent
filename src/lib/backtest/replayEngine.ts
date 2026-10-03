@@ -1,4 +1,3 @@
-import { computeAllIndicators } from "@/lib/indicators";
 import { Candle, OpenPosition, Portfolio } from "@/lib/types";
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { evaluateSwingSignal, SwingSignal } from "@/lib/swingEngine";
@@ -6,8 +5,9 @@ import { calculatePnlUsd, getAssetSpec } from "@/lib/trading/assetSpecs";
 import { TradeAdmissionController } from "@/lib/trading/tradeAdmission";
 import { estimateCarryCostUsd, estimatePaperFill, fitPaperExecutionPlanToRiskBudget } from "@/lib/trading/executionCostModel";
 import { decideSwingExit, isOppositeEdgeConfirmed } from "@/lib/execution/exitPolicy";
-import { SWING_STOP_ATR_MULTIPLE, SWING_TARGET_R_MULTIPLE } from "@/lib/swingEngine";
 import { getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
+import type { MarketPriceSnapshot, MarketService } from '@/lib/market';
+import type { ResearchEvidence } from '@/lib/research/researchArchive';
 
 type ReplayDirection = "LONG" | "SHORT" | "NEUTRAL";
 type ReplayExitReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "TIME_STOP" | "END_REPLAY";
@@ -16,9 +16,84 @@ export interface ReplayInput {
   assets: Record<string, Candle[]>;
   /** Optional 1m/5m series so the short-term trigger is scored at real resolution. */
   fastCandles?: Record<string, { m1?: Candle[]; m5?: Candle[] }>;
+  /** Present only for replay of captured evidence. Missing inputs are never synthesized. */
+  recordedSnapshots?: Record<string, RecordedReplaySnapshot[]>;
+  higherTimeframeCandles?: Record<string, { h1: Candle[]; h4: Candle[]; w1: Candle[] }>;
   initialCapital?: number;
   maxHoldCandles?: number;
   minCandles?: number;
+}
+
+interface RecordedReplaySnapshot {
+  observedAtMs: number;
+  sourceTimes: { quoteMs: number | null; depthMs: number | null; sensorsMs: number | null };
+  quote?: MarketPriceSnapshot;
+  orderbookResult: Awaited<ReturnType<typeof MarketService.getOrderbookImbalance>> | null;
+  deepSensors: Awaited<ReturnType<typeof MarketService.getDeepSensors>> | null;
+}
+
+/** Sorted observations, with the same 15-second depth freshness used live. */
+export function recordedSnapshotAt(rows: RecordedReplaySnapshot[], atMs: number): RecordedReplaySnapshot | null {
+  let low = 0, high = rows.length - 1, found = -1;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (rows[mid].observedAtMs <= atMs) { found = mid; low = mid + 1; } else high = mid - 1;
+  }
+  if (found < 0) return null;
+  const row = rows[found];
+  const fresh = (time: number | null | undefined, maxAge: number) =>
+    typeof time === 'number' && Number.isFinite(time) && time > 0 && atMs >= time && atMs - time <= maxAge;
+  return fresh(row.sourceTimes?.quoteMs, 5000) && fresh(row.sourceTimes?.depthMs, 15000) &&
+    fresh(row.sourceTimes?.sensorsMs, 60000) ? row : null;
+}
+
+/** Actual archive bars and observations, offline, with no synthetic fast history. */
+export function buildRecordedReplayInput(records: ResearchEvidence[]): ReplayInput {
+  const assets: ReplayInput['assets'] = {}, fastCandles: NonNullable<ReplayInput['fastCandles']> = {},
+    recordedSnapshots: NonNullable<ReplayInput['recordedSnapshots']> = {},
+    higherTimeframeCandles: NonNullable<ReplayInput['higherTimeframeCandles']> = {};
+  for (const asset of [...new Set(records.map(r => r.asset))]) {
+    if (!SUPPORTED_ASSETS[asset]) continue;
+    const evidence = records.filter(r => r.asset === asset).sort((a, b) => a.recordedAtMs - b.recordedAtMs);
+    const bars = (interval: string, seconds: number) => [...new Map(evidence.flatMap(r =>
+      ((r.candles[interval] ?? []) as Candle[]).filter(c => (c.time + seconds) * 1000 <= r.recordedAtMs)
+    ).map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time);
+    assets[asset] = bars('15m', 900);
+    fastCandles[asset] = { m1: bars('1m', 60), m5: bars('5m', 300) };
+    higherTimeframeCandles[asset] = { h1: bars('1h', 3600), h4: bars('4h', 14400), w1: bars('1w', 604800) };
+    recordedSnapshots[asset] = evidence.map(r => {
+      const depth = r.depth as any, rawQuote = r.quote as any, funding = r.funding as any;
+      const sum = (levels: unknown[][] = []) => levels.reduce((total, level) => total + Math.max(0, Number(level[1]) || 0), 0);
+      const bidVolume = Number(depth?.bidVolume ?? sum(depth?.b)), askVolume = Number(depth?.askVolume ?? sum(depth?.a));
+      const ratio = bidVolume / askVolume;
+      const price = Number(rawQuote?.price ?? rawQuote?.lastPrice);
+      const instrument = getConfiguredInstrument(asset);
+      const clock = (value: unknown) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; };
+      const quoteEvent = clock(rawQuote?.eventTimeMs ?? Date.parse(rawQuote?.updatedAt ?? ''));
+      const quoteReceived = clock(rawQuote?.receivedAtMs);
+      const quoteClocks = [quoteEvent, quoteReceived,
+        clock(rawQuote?.quoteTimes?.lastPriceMs ?? quoteEvent), clock(rawQuote?.quoteTimes?.bidAskMs ?? quoteEvent),
+        clock(rawQuote?.updatedAt ? Date.parse(rawQuote.updatedAt) : quoteEvent)];
+      const depthClocks = [depth?.observedAtMs, depth?.ts, depth?.cts].filter(v=>v!==undefined).map(clock);
+      const sensorClock = clock(funding?.observedAtMs);
+      const known = (times: (number | null)[]) => times.length > 0 && times.every((t): t is number => t !== null);
+      const quoteMs = known(quoteClocks) ? Math.min(...quoteClocks as number[]) : null;
+      const depthMs = known(depthClocks) ? Math.min(...depthClocks as number[]) : null;
+      const availableClocks = [r.recordedAtMs, ...quoteClocks, ...depthClocks, sensorClock,
+        clock(depth?.receivedAtMs),clock(funding?.receivedAtMs)].filter((t):t is number=>t!==null);
+      return { observedAtMs: Math.max(...availableClocks), sourceTimes:{quoteMs,depthMs,sensorsMs:sensorClock},
+        quote: price > 0 && quoteMs !== null && quoteEvent !== null && quoteReceived !== null ? { price, bid: Number(rawQuote?.bid ?? rawQuote?.bid1Price), ask: Number(rawQuote?.ask ?? rawQuote?.ask1Price),
+          provider: 'REPLAY', source: 'HTTP' as const, transport: 'REST' as const, venue: 'REPLAY', instrument: instrument.symbol,
+          instrumentVersion: instrument.instrumentVersion, updatedAt: rawQuote.updatedAt ?? new Date(quoteEvent).toISOString(),
+          receivedAtMs: quoteReceived, eventTimeMs: quoteEvent,
+          quoteTimes: rawQuote.quoteTimes ?? { lastPriceMs: quoteEvent, bidAskMs: quoteEvent, markMs: null } } : undefined,
+        orderbookResult: depthMs !== null && bidVolume > 0 && askVolume > 0 ? { bidVolume, askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 } : null,
+        deepSensors: sensorClock !== null && Number.isFinite(Number(funding?.fundingRate ?? rawQuote?.fundingRate)) ? {
+          fundingRate: Number(funding?.fundingRate ?? rawQuote?.fundingRate), openInterest: Number(funding?.openInterest ?? rawQuote?.openInterest),
+        } as RecordedReplaySnapshot['deepSensors'] : null };
+    }).sort((a,b)=>a.observedAtMs-b.observedAtMs);
+  }
+  return { assets, fastCandles, recordedSnapshots, higherTimeframeCandles };
 }
 
 export interface ReplayTrade {
@@ -90,6 +165,7 @@ export interface ReplayAcceptance {
 }
 
 export interface ReplayReport {
+  assetCoverage: Record<string, { status: 'DESCRIPTIVE' | 'NOT_TESTABLE'; reasons: string[]; missingFlowWindows: number }>;
   generatedAt: string;
   initialCapital: number;
   finalCapital: number;
@@ -197,10 +273,6 @@ function emptyPortfolio(usd: number): Portfolio {
   };
 }
 
-function finite(value: number, fallback = 0): number {
-  return Number.isFinite(value) ? value : fallback;
-}
-
 function average(values: number[]): number {
   return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
@@ -226,20 +298,6 @@ function medianIntervalSeconds(candles: Candle[]): number {
 function isStaleWindow(candles: Candle[], index: number, intervalSeconds: number): boolean {
   if (index <= 0) return false;
   return candles[index].time - candles[index - 1].time > intervalSeconds * 2.5;
-}
-
-function slope(values: number[]): number {
-  if (values.length < 2) return 0;
-  const n = values.length;
-  const meanX = (n - 1) / 2;
-  const meanY = average(values);
-  let numerator = 0;
-  let denominator = 0;
-  for (let i = 0; i < n; i++) {
-    numerator += (i - meanX) * (values[i] - meanY);
-    denominator += Math.pow(i - meanX, 2);
-  }
-  return denominator > 0 ? numerator / denominator : 0;
 }
 
 /** Net unrealized PnL for a replay position, on the same cost model as live. */
@@ -347,7 +405,7 @@ function closedTail(series: Candle[], time: number, barSeconds: number, tail: nu
  * EMA/VWAP scorer with its own thresholds, which meant the acceptance gate
  * graded a strategy the daemon never ran.
  */
-function buildSignal(asset: string, series: ReplaySeries, index: number): SwingSignal {
+function buildSignal(asset: string, series: ReplaySeries, index: number, snapshot?: RecordedReplaySnapshot | null): SwingSignal {
   const window = series.base.slice(0, index + 1);
   const last = window[window.length - 1];
   const time = last.time + 900;
@@ -363,7 +421,7 @@ function buildSignal(asset: string, series: ReplaySeries, index: number): SwingS
     candles1h: closedTail(series.h1, time, 3600, 100),
     candles4h: closedTail(series.h4, time, 14400, 100),
     candles1w: closedTail(series.w1, time, 604800, 20),
-    livePriceSnapshot: {
+    livePriceSnapshot: snapshot?.quote ?? {
       price: livePrice,
       provider: "REPLAY",
       source: "HTTP",
@@ -379,8 +437,8 @@ function buildSignal(asset: string, series: ReplaySeries, index: number): SwingS
     // Historical order-book and funding tapes are not retained, so live-flow
     // evidence is neutral here — the same state production sees when those
     // feeds are unavailable.
-    orderbookResult: null,
-    deepSensors: null,
+    orderbookResult: snapshot?.orderbookResult ?? null,
+    deepSensors: snapshot?.deepSensors ?? null,
     // Replay is a clean-room test of the strategy itself, so it runs without
     // accumulated learning adjustments.
     learningRules: [],
@@ -588,6 +646,15 @@ function buildAcceptance(report: Omit<ReplayReport, "acceptance">): ReplayAccept
 }
 
 export function runReplay(input: ReplayInput): ReplayReport {
+  const assetCoverage: ReplayReport['assetCoverage'] = {};
+  for (const asset of Object.keys(input.assets)) {
+    const reasons: string[] = [];
+    if (SUPPORTED_ASSETS[asset]?.category === 'crypto') {
+      if (!input.fastCandles?.[asset]?.m1?.length || !input.fastCandles?.[asset]?.m5?.length) reasons.push('MISSING_1M_5M_TRIGGER_HISTORY');
+      if (!input.recordedSnapshots?.[asset]?.some(r => r.quote && r.orderbookResult && r.deepSensors)) reasons.push('MISSING_HISTORICAL_FLOW');
+    }
+    assetCoverage[asset] = { status: reasons.length ? 'NOT_TESTABLE' : 'DESCRIPTIVE', reasons, missingFlowWindows: 0 };
+  }
   const initialCapital = input.initialCapital || INITIAL_CAPITAL;
   const minCandles = input.minCandles || MIN_CANDLES;
   const maxHoldCandles = input.maxHoldCandles || MAX_HOLD_CANDLES;
@@ -644,6 +711,8 @@ export function runReplay(input: ReplayInput): ReplayReport {
     }
 
     const series = buildReplaySeries(candles, input.fastCandles?.[asset]);
+    const capturedHigher = input.higherTimeframeCandles?.[asset];
+    if (capturedHigher) { series.h1 = capturedHigher.h1; series.h4 = capturedHigher.h4; series.w1 = capturedHigher.w1; }
     // The short-term trigger needs 1m/5m history. Where that history does not
     // reach, the trigger would score zero and every bar would look like a
     // no-entry — a silently empty sample rather than a real result. Skip those
@@ -697,7 +766,13 @@ export function runReplay(input: ReplayInput): ReplayReport {
         continue;
       }
 
-      const signal = buildSignal(asset, series, i);
+      const snapshot = recordedSnapshotAt(input.recordedSnapshots?.[asset] ?? [], (candle.time + intervalSeconds) * 1000);
+      if (input.recordedSnapshots && SUPPORTED_ASSETS[asset]?.category === 'crypto' &&
+          (assetCoverage[asset].reasons.length || !snapshot?.quote || !snapshot.orderbookResult || !snapshot.deepSensors)) {
+        assetCoverage[asset].missingFlowWindows++;
+        continue;
+      }
+      const signal = buildSignal(asset, series, i, snapshot);
       // The engine's own vocabulary, mapped once into replay terms.
       const direction: ReplayDirection =
         signal.action === "SWING_BUY" ? "LONG" : signal.action === "SWING_SHORT" ? "SHORT" : signal.directionBias;
@@ -906,7 +981,14 @@ export function runReplay(input: ReplayInput): ReplayReport {
     winRate: stat.trades > 0 ? stat.wins / stat.trades : 0,
   })).sort((a, b) => b.realizedPnl - a.realizedPnl);
 
+  for (const [asset, coverage] of Object.entries(assetCoverage)) {
+    if (input.recordedSnapshots && SUPPORTED_ASSETS[asset]?.category === 'crypto' && coverage.missingFlowWindows > 0) {
+      coverage.status = 'NOT_TESTABLE';
+      coverage.reasons.push('HISTORICAL_FLOW_GAPS');
+    }
+  }
   const reportBase: Omit<ReplayReport, "acceptance"> = {
+    assetCoverage,
     generatedAt: new Date().toISOString(),
     initialCapital,
     finalCapital: portfolio.usd,
@@ -936,8 +1018,11 @@ export function runReplay(input: ReplayInput): ReplayReport {
     errors,
   };
 
-  return {
-    ...reportBase,
-    acceptance: buildAcceptance(reportBase),
-  };
+  const acceptance = buildAcceptance(reportBase);
+  if (input.recordedSnapshots && Object.values(assetCoverage).some(c => c.status === 'NOT_TESTABLE')) {
+    acceptance.passed = false;
+    acceptance.integrityPassed = false;
+    acceptance.messages.push('Recorded replay is not testable for every requested asset; inspect assetCoverage before interpreting zero fills.');
+  }
+  return { ...reportBase, acceptance };
 }

@@ -251,12 +251,6 @@ export class RiskManager {
     // ══════════════════════════════════════════════════════════════
     // Advanced Swing Trade Trailing Logic (Dynamic Watermark)
     // ══════════════════════════════════════════════════════════════
-    // Use the entry-time stop as the trailing basis. Using the current stop
-    // here shrinks the risk basis on every trail and can force premature exits.
-    const initialStopLoss = Number(position.initialStopLoss);
-    const stopBasis = Number.isFinite(initialStopLoss) && initialStopLoss > 0
-      ? initialStopLoss
-      : position.stopLoss;
     const isShort = position.direction === 'SHORT';
 
     // Track watermarks (Peak profitable price)
