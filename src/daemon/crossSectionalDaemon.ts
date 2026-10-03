@@ -45,6 +45,7 @@ import {
   evaluateShadowEvidence,
   makeReduceOnlyPlan,
   PROMOTION_EVIDENCE_PASSED,
+  volatilityScale,
 } from "../lib/execution/bookRiskPolicy";
 import { getEquityCurve as getCurve } from "../lib/execution/equityCurve";
 import { ExecutionLedger } from "../lib/trading/executionLedger";
@@ -240,13 +241,28 @@ async function releaseOnShadowEvidence(portfolio: BookPortfolio): Promise<string
   return PROMOTION_EVIDENCE_PASSED;
 }
 
+/**
+ * Strategy config with gross exposure scaled down, never up, by the book's own
+ * realized volatility, so a turbulent stretch trades smaller (momentum crashes
+ * cluster in high volatility).
+ */
+async function scaledConfig(curveKey: string | null, label: string) {
+  const curve = curveKey ? await getCurve(curveKey).catch(() => []) : await getEquityCurve().catch(() => []);
+  const vol = volatilityScale(curve);
+  if (vol.scale < 1) {
+    await Logger.info(`[XSEC] ${label} gross exposure scaled to ${(vol.scale * 100).toFixed(0)}% (realized vol ${((vol.realizedAnnualVol ?? 0) * 100).toFixed(0)}%)`);
+  }
+  return { ...CONFIG, grossExposure: CONFIG.grossExposure * vol.scale };
+}
+
 /** The same plan on a capital-free book, so halted periods still produce forward evidence. */
 async function runShadowRebalance(snapshot: Awaited<ReturnType<typeof buildMomentumSnapshot>>) {
   const shadow = await loadBookPortfolio(10_000, SHADOW_BOOK_PORTFOLIO_KEY);
   await settleBookFunding(shadow, liveFundingDeps).catch(() => undefined);
   await recordEquityPoint(shadow, bookEquityUsd(shadow, snapshot.prices), SHADOW_BOOK_EQUITY_CURVE_KEY);
-  const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(shadow, snapshot.prices), config: CONFIG });
-  applyBookPlan({ portfolio: shadow, plan, prices: snapshot.prices, config: CONFIG });
+  const config = await scaledConfig(SHADOW_BOOK_EQUITY_CURVE_KEY, "shadow");
+  const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(shadow, snapshot.prices), config });
+  applyBookPlan({ portfolio: shadow, plan, prices: snapshot.prices, config });
   await saveBookPortfolio(shadow, SHADOW_BOOK_PORTFOLIO_KEY);
 }
 
@@ -281,10 +297,11 @@ async function runRebalance() {
         return;
       }
 
-      const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(portfolio, snapshot.prices), config: CONFIG });
+      const config = await scaledConfig(null, "live");
+      const plan = decideBook({ momentumBySymbol: snapshot.momentum, currentWeights: currentWeights(portfolio, snapshot.prices), config });
       if (decision.allowEntries || decision.allowReductions) {
         // ENTRY_HALT keeps managing what it holds: only orders that reduce.
-        const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config: CONFIG, reduceOnly: !decision.allowEntries });
+        const result = applyBookPlan({ portfolio, plan, prices: snapshot.prices, config, reduceOnly: !decision.allowEntries });
         await saveBookPortfolio(portfolio);
         await recordBookTrades(result.trades);
         await recordReconciliation(result.reconciliation);

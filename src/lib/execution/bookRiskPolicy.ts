@@ -179,3 +179,25 @@ export function makeReduceOnlyPlan(input: {
     reason: `REDUCE_ONLY staged unwind (${step})${blocked.length > 0 ? `; blocked: ${blocked.join("; ")}` : ""}`,
   };
 }
+
+/** Annual volatility the book is scaled toward (Barroso and Santa-Clara 2015; Moreira and Muir 2017). */
+export const BOOK_TARGET_ANNUAL_VOL = 0.2;
+export const VOL_SCALE_MIN_RETURNS = 20;
+const YEAR_MS = 365 * 86_400_000;
+
+/**
+ * Down-only volatility scaling: min(1, target / realized), realized from the
+ * book's own recorded equity (the last 60 periods). Without enough history the
+ * scale stays 1, so it can only ever shrink exposure.
+ */
+export function volatilityScale(curve: EquityPoint[], targetAnnualVol = BOOK_TARGET_ANNUAL_VOL) {
+  const points = curve.slice(-61).filter((p) => Number.isFinite(p.equityUsd) && p.equityUsd > 0 && Number.isFinite(Date.parse(p.at)));
+  const returns = points.slice(1).map((p, i) => p.equityUsd / points[i].equityUsd - 1);
+  if (returns.length < VOL_SCALE_MIN_RETURNS) return { scale: 1, realizedAnnualVol: null as number | null, returns: returns.length };
+  const intervalMs = (Date.parse(points[points.length - 1].at) - Date.parse(points[0].at)) / returns.length;
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const sd = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (returns.length - 1));
+  const realizedAnnualVol = intervalMs > 0 ? sd * Math.sqrt(YEAR_MS / intervalMs) : null;
+  const scale = realizedAnnualVol && realizedAnnualVol > 0 ? Math.min(1, targetAnnualVol / realizedAnnualVol) : 1;
+  return { scale, realizedAnnualVol, returns: returns.length };
+}

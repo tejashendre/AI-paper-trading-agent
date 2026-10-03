@@ -151,7 +151,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
 - [x] E4 Crowding filter live: src/lib/strategy/crowding.ts, CROWDING veto; blocks a side only when account ratio and funding are both top/bottom decile with that side paying; fails open; vetoed candidates journaled for counterfactual
 - [x] E5 Liquidation recording: allLiquidation for the nine symbols in websocketDataMesh, per-minute totals to data/research/liquidations under the 256 MB cap
-- [ ] E6 Volatility scaling (down-only) for the XSEC book
+- [x] E6 XSEC volatility scaling, down-only: gross exposure x min(1, 20% / realized vol of the book's last 60 periods), live and shadow books each from their own curve
 - [x] E7 TREND_DAILY shadow (src/lib/research/baselines.ts): blended 20/60/120 signs, 20% vol target, forward evidence from 2026-10-04 through evaluateShadowEvidence; no capital (a new sleeve would add risk: owner decision)
 - [ ] E8 Session-open breakout family (SHADOW) and crowd-fade family (SHADOW)
 - [ ] E9 Carry-with-momentum XSEC shadow variant
