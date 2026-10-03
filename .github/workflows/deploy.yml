@@ -116,7 +116,13 @@ jobs:
             # itself when under 50 MB would be reclaimed. Stop every writer
             # and fail the release if compaction or verification refuses.
             echo "Compacting the execution ledger with the writers stopped..."
-            sh scripts/release-ledger-maintenance.sh
+            if ! sh scripts/release-ledger-maintenance.sh; then
+              # The previous containers still exist; bring them back so exits
+              # keep running (new entries stay frozen), then fail the release.
+              echo "Ledger maintenance refused; restarting the previous release and failing this deploy."
+              docker compose start quant-dashboard swing-daemon xsec-daemon || true
+              exit 1
+            fi
 
             docker compose up -d --no-build --remove-orphans
 
