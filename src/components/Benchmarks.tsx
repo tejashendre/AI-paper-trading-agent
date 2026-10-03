@@ -12,6 +12,7 @@ export interface BenchmarksResponse {
     returnPercent: number; maxDrawdownPercent: number; days: number; mode: string; registeredAt: string;
     forwardEvidence: { passed: boolean; reasons: string[]; metrics: { periods: number } };
   };
+  btcEthRatio?: { returnPercent: number; maxDrawdownPercent: number; days: number };
   bot: { swingReturnPercent: number | null; crossSectionalReturnPercent: number | null };
   note: string;
   error?: string;

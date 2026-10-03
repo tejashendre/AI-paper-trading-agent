@@ -247,3 +247,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E9 carry with momentum (shadow)
 - buildCarryMomentumBook: long from the lowest-funding third only with positive 72h momentum, short from the highest-funding third only with negative momentum, equal counts, gross <= 1; planCarryRebalance flattens when nothing agrees. Runs on its own capital-free book each XSEC rebalance; /api/book carryShadow with evaluateShadowEvidence.
 - Standalone carry not built (tested -13.5%). FX carry not buildable (Bybit FX funding about zero). 4 tests; 386/386.
+
+## 2026-10-03 E12 BTC/ETH ratio reversion (shadow)
+- ratioPosition: z of ln(BTC/ETH) against its 30-day mean; at |z| >= 2 short the rich leg and long the cheap one (0.5 each), flat once |z| <= 0.5; any missing day means flat. Third book in simulateBaselines, forward evidence from 2026-10-04, Benchmarks row.
+- Live since 2026-08-26: no 2-sigma event, so 0 trades. 2 new tests plus a label case; all green.

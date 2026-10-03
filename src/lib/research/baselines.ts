@@ -12,12 +12,18 @@ import type { EquityPoint } from "@/lib/execution/equityCurve";
  *   min(1, 20% / 30-day realized volatility), one ninth of capital each.
  *   Evidence: Moskowitz, Ooi and Pedersen 2012; volatility scaling per
  *   Moreira and Muir 2017. Shadow only: no capital and no orders.
+ * - BTC_ETH_RATIO: relative-value mean reversion. When ln(BTC/ETH) is at least
+ *   2 standard deviations from its 30-day mean, short the rich leg and long the
+ *   cheap one (half of capital each); exit inside 0.5. Shadow only.
  */
 export const BASELINES_VERSION = "baselines-v1-2026-10-03";
 export const TREND_LOOKBACK_DAYS = [20, 60, 120] as const;
 export const TREND_VOL_WINDOW_DAYS = 30;
 export const TREND_TARGET_ANNUAL_VOL = 0.2;
-/** Forward shadow evidence for TREND_DAILY counts from this day only. */
+export const RATIO_WINDOW_DAYS = 30;
+export const RATIO_ENTRY_Z = 2;
+export const RATIO_EXIT_Z = 0.5;
+/** Forward shadow evidence for TREND_DAILY and BTC_ETH_RATIO counts from this day only. */
 export const TREND_REGISTERED_AT_MS = Date.parse("2026-10-04T00:00:00Z");
 export const DAY_MS = 86_400_000;
 
@@ -44,7 +50,7 @@ export function trendWeight(closes: number[]): number | null {
 }
 
 export interface BaselineResult {
-  name: "EQUAL_WEIGHT_HOLD" | "TREND_DAILY";
+  name: "EQUAL_WEIGHT_HOLD" | "TREND_DAILY" | "BTC_ETH_RATIO";
   curve: EquityPoint[];
   returnPercent: number;
   maxDrawdownPercent: number;
@@ -52,11 +58,28 @@ export interface BaselineResult {
   fundingUsd: number;
 }
 
-/** Simulates both baselines over [startMs, endMs) on whole UTC days. */
+/** BTC leg sign for the ratio book: -1 short BTC / long ETH, +1 the reverse, 0 flat. */
+export function ratioPosition(btc: Map<number, number>, eth: Map<number, number>, day: number, current: -1 | 0 | 1): -1 | 0 | 1 {
+  const ratios: number[] = [];
+  for (let d = day - (RATIO_WINDOW_DAYS - 1) * DAY_MS; d <= day; d += DAY_MS) {
+    const b = btc.get(d), e = eth.get(d);
+    if (!(b! > 0) || !(e! > 0)) return 0;
+    ratios.push(Math.log(b! / e!));
+  }
+  const mean = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  const sd = Math.sqrt(ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / (ratios.length - 1));
+  if (!(sd > 0)) return 0;
+  const z = (ratios[ratios.length - 1] - mean) / sd;
+  if (z >= RATIO_ENTRY_Z) return -1;
+  if (z <= -RATIO_ENTRY_Z) return 1;
+  return Math.abs(z) <= RATIO_EXIT_Z ? 0 : current;
+}
+
+/** Simulates every baseline over [startMs, endMs) on whole UTC days. */
 export function simulateBaselines(input: { series: DailySeries[]; startMs: number; endMs: number; capitalUsd: number }): BaselineResult[] {
   const n = input.series.length;
   const firstDay = Math.ceil(input.startMs / DAY_MS) * DAY_MS;
-  const books = (["EQUAL_WEIGHT_HOLD", "TREND_DAILY"] as const).map((name) => ({
+  const books = (["EQUAL_WEIGHT_HOLD", "TREND_DAILY", "BTC_ETH_RATIO"] as const).map((name) => ({
     name, equity: input.capitalUsd, weights: new Map<string, number>(), feesUsd: 0, fundingUsd: 0,
     curve: [{ at: new Date(firstDay).toISOString(), equityUsd: input.capitalUsd }] as EquityPoint[],
   }));
@@ -67,11 +90,18 @@ export function simulateBaselines(input: { series: DailySeries[]; startMs: numbe
       const target = new Map<string, number>();
       for (const s of tradable) {
         if (book.name === "EQUAL_WEIGHT_HOLD") target.set(s.asset, 1 / tradable.length);
+        else if (book.name === "BTC_ETH_RATIO") continue;
         else {
           const history = [...s.closes.entries()].filter(([at]) => at <= day).sort((a, b) => a[0] - b[0]).map(([, c]) => c);
           const weight = trendWeight(history);
           if (weight !== null && weight !== 0) target.set(s.asset, weight / n);
         }
+      }
+      if (book.name === "BTC_ETH_RATIO") {
+        const btc = input.series.find((x) => x.asset === "BTC"), eth = input.series.find((x) => x.asset === "ETH");
+        const side = btc && eth && tradable.includes(btc) && tradable.includes(eth)
+          ? ratioPosition(btc.closes, eth.closes, day, Math.sign(book.weights.get("BTC") ?? 0) as -1 | 0 | 1) : 0;
+        if (side !== 0) { target.set("BTC", side * 0.5); target.set("ETH", -side * 0.5); }
       }
       let pnl = 0;
       for (const s of input.series) {
@@ -104,9 +134,9 @@ export function simulateBaselines(input: { series: DailySeries[]; startMs: numbe
   });
 }
 
-/** Forward-only evidence for the trend shadow: days after registration, through the same gate as the XSEC shadow. */
-export function trendForwardEvidence(trend: BaselineResult) {
-  return evaluateShadowEvidence(trend.curve.filter((point) => Date.parse(point.at) >= TREND_REGISTERED_AT_MS));
+/** Forward-only evidence for a shadow baseline: days after registration, through the same gate as the XSEC shadow. */
+export function trendForwardEvidence(book: BaselineResult) {
+  return evaluateShadowEvidence(book.curve.filter((point) => Date.parse(point.at) >= TREND_REGISTERED_AT_MS));
 }
 
 /** Daily closes (closed days only) and funding since fromMs for one symbol. */

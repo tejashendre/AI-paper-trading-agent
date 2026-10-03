@@ -157,4 +157,4 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E9 Carry-with-momentum shadow book (xsec:carryShadow:*), every rebalance in every risk state; goes flat without agreement; shown under the XSEC panel with its evidence count
 - [ ] E10 Maker-entry shadow comparison with conservative fill rule
 - [ ] E11 Historical backfill command for research
-- [ ] E12 BTC/ETH ratio mean-reversion shadow tracker
+- [x] E12 BTC_ETH_RATIO shadow baseline (2-sigma entry, 0.5 exit, 30-day window, half capital per leg) in baselines.ts, shown on the Benchmarks panel; flat over the last 37 days (no 2-sigma event)
