@@ -4,6 +4,12 @@ import { describeLastBookAction, emptyBookMessage, rebalanceScheduleNote, swingW
 import * as labels from '@/lib/ui/dashboardLabels';
 
 describe("dashboard labels", () => {
+  it("benchmarks list the bot's books next to the simple baselines, with unknown kept unknown", () => {
+    const rows = labels.benchmarkRows({ bot: { swingReturnPercent: 0.659, crossSectionalReturnPercent: null },
+      equalWeightHold: { returnPercent: 2 }, trendDaily: { returnPercent: -0.4 } });
+    assert.deepEqual(rows.map((row) => row.value), ["+0.66%", "unknown", "+2.00%", "-0.40%"]);
+    assert.match(rows[3].label, /shadow/);
+  });
   it('shows approved versus executed initial risk without treating the approval as the fill', () => {
     const usage = (labels as any).entryRiskUsage;
     assert.equal(typeof usage, 'function');

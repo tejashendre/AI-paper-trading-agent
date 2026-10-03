@@ -60,3 +60,18 @@ export function rebalanceScheduleNote(
   const hours = Math.floor((nowMs - schedule.nextDueAtMs) / 3_600_000);
   return `Rebalance overdue by ${hours}h: the daemon has not completed its scheduled pass.`;
 }
+
+/** Benchmark rows: the bot's two books next to the two simple baselines. */
+export function benchmarkRows(data: {
+  bot: { swingReturnPercent: number | null; crossSectionalReturnPercent: number | null };
+  equalWeightHold: { returnPercent: number };
+  trendDaily: { returnPercent: number };
+}): Array<{ label: string; returnPercent: number | null; value: string }> {
+  const pct = (v: number | null) => (v === null || !Number.isFinite(v) ? "unknown" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
+  return [
+    { label: "Bot: swing engine", returnPercent: data.bot.swingReturnPercent },
+    { label: "Bot: cross-sectional book", returnPercent: data.bot.crossSectionalReturnPercent },
+    { label: "Hold the nine, equal weight", returnPercent: data.equalWeightHold.returnPercent },
+    { label: "Daily trend baseline (shadow)", returnPercent: data.trendDaily.returnPercent },
+  ].map((row) => ({ ...row, value: pct(row.returnPercent) }));
+}

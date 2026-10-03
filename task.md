@@ -147,12 +147,12 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.md (Tier 1 items 1-4, Tier 2 items 5-8, strategy list items 1-8) and activate what is possible now. Activation rule (full-auto decision 2026-10-02): risk-reducing and data-collecting features active immediately; new trading strategies start SHADOW and promote only through the evidence gates. Not built: FX carry (Bybit FX funding is about zero), standalone crypto carry (tested negative). Out of scope: deploy, raising risk ceilings, LLM.
 - [x] E0 Loss-streak lock found live (4 small full stops on 2026-09-23..10-02 blocked every entry with no release path): 72h cool-off, then one probation position at a time
 - [x] E1 Health alerts: scripts/health-monitor.mjs + .github/workflows/health-monitor.yml (every 30 min, runs from main after merge); also alerts on a risk lock (cost-passing candidates all vetoed, no fill for 72h)
-- [ ] E2 Benchmarks: buy-and-hold and daily-trend baseline next to the bot
+- [x] E2 Benchmarks: /api/benchmarks + Benchmarks panel; bot swing and XSEC next to equal-weight hold and the trend baseline since 2026-08-26, net of taker fees and real funding
 - [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
 - [x] E4 Crowding filter live: src/lib/strategy/crowding.ts, CROWDING veto; blocks a side only when account ratio and funding are both top/bottom decile with that side paying; fails open; vetoed candidates journaled for counterfactual
 - [x] E5 Liquidation recording: allLiquidation for the nine symbols in websocketDataMesh, per-minute totals to data/research/liquidations under the 256 MB cap
 - [ ] E6 Volatility scaling (down-only) for the XSEC book
-- [ ] E7 Daily trend family (blended 20/60/120, SHADOW)
+- [x] E7 TREND_DAILY shadow (src/lib/research/baselines.ts): blended 20/60/120 signs, 20% vol target, forward evidence from 2026-10-04 through evaluateShadowEvidence; no capital (a new sleeve would add risk: owner decision)
 - [ ] E8 Session-open breakout family (SHADOW) and crowd-fade family (SHADOW)
 - [ ] E9 Carry-with-momentum XSEC shadow variant
 - [ ] E10 Maker-entry shadow comparison with conservative fill rule

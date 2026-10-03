@@ -1,6 +1,7 @@
 "use client";
 import { AuthGate } from "./AuthGate";
 import CrossSectionalBook from "@/components/CrossSectionalBook";
+import Benchmarks from "@/components/Benchmarks";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
@@ -1487,6 +1488,7 @@ function DashboardContent({ secret }: { secret: string }) {
                 )}
 
                 {viewMode === "ai" && <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />}
+                {viewMode === "ai" && <Benchmarks isDark={isDark} />}
 
                 {viewMode === "ai" && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
