@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { describeLastBookAction, emptyBookMessage, rebalanceScheduleNote } from "@/lib/ui/dashboardLabels";
 
 /**
  * Live view of the cross-sectional momentum book.
@@ -62,6 +63,7 @@ interface BookResponse {
   exposure: { openPositions: number; longs: number; shorts: number; grossExposure: number; netExposure: number };
   positions: BookPosition[];
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
+  rebalanceSchedule?: { lastAtMs: number | null; nextDueAtMs: number | null; overdue: boolean };
   costModel: CostVerdict | null;
   edgeCheck: EdgeCheck | null;
   capacity: Capacity | null;
@@ -87,7 +89,14 @@ interface BookResponse {
     hypotheticalRealizedPnlUsdt: number;
     hypotheticalUnrealizedPnlUsdt: number;
   } | null;
+  carryShadow?: {
+    openPositions: number; feesUsdt: number; fundingUsdt: number;
+    hypotheticalRealizedPnlUsdt: number; hypotheticalUnrealizedPnlUsdt: number;
+    evidence: { passed: boolean; metrics: { periods: number } };
+  } | null;
   error?: string;
+  releaseEvidence?: { passed: boolean; reasons: string[]; metrics: { periods: number; maxDrawdownPercent: number;
+    meanReturn95: { low: number; high: number } | null } };
 }
 
 const RISK_STATE_TEXT: Record<string, string> = {
@@ -227,6 +236,21 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
+      {data.carryShadow && (
+        <div className={`mt-2 p-2.5 rounded-lg border border-dashed ${bgSub}`}>
+          <div className={`text-[9px] font-bold font-mono uppercase ${textMuted}`}>Research variant: carry with momentum (no capital)</div>
+          <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>
+            Long low-funding names only when their 72h momentum is up, short high-funding names only when it is down. Hypothetical, not profit.
+          </p>
+          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1 mt-1.5 text-[8px] font-mono ${textMuted}`}>
+            <span>Positions: <b className={textPrimary}>{data.carryShadow.openPositions}</b></span>
+            <span>Evidence periods: <b className={textPrimary}>{data.carryShadow.evidence.metrics.periods}/30</b></span>
+            <span>Fees and funding: <b className={textPrimary}>${(data.carryShadow.feesUsdt + data.carryShadow.fundingUsdt).toFixed(2)}</b></span>
+            <span>Hypothetical result: <b className={textPrimary}>{money(data.carryShadow.hypotheticalRealizedPnlUsdt + data.carryShadow.hypotheticalUnrealizedPnlUsdt)}</b></span>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
         <div className={`p-2 rounded-lg border ${bgSub}`}>
           <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Equity</div>
@@ -296,6 +320,19 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
+      {data.risk?.state === 'SHADOW' && data.releaseEvidence && (
+        <div className={`mt-2 p-2 rounded-lg border ${bgSub}`}>
+          <div className={`text-[9px] font-mono ${textPrimary}`}>Shadow release progress</div>
+          <p className={`text-[10px] mt-1 ${textMuted}`}>
+            {data.releaseEvidence.metrics.periods}/30 twelve-hour periods (about 15 days minimum).
+            {' '}95% lower mean net return: {data.releaseEvidence.metrics.meanReturn95
+              ? `${(data.releaseEvidence.metrics.meanReturn95.low * 100).toFixed(3)}%` : 'unavailable'}.
+            {' '}Shadow drawdown: {data.releaseEvidence.metrics.maxDrawdownPercent.toFixed(2)}% / below 15% required.
+          </p>
+          <p className={`text-[9px] mt-1 ${textMuted}`}>{data.releaseEvidence.reasons.join('; ') || 'All shadow evidence gates passed.'}</p>
+        </div>
+      )}
+
       {data.edgeCheck && (
         <div className={`mt-2 p-2 rounded-lg border ${
           data.edgeCheck.verdict === "EDGE_GONE"
@@ -347,16 +384,19 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
+      {rebalanceScheduleNote(data.rebalanceSchedule) && (
+        <p className="text-[10px] font-mono mt-2 text-red-500">{rebalanceScheduleNote(data.rebalanceSchedule)}</p>
+      )}
+
       {lastRebalance?.at && (
         <p className={`text-[9px] font-mono mt-2 ${textMuted}`}>
-          Last rebalance {new Date(lastRebalance.at).toLocaleString()} · {lastRebalance.executed ?? 0} fills ·{" "}
-          {((lastRebalance.turnover ?? 0) * 100).toFixed(1)}% turnover · ranked {lastRebalance.universeSize ?? 0} markets
+          {describeLastBookAction(lastRebalance).title} {new Date(lastRebalance.at).toLocaleString()} · {describeLastBookAction(lastRebalance).detail}
         </p>
       )}
 
       {positions.length === 0 ? (
         <p className={`text-xs font-mono mt-3 ${textMuted}`}>
-          No book yet. The daemon opens one at its first rebalance.
+          {emptyBookMessage({ totalRebalances: performance.totalRebalances, riskState: data.risk?.state })}
         </p>
       ) : (
         <>

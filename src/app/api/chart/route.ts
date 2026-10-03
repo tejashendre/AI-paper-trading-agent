@@ -13,15 +13,20 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const intervalValue = url.searchParams.get("interval") || "1h";
-  const parsedLimit = Number.parseInt(url.searchParams.get("limit") || "720", 10);
+  const parsedLimit = Number(url.searchParams.get("limit") ?? "720");
+  const beforeText = url.searchParams.get('before');
+  const beforeMs = beforeText === null ? undefined : Number(beforeText);
   const asset = url.searchParams.get("asset") || "BTC";
   const portfolioValue = url.searchParams.get("portfolio") || "user";
   const allowedTimeframes = new Set<Timeframe>(["1m", "5m", "15m", "30m", "1h", "4h"]);
 
   if (!SUPPORTED_ASSETS[asset]) return NextResponse.json({ error: "Unsupported asset" }, { status: 400 });
   if (!allowedTimeframes.has(intervalValue as Timeframe)) return NextResponse.json({ error: "Unsupported interval" }, { status: 400 });
-  if (!Number.isFinite(parsedLimit) || parsedLimit < 50 || parsedLimit > 1_000) {
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 50 || parsedLimit > 1_000) {
     return NextResponse.json({ error: "Limit must be between 50 and 1000" }, { status: 400 });
+  }
+  if (beforeMs !== undefined && (!Number.isSafeInteger(beforeMs) || beforeMs <= 0 || beforeMs > Date.now())) {
+    return NextResponse.json({ error: 'Invalid history cursor' }, { status: 400 });
   }
   if (portfolioValue !== "user" && portfolioValue !== "ai") {
     return NextResponse.json({ error: "Unsupported portfolio" }, { status: 400 });
@@ -32,7 +37,8 @@ export async function GET(request: Request) {
   const portfolioType = portfolioValue;
 
   try {
-    const candles = await MarketService.getCandles(interval, limit, asset, { allowStale: true });
+    const page = await MarketService.getChartCandlePage(interval, limit, asset, beforeMs);
+    const { candles } = page;
     const seriesStatus = MarketService.getCandleSeriesStatus(asset, interval, candles);
     const indicators = computeAllIndicators(candles);
     
@@ -51,6 +57,9 @@ export async function GET(request: Request) {
     return NextResponse.json({
       asset,
       interval,
+      hasMore: page.hasMore,
+      nextBeforeMs: page.nextBeforeMs,
+      historical: beforeMs !== undefined,
       candles,
       indicators,
       trades: chartTrades,

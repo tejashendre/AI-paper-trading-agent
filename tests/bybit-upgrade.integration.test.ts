@@ -153,6 +153,29 @@ function outcomes(memory: MemoryRedis) {
 }
 
 describe("Bybit all-assets upgrade, offline end to end", () => {
+  it('new FX signals use only the published-fee learning cohort', async () => {
+    const world=await openWorld('EURUSD');
+    try {
+      const engine=await import('@/lib/swingEngine');
+      const costs=await import('@/lib/trading/executionCostModel');
+      const instrument=getConfiguredInstrument('EURUSD');
+      const rules=['TREND','RANGE','NEUTRAL'].flatMap(regime=>[false,true].map(current=>({
+        id:`fee-${regime}-${current}`,scope:'asset',key:'EURUSD',action:current?'BOOST':'WATCH_ONLY',
+        confidenceAdjustment:current?2:-4,message:current?'verified-fee-cohort':'old-stress-cohort',
+        netReturnFraction:current?0.01:-0.02,netR:current?0.1:-0.2,
+        sampleSize:30,distinctSampleCount:30,sampleUnit:'COMPLETED_POSITION',units:'FRACTION_AND_R',
+        createdAt:new Date(T-86400000).toISOString(),expiresAt:new Date(T+86400000).toISOString(),
+        cohort:{instrumentVersion:instrument.instrumentVersion,dataSchemaVersion:engine.STRATEGY_DATA_SCHEMA_VERSION,
+          assetClass:'forex',family:'TREND_PULLBACK',regime,direction:'SHORT',strategyVersion:m.ledger.TRADING_STRATEGY_VERSION,
+          configHash:engine.strategyFamilyConfigHash('TREND_PULLBACK','EURUSD'),
+          costModelVersion:current?`${costs.EXECUTION_COST_MODEL_VERSION}:${m.specs.feeScheduleFor(instrument).version}`:costs.EXECUTION_COST_MODEL_VERSION,
+          riskPolicyVersion:m.specs.RISK_POLICY_VERSION}})));
+      await world.memory.set(`learning:${m.ledger.TRADING_STRATEGY_VERSION}:localRules`,rules);
+      const signal=await engine.SwingEngine.analyze('EURUSD');
+      assert.ok(signal.learningRules.includes('verified-fee-cohort'),JSON.stringify(signal.learningRules));
+      assert.ok(!signal.learningRules.includes('old-stress-cohort'));
+    } finally {world.close();}
+  });
   for (const restriction of ['COOLDOWN','ACTIVE_POSITION','EVENT_BLACKOUT','OPERATOR_FREEZE'] as const) {
     it(`shadow research continues under ${restriction} without adding an order`, async () => {
       const asset=restriction==='EVENT_BLACKOUT'?'OIL':'BTC';
@@ -180,6 +203,59 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
     assert.deepEqual([...CONFIGURED_ASSETS].sort(), Object.keys(START_PRICE).sort());
   });
 
+  it('the watchdog persists a losing mark and updates drawdown without closing the position', async () => {
+    const world = await openWorld('BTC');
+    try {
+      await m.daemon.runEntryScan();
+      const before = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      const pos = before.openPositions.BTC;
+      assert.ok(pos);
+      const price = pos.entryPrice + (pos.stopLoss - pos.entryPrice) * 0.4;
+      world.advanceTo(T + 6000); // Expire the market service's five-second quote cache.
+      world.venue.priceOverride.set('BTCUSDT', price);
+      await m.daemon.runExitWatchdog();
+      const marked = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      assert.ok(marked.openPositions.BTC, 'a within-stop loss must remain open');
+      assert.equal((marked.openPositions.BTC as any).lastMarkPrice, price);
+      assert.equal(marked.openPositions.BTC.lastMarkAt, new Date(T + 6000).toISOString());
+      assert.ok(marked.maxDrawdownPercent > before.maxDrawdownPercent);
+      assert.equal(marked.usd, before.usd, 'marking must not realize P&L');
+    } finally { world.close(); }
+  });
+
+  it('a winning probe cannot scale while another held asset has no usable mark', async () => {
+    const world = await openWorld(null);
+    try {
+      world.venue.priceOverride.set('BTCUSDT', 84200);
+      const goldSeries = world.venue.series.get('XAUUSDT')!;
+      world.venue.series.delete('XAUUSDT');
+      const portfolio = await m.portfolio.PortfolioManager.getPortfolio('ai');
+      const base = { direction: 'LONG' as const, entryTime: new Date(T).toISOString(), signalScore: 20,
+        reasoning: 'scale-in mark fixture', strategyType: 'swing' as const, finalConviction: 85,
+        dataQuality: 100, entryMode: 'CONTROLLED_PROBE' as const, leverageUsed: 1 };
+      portfolio.usd = 8500;
+      portfolio.openPositions = {
+        BTC: { ...base, asset:'BTC', instrument:getConfiguredInstrument('BTC'), positionId:'fixture-btc',
+          amount:1000/83000, btcAmount:1000/83000, entryPrice:83000, usdInvested:1000,
+          stopLoss:82000, initialStopLoss:82000, initialRiskUsdt:1000/83, maxLossUsd:13, takeProfit:90000 },
+        GOLD: { ...base, asset:'GOLD', instrument:getConfiguredInstrument('GOLD'), positionId:'fixture-gold',
+          amount:500/4190, btcAmount:500/4190, entryPrice:4190, usdInvested:500,
+          stopLoss:4000, takeProfit:4500 },
+      };
+      await m.portfolio.PortfolioManager.updatePortfolio(portfolio, 'ai');
+      await m.daemon.runExitWatchdog();
+      assert.equal(ledgerEvents(world.ledgerDir).filter(event => event.type === 'SCALE_IN_FILLED').length, 0);
+      assert.equal((await m.portfolio.PortfolioManager.getPortfolio('ai')).openPositions.BTC.amount, 1000/83000);
+      // The transient refusal must clear once every held mark is available.
+      world.venue.series.set('XAUUSDT', goldSeries);
+      world.advanceTo(T + 6000);
+      await m.daemon.runExitWatchdog();
+      world.advanceTo(T + 12000);
+      await m.daemon.runExitWatchdog();
+      assert.equal(ledgerEvents(world.ledgerDir).filter(event => event.type === 'SCALE_IN_FILLED').length, 1);
+    } finally { world.close(); }
+  });
+
   for (const asset of Object.keys(START_PRICE) as ConfiguredAsset[]) {
     it(`${asset}: a valid fixture enters, settles funding, exits at target and completes once`, async () => {
       const world = await openWorld(asset);
@@ -205,7 +281,7 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
         assert.equal(m.specs.floorOrderQty(quantity, metadata), quantity);
         const schedule = m.specs.feeScheduleFor(instrument);
         assert.equal(pos.feeScheduleVersion, schedule.version);
-        assert.equal(schedule.status, CONFIGURED_INSTRUMENTS[asset].riskClass === "forex" ? "UNVERIFIED_STRESS_RATE" : "PUBLIC_BASELINE");
+        assert.equal(schedule.status, "PUBLIC_BASELINE");
         assert.equal(pos.fillLiquidity?.policyVersion, "fill-capacity-v1-2026-10-01");
 
         // Two hours later price trades through the target; one funding boundary passed.
@@ -245,9 +321,7 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
         assert.equal(status.completedPositions, 1);
         assert.ok(status.lastFillAt);
         assert.equal(status.funnel7d.fills, 1);
-        if (schedule.status === "UNVERIFIED_STRESS_RATE") {
-          assert.ok(status.notes.some((note) => note.includes("cannot be promoted")));
-        }
+        assert.ok(!status.notes.some((note) => note.includes("not confirmed the fee schedule")));
         const learning = m.setups.SetupPerformance.build(trades, null);
         assert.equal(learning.closedTradeCount, 1);
         assert.deepEqual(learning.positionConflicts, []);
@@ -388,6 +462,27 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
       assert.equal(countOf("POSITION_COMPLETED"), 1);
       assert.equal(countOf("FUNDING_SETTLED"), 1);
       assert.equal(m.ledger.ExecutionLedger.verify(world.ledgerDir).valid, true);
+    } finally {
+      world.close();
+    }
+  });
+
+  it("a scan's ledger record stays a compact heartbeat; full diagnostics live in the scan snapshot", async () => {
+    // Per-minute scans with every asset's full diagnostics grew the ledger by
+    // about 30 MB a day on the VPS while nothing ever read them back.
+    const world = await openWorld("GOLD");
+    try {
+      await m.daemon.runEntryScan();
+      const files = fs.readdirSync(world.ledgerDir).filter((file) => file.endsWith(".ndjson"));
+      const line = files.flatMap((file) => fs.readFileSync(path.join(world.ledgerDir, file), "utf8").split(/\r?\n/))
+        .find((row) => row.includes('"SCAN_COMPLETED"'));
+      assert.ok(line, "the scan was not recorded");
+      assert.ok(Buffer.byteLength(line) < 2048, `scan record is ${Buffer.byteLength(line)} bytes`);
+      const event = JSON.parse(line);
+      assert.equal(event.payload.results.length, 9);
+      assert.deepEqual(Object.keys(event.payload.results[0]).sort(), ["action", "asset", "vetoCode"]);
+      const snapshot = await world.memory.get<{ results: unknown[] }>("swing:lastScan:ai");
+      assert.equal(snapshot?.results.length, 9, "full diagnostics remain available in the scan snapshot");
     } finally {
       world.close();
     }

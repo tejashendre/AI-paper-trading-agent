@@ -10,14 +10,16 @@ test('label path excludes future bars and gaps without a later live-price substi
   assert.equal(selectLabelPath(bars,0,1200000,300000)?.at(-1)?.close,103);
   assert.equal(selectLabelPath(bars.filter(b=>b.time!==300),0,1200000,300000),null);
 });
-test('runtime preregisters exactly two baselines per asset and never activates them on review', async () => {
+test('runtime preregisters two families per asset plus the session family on TradFi, and never activates them without evidence', async () => {
   setRedisClient(new MemoryRedis());
   try {
     await ensureResearchBaselines(); await ensureResearchBaselines();
-    assert.equal((await getCandidateRegistry()).length,18);
+    // 9 assets x (trend, range) + 6 TradFi session-breakout cohorts.
+    assert.equal((await getCandidateRegistry()).length,24);
     const status=await reviewRegisteredCandidates();
-    assert.equal(status.trialCount,18);
+    assert.equal(status.trialCount,24);
     assert.ok(status.candidates.every(c=>c.mode==='SHADOW' && c.reasons.includes('INSUFFICIENT_FORWARD_SHADOW')));
-    assert.equal(status.activationRequiresHumanReview,true);
+    // Owner chose full autonomy (2026-10-02): evidence, not a person, activates.
+    assert.equal(status.activationRequiresHumanReview,false);
   } finally {setRedisClient(null);}
 });

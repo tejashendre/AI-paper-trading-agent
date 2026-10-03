@@ -2,7 +2,10 @@ import WebSocket from "ws";
 import { getRedis } from "../lib/redis";
 import { Logger } from "../lib/logger";
 import { liveQuoteKey, SUPPORTED_ASSETS } from "../lib/market";
+import path from "node:path";
 import { BybitTickerBook, BybitTickerState } from "../lib/data/bybitPublic";
+import { appendLiquidationMinutes, LiquidationMinutes } from "../lib/data/liquidationRecorder";
+import { DEFAULT_RESEARCH_ARCHIVE_BYTES } from "../lib/research/researchArchive";
 
 const BYBIT_LINEAR_STREAM = "wss://stream.bybit.com/v5/public/linear";
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -11,6 +14,7 @@ const QUOTE_RETENTION_SECONDS = 90;
 const FLUSH_INTERVAL_MS = 1_000;
 /** Topics per subscribe request, kept small to stay inside venue limits. */
 const SUBSCRIBE_BATCH = 10;
+const LIQUIDATION_FLUSH_MS = 60_000;
 
 /**
  * One public Bybit linear connection for every configured instrument.
@@ -27,6 +31,8 @@ export class WebsocketDataMesh {
     private reconnectTimeout: NodeJS.Timeout | null = null;
     private heartbeatInterval: NodeJS.Timeout | null = null;
     private flushInterval: NodeJS.Timeout | null = null;
+    private liquidationInterval: NodeJS.Timeout | null = null;
+    private liquidations = new LiquidationMinutes();
     private lastMarketDataAt = 0;
     private connectedAt = 0;
     private book = new BybitTickerBook();
@@ -42,6 +48,7 @@ export class WebsocketDataMesh {
         this.connect();
         this.heartbeatInterval = setInterval(() => this.checkStaleness(), HEARTBEAT_INTERVAL_MS);
         this.flushInterval = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS);
+        this.liquidationInterval = setInterval(() => this.flushLiquidations(), LIQUIDATION_FLUSH_MS);
     }
 
     public stop() {
@@ -49,6 +56,8 @@ export class WebsocketDataMesh {
         if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
         if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
         if (this.flushInterval) clearInterval(this.flushInterval);
+        if (this.liquidationInterval) clearInterval(this.liquidationInterval);
+        this.liquidationInterval = null;
         this.reconnectTimeout = null;
         this.heartbeatInterval = null;
         this.flushInterval = null;
@@ -72,6 +81,19 @@ export class WebsocketDataMesh {
             if (!asset) return;
             await redis.set(liveQuoteKey(asset), state, { ex: QUOTE_RETENTION_SECONDS }).catch(() => undefined);
         }));
+    }
+
+    /** Research recording only; a storage failure never touches quotes. */
+    private flushLiquidations() {
+        try {
+            appendLiquidationMinutes({
+                archiveDirectory: path.join(process.cwd(), "data", "research"),
+                minutes: this.liquidations.drainClosed(Date.now()),
+                maxBytes: Number(process.env.RESEARCH_ARCHIVE_MAX_BYTES || DEFAULT_RESEARCH_ARCHIVE_BYTES),
+            });
+        } catch (error) {
+            Logger.warn(`Liquidation recording failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 
     private checkStaleness() {
@@ -106,7 +128,7 @@ export class WebsocketDataMesh {
                 this.reconnectTimeout = null;
                 this.connectedAt = Date.now();
                 Logger.info("Connected to Bybit linear WebSocket");
-                const topics = [...this.assetBySymbol.keys()].flatMap((symbol) => [`tickers.${symbol}`, `publicTrade.${symbol}`]);
+                const topics = [...this.assetBySymbol.keys()].flatMap((symbol) => [`tickers.${symbol}`, `publicTrade.${symbol}`, `allLiquidation.${symbol}`]);
                 for (let index = 0; index < topics.length; index += SUBSCRIBE_BATCH) {
                     ws.send(JSON.stringify({ op: "subscribe", args: topics.slice(index, index + SUBSCRIBE_BATCH) }));
                 }
@@ -120,6 +142,7 @@ export class WebsocketDataMesh {
                 } catch {
                     return;
                 }
+                if (this.liquidations.add(parsed)) return;
                 const state = this.book.apply(parsed, Date.now());
                 if (!state) return;
                 this.lastMarketDataAt = Date.now();

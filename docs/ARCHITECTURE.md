@@ -1,16 +1,17 @@
 # Autonomous Paper Trading Agent — Architecture
 
-**Last runtime verification:** 2026-10-01, Release A commit `191761f`.
+**Last runtime verification:** 2026-10-01, complete release commit `c90483d`.
 
-**Remaining complete release, 2026-10-01:** branch `codex/bybit-complete-upgrade`
-adds closed-bar trend/range routing, instrument-scoped learning, preregistered
-research reviews, bounded compressed capture and direct browser quotes.
-Release A is deployed; this branch awaits its final reviewed rollout. Steps:
+**Complete release, 2026-10-01:** closed-bar trend/range routing, scoped
+learning, preregistered research, bounded compressed capture and direct browser
+quotes are deployed. Proof:
+[BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md](./BYBIT_COMPLETE_UPGRADE_VERIFICATION_2026-10-01.md).
+Rollout and rollback steps:
 [BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md](./BYBIT_ALL_ASSETS_ROLLOUT_RUNBOOK.md).
 
 ## Operating contract
 
-The remaining release uses trend pullback as the guarded baseline and range
+The complete release uses trend pullback as the guarded baseline and range
 reversion as SHADOW research. A neutral 4h ADX zone produces no family
 candidate. Every candidate records instrument, family, config, regime and
 closed feature cutoff. Existing baseline admission, costs, leverage and risk
@@ -27,8 +28,18 @@ alternate per family/instrument cycle. Reviews require 30/10/10 chronological
 folds with row and time embargoes, nonoverlapping feature/label windows,
 positive lower block-bootstrap net expectancy, full attempted-trial Sharpe
 correction, nonnegative doubled-cost stress, verified fees and at least 15
-independent forward shadow completions over 14 days. PAPER_ACTIVE requires a
-human-authorized release. No automatic tuning or risk promotion occurs.
+independent forward shadow completions over 14 days. A second, forward-only
+route accepts 30 independent forward shadow completions over 14 days with the
+same expectancy, Sharpe and doubled-cost tests and observed costs on every
+sample (live spread at the time, published fees, Bybit funding history).
+
+Since 2026-10-02 (owner decision: full autonomy) the hourly review acts on its
+own verdict. An eligible candidate moves to PAPER_ACTIVE and trades as a
+controlled probe through the normal entry path. Its live results return as
+PAPER rows that never count toward promotion; a 6R cumulative loss or a 95%
+upper bound of mean net R below zero moves it to REJECTED, which is final for
+that configuration. Every transition is a ledger event. No risk limit,
+leverage or capital ceiling is raised by any of this.
 The Sharpe null-variance approximation is documented in deflatedSharpe.ts;
 it is a screening statistic, not a probability of future profit.
 
@@ -51,13 +62,24 @@ cannot justify faster promotion or risk increases.
 The existing daemon captures closed 15m/1h/4h/W bars and periodic quote,
 depth and funding summaries at most once per asset per 15 minutes. gzip
 evidence hashes and cursors prevent repeated bar copies. The configurable
-research budget defaults to 1 GiB; capture stops visibly when full and does
-not delete financial history. `research:capture` and `research:replay` require
+research budget defaults to 256 MiB and rotates oldest research days while
+preserving financial history. `research:capture` and `research:replay` require
 explicit local paths and do not access accounts. Captured bar replay is
 descriptive: it lacks intrabar watchdog, scale-in and baseline reversal
 parity, and does not fabricate unavailable historical costs.
 
 The dashboard uses one public Bybit socket for nine ticker and trade topics,
+with separate 1,000-candle chart requests to the public historical endpoint.
+Chart cursors move strictly backwards; history never enters the live strategy
+cache. The browser retains at most 20,000 candles and rolls toward older pages
+at that bound. Live chart refresh pauses only after that rolling window drops
+recent bars, with an explicit Back to latest action. Refresh preserves loaded
+history and the viewport; asset/timeframe changes abort obsolete requests.
+Axis and crosshair labels format actual UTC instants with historical timezone
+rules. Free API page size is not a calendar limit; a contract's listing date
+and provider history availability still bound what can be displayed.
+
+The quote stream uses
 latest-state rendering at up to 10 Hz, one-second REST recovery when needed,
 bounded reconnect delay and cleanup for hidden tabs. No browser tick archive
 or model service is added. Quotes, closed-bar quality, research evidence and
@@ -167,8 +189,15 @@ the upgrade keep their legacy model and are not scaled into. With one venue ther
 is no second source to cross-check a bad print, so the entry gate instead
 requires validated venue metadata, a quote under 10 seconds old on every field
 it uses, at most 2 seconds in the future, and 100 completed 15m, 1h and 4h bars.
-Bybit has not confirmed the fee schedule for the three FX contracts, so they are
-costed at a higher stress rate and their results cannot be promoted.
+The official TradFi guide includes forex and applies its discounted schedule
+to all TradFi perpetuals except Pre-IPO; the G9 announcement gives VIP0 maker
+0% and taker 0.0275%. New FX paper fills use the verified 2026-10-02 baseline.
+Existing positions, unstamped old FX observations and prior learning cohorts
+keep the earlier unverified stress fee. New FX costs have a separate cohort and
+candidate identity; old evidence is never retroactively verified. This public
+baseline does not claim an authenticated account's regional or negotiated rate.
+See [official scope](https://www.bybit.com/en/learn/bybit-tradfi/trade-tradfi-perpetuals-bybit)
+and [exact VIP0 schedule](https://announcements.bybit.com/en/article/tradfi-perpetuals-lower-fees-across-all-tiers-bltb196506dada4be39/).
 
 Commodities are priced from a crypto venue, which is not the obvious choice, so
 the reason is worth stating. They were on Yahoo's CME futures until 2026-09-07,
@@ -280,10 +309,19 @@ flowchart TB
 `REDUCE_ONLY` or `SHADOW` before acting. A lifetime drawdown past 25% is never
 cleared automatically: the book moves to `REDUCE_ONLY`, unwinds in stages capped
 at 1% of each symbol's turnover per minute, and becomes `SHADOW` once flat. The
-shadow book keeps producing forward evidence. Leaving `SHADOW` needs an owner's
-recorded release (`xsec:riskRelease`) plus promotion evidence. The live book's
-lifetime drawdown was 28.15% when this was written, so deploying Release A
-starts its unwind on the first minute's sweep.
+shadow book keeps producing forward evidence. Since 2026-10-02 the daemon
+releases a halted book itself once the shadow book, since the halt, has at
+least 30 twelve-hour periods, a positive 95% block-bootstrap lower bound on its
+mean net period return and its own drawdown under 15%; it writes the release
+record (`xsec:riskRelease`, `AUTONOMOUS_EVIDENCE_GATE`) and a ledger event. A
+released book measures drawdown from its release epoch, and the lifetime
+breaker re-halts it as soon as lifetime drawdown deepens past the acknowledged
+level (about 2% below release equity at today's figures).
+
+The daemon runs mark, rebalance and funding as one serialized cycle per minute;
+separate timers sharing the book lock had silently stopped the 12-hour
+rebalance on 2026-10-01. The container is healthy only while a rebalance has
+completed within 13 hours, and `/api/book` reports the schedule.
 
 Hysteresis is not cosmetic. Without it the book replaces ~89% of its notional
 every rebalance purely because names shuffle around the cut-off; with it, ~27%.
@@ -324,7 +362,7 @@ Two manual workflows sit alongside it, both dry-run by default:
 | `coverage:funnel:v1:*` | swing daemon | per-asset daily decision funnels and veto counts |
 | `perp:*` | cross-sectional daemon | ticker and kline caches, all TTL'd |
 | `learning:<version>:*` | both | rules derived from closed trades, namespaced by strategy version |
-| `./data` | both | JSON backups, hash-chained execution ledger, deploy and reset snapshots |
+| `./data` | both | JSON backups, hash-chained execution ledger, research archive (256 MB, oldest days rotate out), the newest 3 deploy snapshots and the newest reset snapshot. The ledger keeps every trade, funding, research and risk event; per-minute scan records are compact heartbeats, and older ones are removed by a verified re-seal at deploy (`npm run ledger:compact`). |
 
 The three portfolios are deliberately separate accounts. The dashboard reports
 them separately for the same reason — summing two independent $10,000 accounts
@@ -368,3 +406,21 @@ bias had to be corrected mid-study before the number could be trusted at all.
 Treat the direction and the robustness as the finding, and the magnitude as a
 ceiling. Whether the strategy earns its keep is a question only forward time
 answers.
+
+## Live total-gain comparison (2026-10-02)
+The human and swing comparison cards display signed total gain/loss as their primary figures. Total gain equals marked account value minus that account's initial capital; the XSEC book remains a separate account. Status returns valuation coefficients from each position's frozen economics and the existing paper exit-cost model. The browser applies fresh quote changes to that exact synchronized mark, including price-dependent impact and exit fees. Each server snapshot rebases booked entry fees, funding and completed trades once. Missing/stale/future quotes retain the synchronized value with a Last marked label; absent data displays loading rather than an invented balance. This read-only display never sizes or executes a trade.
+
+Server quote synchronization failure retains each position's valid timestamped last mark and its modeled P&L, with live coefficients disabled. If any held position has no usable mark, the account total is null and the comparison card shows Unavailable. Entry cost is never substituted as a last observed price.
+
+All diagnostic equity, return, margin-percentage and balance displays preserve this unknown state. Arithmetic runs only on finite values; genuine zero equity still reports its actual total loss, with unavailable margin utilization when the denominator is zero.
+
+## Marked swing risk (2026-10-02)
+Swing exposure guards, admission drawdown adjustments and portfolio risk budgets use cash plus held margin and frozen-model unrealized P&L less exit fees. The exit watchdog records usable marks, with material price changes or periodic confirmation, and retains worst historical drawdown. New entries and scale-ins refuse added exposure when any held mark is missing or older than 60 seconds. Scale-in aggregate margin remains capped at 40% of marked equity; existing stops and reductions run while marks are incomplete. No account, historical fill or risk limit is reset.
+
+## Durable autonomous transitions (2026-10-02)
+Promotion saves the exact eligible inputs before publishing PAPER_ACTIVE. Book release similarly saves its complete eligible shadow curve before publishing authorization. Rare decision arrays are lossless; ordinary telemetry stays capped at 250 entries, and secret redaction remains active. Candidate evidence is scoped before evaluation to its immutable economic identity, retaining every registered trial for statistical corrections. The ledger tail reader expands for large proofs so subsequent financial writes and head recovery work. Immutable IDs permit acknowledgement retries after durable append. Demotion publishes final REJECTED immediately with its original pending proof in Redis; subsequent reviews flush that proof even if the rolling outcome window changes. Failure to read prior review state blocks a new transition rather than assuming SHADOW.
+
+## Recorded replay clocks (2026-10-02)
+Recorded inputs retain source event/receive times and become available only at the latest component or completed-capture time. Quote, depth and sensor freshness are measured from their original observations, at 5, 15 and 60 seconds respectively. Unknown source clocks leave that component unavailable. Runtime market shaping retains sensor/depth observation clocks, and new public captures retain raw funding history alongside timestamped current sensors. Old files remain unchanged. Sparse periodic archives cannot reconstruct intervening books or absent 1m/5m triggers, so incomplete assets remain NOT_TESTABLE and prevent research acceptance. Replay fills remain descriptive modeled bar fills.
+
+Current release-candidate evidence and the explicit approval procedure are recorded in [AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md](AUTONOMY_HARDENING_VERIFICATION_2026-10-02.md). The tested candidate is not the currently deployed release; the main-branch production step remains approval-gated.

@@ -224,11 +224,11 @@ async function fetchTicker(symbol: string): Promise<{ row: BybitTickerRow; serve
   return { row, serverTimeMs };
 }
 
-async function fetchCandles(symbol: string, interval: CandleInterval, limit: number, range?: {startMs:number;endMs:number}) {
+async function fetchCandles(symbol: string, interval: CandleInterval, limit: number, range?: {startMs?:number;endMs:number}) {
   const bounded = Math.max(1, Math.min(1_000, limit));
   const { result, serverTimeMs } = await deps.bybitGet<{ list?: unknown[][] }>(
     `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${BYBIT_INTERVAL[interval]}&limit=${bounded}` +
-    (range ? `&start=${range.startMs}&end=${range.endMs-1}` : '')
+    (range ? `${range.startMs === undefined ? '' : `&start=${range.startMs}`}&end=${range.endMs-1}` : '')
   );
   const candles = validCandles((result.list ?? []).map((row) => ({
     time: Math.floor(Number(row?.[0]) / 1_000),
@@ -302,7 +302,7 @@ export class MarketService {
    * Funding and open interest from the mapped perpetual. A value Bybit did not
    * report is absent, never zero.
    */
-  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number; openInterest?: number; nextFundingTimeMs?: number }> {
+  static async getDeepSensors(assetKey: string): Promise<{ fundingRate?: number; openInterest?: number; nextFundingTimeMs?: number; observedAtMs?: number }> {
     const instrument = getConfiguredInstrument(assetKey);
     const now = deps.nowMs();
     const pick = (source: { fundingRate?: unknown; openInterest?: unknown; nextFundingTimeMs?: unknown }) => {
@@ -320,13 +320,14 @@ export class MarketService {
       const state = await deps.cache.get<BybitTickerState>(liveQuoteKey(assetKey));
       if (state?.symbol === instrument.symbol && state.sensorEventMs !== undefined && now - state.sensorEventMs <= SENSOR_MAX_AGE_MS) {
         const sensors = pick(state);
-        if (Object.keys(sensors).length > 0) return sensors;
+        if (Object.keys(sensors).length > 0) return {...sensors,observedAtMs:state.sensorEventMs};
       }
     } catch {}
 
     try {
-      const { row } = await fetchTicker(instrument.symbol);
-      return pick({ fundingRate: row.fundingRate, openInterest: row.openInterest, nextFundingTimeMs: row.nextFundingTime });
+      const { row, serverTimeMs } = await fetchTicker(instrument.symbol);
+      const sensors = pick({ fundingRate: row.fundingRate, openInterest: row.openInterest, nextFundingTimeMs: row.nextFundingTime });
+      return Object.keys(sensors).length ? {...sensors,observedAtMs:serverTimeMs} : sensors;
     } catch (error) {
       console.warn(`[MarketService] Bybit sensors unavailable for ${assetKey}:`, error);
       return {};
@@ -370,6 +371,25 @@ export class MarketService {
     // series even if it is old.
     if (staleCandidate && options.allowStale) return staleCandidate.slice(-limit);
     throw new Error(`Bybit ${instrument.symbol} ${timeframe} candles are unavailable or stale for ${assetKey}.`);
+  }
+
+  /** Read-only chart history: one public request, no historical cache or strategy changes. */
+  static async getChartCandlePage(timeframe: Timeframe, limit: number, asset: string, beforeMs?: number) {
+    if (!TIMEFRAME_MS[timeframe] || !Number.isInteger(limit) || limit < 50 || limit > 1000 ||
+      (beforeMs !== undefined && (!Number.isSafeInteger(beforeMs) || beforeMs <= 0 || beforeMs > deps.nowMs()))) {
+      throw new Error('Invalid chart page');
+    }
+    const { candles: raw, serverTimeMs } = await fetchCandles(getConfiguredInstrument(asset).symbol, timeframe,
+      limit, beforeMs === undefined ? undefined : { endMs: beforeMs });
+    if (beforeMs !== undefined && raw.some(c => c.time * 1000 >= beforeMs)) {
+      throw new Error('History provider did not respect the chart cursor');
+    }
+    // History pages hold completed bars only. The latest page keeps the bar
+    // still forming on 1m to 1h, as the live chart always showed; 4h stays
+    // completed-only, matching the strategy's own higher-timeframe view.
+    const candles = beforeMs === undefined && !CLOSED_BARS_ONLY.has(timeframe) ? raw : closedCandles(raw, timeframe, serverTimeMs);
+    return { candles, hasMore: candles.length > 0 && raw.length === limit,
+      nextBeforeMs: candles.length ? candles[0].time * 1000 : null };
   }
 
   /** One bounded historical request for a matured label, independent of live caches. */
@@ -486,14 +506,14 @@ export class MarketService {
    * Fifty-level book imbalance for the mapped perpetual. Throws when depth is
    * unavailable rather than reporting a neutral book that was never observed.
    */
-  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean }> {
+  static async getOrderbookImbalance(assetKey: string = "BTC"): Promise<{ bidVolume: number; askVolume: number; imbalanceRatio: number; isBullish: boolean; isBearish: boolean; observedAtMs?: number }> {
     const instrument = getConfiguredInstrument(assetKey);
     const now = deps.nowMs();
     const cacheKey = `cache:depth:${MARKET_DATA_SCHEMA_VERSION}:${instrument.instrumentVersion}`;
     type Depth = { bidVolume: number; askVolume: number; observedAtMs: number };
     const shape = (depth: Depth) => {
       const ratio = depth.bidVolume / depth.askVolume;
-      return { bidVolume: depth.bidVolume, askVolume: depth.askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66 };
+      return { bidVolume: depth.bidVolume, askVolume: depth.askVolume, imbalanceRatio: ratio, isBullish: ratio >= 1.5, isBearish: ratio <= 0.66, observedAtMs:depth.observedAtMs };
     };
 
     try {

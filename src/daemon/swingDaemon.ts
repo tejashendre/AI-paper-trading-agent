@@ -15,8 +15,11 @@ import { OpportunityJournal } from "../lib/trading/opportunityJournal";
 import { LocalLearningMemory } from "../lib/trading/localLearning";
 import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
+import { riskMarksReady, updateMarkedRiskStats } from '../lib/trading/markedEquity';
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
-import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile } from "../lib/trading/executionCostModel";
+import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile, projectedFundingCostUsdt } from "../lib/trading/executionCostModel";
+import { getConfiguredInstrument } from "../lib/trading/instrumentRegistry";
+import { evaluateCrowding, loadCrowdingInputs } from "../lib/strategy/crowding";
 import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
@@ -33,7 +36,7 @@ import {
 } from "../lib/trading/assetSpecs";
 import { recordEquityPoint, SWING_EQUITY_CURVE_KEY } from "../lib/execution/equityCurve";
 import { consumeSwingScanRequest } from "../lib/trading/scanControl";
-import { ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
+import { activeFamilyKeys, ensureResearchBaselines, reviewRegisteredCandidates } from '../lib/research/researchLoop';
 
 const ENTRY_SCAN_INTERVAL_MS = 60_000;
 const EXIT_WATCHDOG_INTERVAL_MS = 5_000;
@@ -245,53 +248,6 @@ function summarizeEntryBlockers(results: SwingScanResult[]) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
     .map(([reason, count]) => ({ reason, count }));
-}
-
-function compactLedgerResult(result: SwingScanResult) {
-  const execution = result.execution as any;
-  const portfolioBudget = result.portfolioBudget as any;
-  return {
-    asset: result.asset,
-    action: result.action,
-    reason: result.reason,
-    decisionState: result.decisionState,
-    htfScore: result.htfScore,
-    triggerScore: result.triggerScore,
-    marketStructureScore: result.marketStructureScore,
-    microstructureScore: result.microstructureScore,
-    dataQuality: result.dataQuality,
-    finalConviction: result.finalConviction,
-    price: result.price,
-    signalPrice: result.signalPrice,
-    stopLoss: result.stopLoss,
-    takeProfit: result.takeProfit,
-    paperSize: result.paperSize,
-    entryMode: result.entryMode,
-    assetMode: result.assetMode,
-    setupTags: result.setupTags,
-    marketRegime: result.marketRegime,
-    learningAdjustment: result.learningAdjustment,
-    entryGate: result.entryGate,
-    targetReachability: result.targetReachability,
-    netRewardRisk: result.netRewardRisk,
-    execution: execution ? {
-      modelVersion: execution.modelVersion,
-      entryFillPrice: execution.entry?.fillPrice,
-      targetFillPrice: execution.targetExit?.fillPrice,
-      stopFillPrice: execution.stopExit?.fillPrice,
-      netRewardUsd: execution.netRewardUsd,
-      netLossUsd: execution.netLossUsd,
-      netRewardRiskRatio: execution.netRewardRiskRatio,
-      estimatedRoundTripExecutionCostUsd: execution.estimatedRoundTripExecutionCostUsd,
-    } : undefined,
-    portfolioBudget: portfolioBudget ? {
-      approved: portfolioBudget.approved,
-      reason: portfolioBudget.reason,
-      policyVersion: portfolioBudget.policyVersion,
-      diagnostics: portfolioBudget.diagnostics,
-    } : undefined,
-    timestamp: result.timestamp,
-  };
 }
 
 function emptyLifetimeStats(nowIso: string): LifetimeScanStats {
@@ -526,28 +482,15 @@ async function runEntryScan() {
 
     exitSweep = await sweepSwingExits(portfolio, { portfolioType: "ai", source: "ENTRY_SCAN_PREFLIGHT", checkSignalReversal: true });
 
-    const swingMargin = Object.values(portfolio.openPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
-    const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce((s: number, p: any) => s + (p?.usdInvested || 0), 0);
-    const estimatedEquity = portfolio.usd + swingMargin + scalpMargin;
-    let peakUpdated = false;
-    if (!portfolio.peakValue || estimatedEquity > portfolio.peakValue) {
-      portfolio.peakValue = estimatedEquity;
-      peakUpdated = true;
-    }
-    if (portfolio.peakValue > 0) {
-      const ddPct = ((portfolio.peakValue - estimatedEquity) / portfolio.peakValue) * 100;
-      if (portfolio.maxDrawdownPercent === undefined || portfolio.maxDrawdownPercent === null || ddPct > portfolio.maxDrawdownPercent) {
-        portfolio.maxDrawdownPercent = ddPct;
-        peakUpdated = true;
-      }
-    }
-    if (peakUpdated) {
+    if (updateMarkedRiskStats(portfolio)) {
       await updateAIPortfolio(portfolio).catch((e: unknown) => Logger.warn(`Peak/drawdown sync failed: ${e}`));
     }
 
+    // Families the research loop promoted to live paper trading; read once per scan.
+    const activeFamilies = await activeFamilyKeys().catch(() => new Set<string>());
     for (const asset of Object.keys(SUPPORTED_ASSETS)) {
       const timestamp = new Date().toISOString();
-      const swingSignal = await SwingEngine.analyze(asset);
+      const swingSignal = await SwingEngine.analyze(asset, { activeFamilies });
       // Collect valid shadow hypotheses before portfolio and calendar entry vetoes.
       try {
         const researchMetadata=await MarketService.getInstrumentMetadata(asset).catch(()=>null);
@@ -568,7 +511,7 @@ async function runEntryScan() {
           timestamp, score: swingSignal.score, finalConviction: swingSignal.finalConviction,
           dataQuality: swingSignal.dataQuality, direction: candidate.direction,
           mode: "SHADOW", setupTags: [candidate.family], simpleReason: candidate.reasons.join("; "),
-          vetoCode: candidate.family === "RANGE_REVERSION" ? "SHADOW_ONLY" : "BASELINE_SHADOW",
+          vetoCode: candidate.family === "TREND_PULLBACK" ? "BASELINE_SHADOW" : "SHADOW_ONLY",
         })));
 
       } catch (error) {
@@ -812,6 +755,11 @@ async function runEntryScan() {
         swingSignal.takeProfit = alignStopTowardEntry({ price: swingSignal.takeProfit, entryPrice: swingSignal.entryPrice, metadata });
 
         const isShort = swingSignal.action === "SWING_SHORT";
+        if (!riskMarksReady(portfolio)) {
+          results.push({ asset, action: 'BLOCKED', vetoCode: 'PORTFOLIO_GUARD',
+            reason: 'Held-position risk marks are missing or stale; new risk waits for the exit watchdog.', timestamp });
+          continue;
+        }
         const portfolioGuard = PortfolioGuards.evaluateNewSwing({
           portfolio,
           asset,
@@ -866,6 +814,27 @@ async function runEntryScan() {
             timestamp,
           });
           await Logger.warn(`[SWING BLOCK] ${asset} ${isShort ? "SHORT" : "LONG"} denied by portfolio guard: ${portfolioGuard.reason}`);
+          continue;
+        }
+
+        // Crowding filter: never join an extremely crowded side. Fails open
+        // (logged) when positioning data is unavailable; blocked candidates
+        // are journaled, so the filter's counterfactual is measured too.
+        const crowding = await loadCrowdingInputs(getConfiguredInstrument(asset).symbol, swingSignal.fundingRate)
+          .then((inputs) => evaluateCrowding(isShort ? "SHORT" : "LONG", inputs))
+          .catch(async (error) => {
+            await Logger.warn(`[SWING] ${asset} crowding data unavailable: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+          });
+        if (crowding?.crowded) {
+          results.push({
+            asset, action: "BLOCKED", vetoCode: "CROWDING", reason: crowding.reason,
+            simpleStatus: "Crowded side skipped", simpleReason: crowding.reason,
+            nextStep: "The bot will wait until positioning on this side is no longer extreme.", decisionState: "BLOCKED_RISK",
+            score: swingSignal.score, fundingRate: swingSignal.fundingRate, price: swingSignal.entryPrice,
+            signalPrice: swingSignal.signalPrice, stopLoss: swingSignal.stopLoss, takeProfit: swingSignal.takeProfit,
+            setupTags: swingSignal.setupTags, ...strategyProvenance, timestamp,
+          });
           continue;
         }
 
@@ -1047,13 +1016,13 @@ async function runEntryScan() {
         }
         const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
         const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
-        // Projected carry for admission only. Assumption: the position pays
-        // the larger of the current funding rate's magnitude and 0.01% at
-        // every boundary for one day. Realized funding is booked from the
-        // venue's published settlements, never from this estimate.
-        const projectedCarryUsdt = executionPlan.entry.notionalUsd *
-          Math.max(Math.abs(Number(swingSignal.fundingRate ?? 0)), 0.0001) *
-          ((24 * 60) / metadata.fundingIntervalMinutes);
+        // Projected carry for admission only, sign-aware over a multi-day hold.
+        const projectedCarryUsdt = projectedFundingCostUsdt({
+          notionalUsd: executionPlan.entry.notionalUsd,
+          direction: isShort ? "SHORT" : "LONG",
+          fundingRate: swingSignal.fundingRate,
+          fundingIntervalMinutes: metadata.fundingIntervalMinutes,
+        });
         const rewardAfterCarry = executionPlan.netRewardUsd - projectedCarryUsdt;
         const rewardRiskAfterCarry = rewardAfterCarry / (executionPlan.netLossUsd + projectedCarryUsdt);
         const executionFailure = rewardAfterCarry <= 0
@@ -1243,6 +1212,8 @@ async function runEntryScan() {
 
         const newPos: OpenPosition = {
           asset,
+          lastMarkPrice: swingSignal.livePrice,
+          lastMarkAt: new Date().toISOString(),
           entryPrice: executionPlan.entry.fillPrice,
           amount: executionPlan.entry.amount,
           btcAmount: executionPlan.entry.amount,
@@ -1476,16 +1447,16 @@ async function runEntryScan() {
       type: "SCAN_COMPLETED",
       source: "SWING_DAEMON",
       timestamp: new Date().toISOString(),
+      // A heartbeat only: the full per-asset diagnostics are in the Redis scan
+      // snapshot, and nothing reads them back from the ledger. The full form
+      // grew the ledger by about 40 MB a day.
       payload: {
         scanId: scanSequence,
         startedAt,
         completedAt: new Date().toISOString(),
         summary: summarizeResults(results),
-        decisionSummary: summarizeDecisionStates(results),
-        blockerSummary: summarizeEntryBlockers(results),
         exitSweep,
-        opportunitySweep,
-        results: results.map(compactLedgerResult),
+        results: results.map((result) => ({ asset: result.asset, action: result.action, vetoCode: result.vetoCode ?? null })),
       },
     });
 

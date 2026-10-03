@@ -1,4 +1,4 @@
-import { Candle, IndicatorSnapshot, StatisticalMetrics, Portfolio, Trade, PerformanceMetrics } from "@/lib/types";
+import { Candle, IndicatorSnapshot, StatisticalMetrics } from "@/lib/types";
 
 // ────────────────────── Basic Math ──────────────────────
 
@@ -125,20 +125,6 @@ function linearRegressionParams(x: number[], y: number[]): { slope: number; r2: 
   return { slope, r2 };
 }
 
-export function rollingStdDev(values: number[], period: number): number[] {
-  const result = new Array<number>(values.length).fill(NaN);
-  for (let i = period - 1; i < values.length; i++) {
-    const window = values.slice(i - period + 1, i + 1);
-    let sum = 0;
-    for (const v of window) sum += v;
-    const mean = sum / period;
-    let sumSq = 0;
-    for (const v of window) sumSq += Math.pow(v - mean, 2);
-    result[i] = Math.sqrt(sumSq / period);
-  }
-  return result;
-}
-
 // ────────────────────── Aggregation ──────────────────────
 
 export function computeStatistics(
@@ -172,54 +158,5 @@ export function computeStatistics(
     volumePercentile: percentile(candles.length > 0 ? candles[candles.length - 1].volume : 0, volDist),
     regressionSlope: lr.slope,
     regressionR2: lr.r2
-  };
-}
-
-export function computePerformance(portfolio: Portfolio, trades: Trade[]): PerformanceMetrics {
-  const rets = portfolio.returns;
-  let sharpe = 0, sortino = 0;
-  if (rets.length > 1) {
-    let sum = 0;
-    for (const r of rets) sum += r;
-    const mean = sum / rets.length;
-    let sumSq = 0, downSumSq = 0, downCount = 0;
-    for (const r of rets) {
-      sumSq += Math.pow(r - mean, 2);
-      if (r < 0) {
-        downSumSq += Math.pow(r, 2);
-        downCount++;
-      }
-    }
-    const stddev = Math.sqrt(sumSq / (rets.length - 1));
-    const downStddev = downCount > 0 ? Math.sqrt(downSumSq / downCount) : 0;
-    sharpe = stddev > 0 ? (mean / stddev) * Math.sqrt(365) : 0; // Daily approx trades
-    sortino = downStddev > 0 ? (mean / downStddev) * Math.sqrt(365) : 0;
-  }
-
-  const winRate = portfolio.totalTrades > 0 ? portfolio.winningTrades / portfolio.totalTrades : 0;
-  const pf = portfolio.grossLoss > 0 ? portfolio.grossProfit / portfolio.grossLoss : portfolio.grossProfit > 0 ? Infinity : 0;
-  const avgWin = portfolio.winningTrades > 0 ? portfolio.grossProfit / portfolio.winningTrades : 0;
-  const avgLoss = portfolio.losingTrades > 0 ? portfolio.grossLoss / portfolio.losingTrades : 0;
-  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
-  
-  const totalReturn = portfolio.usd + portfolio.btc * (trades.length > 0 ? trades[trades.length-1].price : 0) - portfolio.initialCapital;
-  const calmar = portfolio.maxDrawdownPercent > 0 ? ((totalReturn/portfolio.initialCapital)*100) / portfolio.maxDrawdownPercent : 0;
-
-  return {
-    totalReturn,
-    totalReturnPercent: (totalReturn / portfolio.initialCapital) * 100,
-    sharpeRatio: sharpe,
-    sortinoRatio: sortino,
-    calmarRatio: calmar,
-    winRate,
-    profitFactor: pf,
-    expectancy,
-    averageWin: avgWin,
-    averageLoss: avgLoss,
-    maxDrawdown: portfolio.maxDrawdown,
-    maxDrawdownPercent: portfolio.maxDrawdownPercent,
-    totalTrades: portfolio.totalTrades,
-    winningTrades: portfolio.winningTrades,
-    losingTrades: portfolio.losingTrades
   };
 }

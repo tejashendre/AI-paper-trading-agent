@@ -15,11 +15,12 @@ import {
   instrumentQuantityFromNotional,
   positionInstrument,
   positionLegIdentity,
+  positionFeeScheduleVersion,
   validateOrderSize,
 } from "@/lib/trading/assetSpecs";
 import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
-import { SwingEngine, SwingSignal } from "@/lib/swingEngine";
-import { LocalLearningMemory } from "@/lib/trading/localLearning";
+import { SwingEngine } from "@/lib/swingEngine";
+import { bindResearchManifest, paperResearchOutcome, storeResearchOutcome } from "@/lib/research/researchLoop";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
 import {
   estimateCarryCostUsd,
@@ -36,11 +37,13 @@ import { liveFundingDeps } from "@/lib/data/bybitPublic";
 import { buildPositionOutcomes, CompletedPositionOutcome, outcomeSourceHash } from "@/lib/trading/positionOutcomes";
 import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
+import { markedEquity, riskMarksReady, updateMarkedRiskStats } from '@/lib/trading/markedEquity';
 import {
   decideSwingExit,
   isOppositeEdgeConfirmed,
   isThesisWeakening,
   PARTIAL_PROFIT_POLICY,
+  scaleInRoom,
 } from "@/lib/execution/exitPolicy";
 
 export interface SwingExitSweepResult {
@@ -88,7 +91,7 @@ function positionNotional(pos: OpenPosition, quantity: number, price: number): n
 }
 
 function positionEntryFee(pos: OpenPosition): number {
-  return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice);
+  return pos.entryFeePaid ?? instrumentFee(positionInstrument(pos), pos.amount, pos.entryPrice, "taker", positionFeeScheduleVersion(pos));
 }
 
 const isLinearPosition = (pos: OpenPosition) => positionInstrument(pos).economicsModel === "BYBIT_LINEAR_USDT_V1";
@@ -475,6 +478,7 @@ function estimatePositionExit(
   return estimatePaperFill({
     asset: pos.asset,
     instrument: positionInstrument(pos),
+    feeScheduleVersion: positionFeeScheduleVersion(pos),
     action: pos.direction === "SHORT" ? "COVER" : "SELL",
     requestedPrice,
     amount,
@@ -729,6 +733,11 @@ async function completePositionOutcome(
     const outcome = completed.find((candidate) => candidate.legIds.includes(closeTrade.id)) ?? null;
     if (!outcome) return null;
     const firstRecord = await PortfolioManager.recordPositionOutcome(outcome, portfolioType);
+    // Live results of a registered family feed its autonomous demotion check.
+    if (firstRecord && portfolioType === "ai") {
+      await storeResearchOutcome(await bindResearchManifest(paperResearchOutcome(outcome)))
+        .catch((error) => console.warn(`[${source}] research outcome deferred:`, error));
+    }
     const eventId = `position-completed:${outcome.positionId}`;
     if (firstRecord && portfolioType === "ai" && !ExecutionLedger.hasEvent(eventId, new Date(outcome.openedAtMs).toISOString())) {
       await ExecutionLedger.recordBestEffort({
@@ -757,6 +766,8 @@ async function scaleIntoWinner(
   result: SwingExitSweepResult
 ): Promise<boolean> {
   if (portfolioType !== "ai") return false;
+  // Scale-ins add exposure too. Missing marks must not turn losses into cost-basis equity.
+  if (!riskMarksReady(portfolio)) return false;
   if (pos.strategyType && pos.strategyType !== "swing") return false;
   if (pos.scaleInBlockedReason) return false;
   if (pos.thesisStatus && pos.thesisStatus !== "VALID") return false;
@@ -765,7 +776,7 @@ async function scaleIntoWinner(
   if (profitMultiple(asset, pos, currentPrice) < 0.9) return false;
   if ((pos.finalConviction || 0) < 60 || (pos.dataQuality || 0) < 68) return false;
 
-  const equity = Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
+  const equity = markedEquity(portfolio);
   const maxTotalMargin = equity * 0.40;
   const remainingRoom = Math.max(0, maxTotalMargin - activeMarginUsd(portfolio));
   const addMarginUsd = Math.min(portfolio.usd * 0.06, pos.usdInvested * 0.5, 600, remainingRoom);
@@ -796,6 +807,7 @@ async function scaleIntoWinner(
   const scaleFill = estimatePaperFill({
     asset,
     instrument: positionInstrument(pos),
+    feeScheduleVersion: positionFeeScheduleVersion(pos),
     action: pos.direction === "SHORT" ? "SHORT" : "BUY",
     requestedPrice: currentPrice,
     amount: addAmount,
@@ -810,6 +822,8 @@ async function scaleIntoWinner(
   });
   const entryFee = scaleFill.feeUsd;
   if (addMarginUsd + entryFee > portfolio.usd) return false;
+  const room = scaleInRoom({ direction: pos.direction, fillPrice: scaleFill.fillPrice, stopLoss: pos.stopLoss, takeProfit: pos.takeProfit });
+  if (!room.allowed) return false;
   const capacity = evaluateFillCapacity({
     side: pos.direction === "SHORT" ? "SELL" : "BUY",
     quantity: addAmount,
@@ -1143,6 +1157,7 @@ export async function sweepSwingExits(
   };
 
   const activeKeys = Object.keys(portfolio.openPositions || {});
+  let marksChanged = false;
 
   for (const asset of activeKeys) {
     const pos = portfolio.openPositions[asset];
@@ -1158,6 +1173,13 @@ export async function sweepSwingExits(
       if (!Number.isFinite(currentLivePrice) || currentLivePrice <= 0) {
         result.skipped++;
         continue;
+      }
+
+      if (!Number.isFinite(pos.lastMarkPrice) || Math.abs(currentLivePrice - pos.lastMarkPrice!) > currentLivePrice * 1e-8 ||
+          Date.now() - Date.parse(pos.lastMarkAt ?? '') >= 30000 || !pos.lastMarkAt) {
+        pos.lastMarkPrice = currentLivePrice;
+        pos.lastMarkAt = new Date().toISOString();
+        marksChanged = true;
       }
 
       // One watermark update, one hard stop/take-profit check, then a single
@@ -1222,6 +1244,8 @@ export async function sweepSwingExits(
     }
   }
 
+  const riskStatsChanged = updateMarkedRiskStats(portfolio);
+  if (marksChanged || riskStatsChanged) await PortfolioManager.updatePortfolio(portfolio, portfolioType);
   await redis.set(`swing:lastExitSweep:${portfolioType}`, result, { ex: 120 });
   return result;
 }

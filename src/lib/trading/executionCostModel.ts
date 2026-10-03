@@ -5,12 +5,21 @@ import {
   estimateNotionalUsd,
   instrumentFee,
   instrumentNotional,
+  feeScheduleFor,
 } from "./assetSpecs";
-import type { InstrumentRef } from "./instrumentRegistry";
+import { getConfiguredInstrument, isConfiguredAsset, type InstrumentRef } from "./instrumentRegistry";
 
 // v3: versioned public fee schedules for Bybit contracts, taker-only paper
 // fills, and observed-spread entry profiles.
 export const EXECUTION_COST_MODEL_VERSION = "paper-cost-v3-2026-10-01";
+
+/** A fee change creates a distinct FX learning cohort without rewriting prior costs. */
+export function executionCostModelVersionFor(instrument: InstrumentRef, feeScheduleVersion?: string): string {
+  if (instrument.economicsModel !== "BYBIT_LINEAR_USDT_V1") return EXECUTION_COST_MODEL_VERSION;
+  const schedule = feeScheduleFor(instrument, feeScheduleVersion);
+  return schedule.scope === "forex" && schedule.status === "PUBLIC_BASELINE"
+    ? `${EXECUTION_COST_MODEL_VERSION}:${schedule.version}` : EXECUTION_COST_MODEL_VERSION;
+}
 
 export type PaperExecutionAction = "BUY" | "SELL" | "SHORT" | "COVER";
 export type PaperExecutionReason =
@@ -81,6 +90,7 @@ export interface PaperExecutionPlan {
 
 export interface PaperExecutionPlanInput {
   asset: string;
+  feeScheduleVersion?: string;
   direction: OpenPosition["direction"];
   entryPrice: number;
   stopLoss: number;
@@ -95,9 +105,9 @@ const PROFILES: Record<string, ExecutionCostProfile> = {
   BTC: { asset: "BTC", venueModel: "BYBIT_VIP0_PERPETUAL", halfSpreadBps: 0.8, baseSlippageBps: 0.8, sizeImpactBps: 0.4, referenceNotionalUsd: 25_000, stopGapBps: 2.0, carryBpsPerDay: 3.0 },
   ETH: { asset: "ETH", venueModel: "BYBIT_VIP0_PERPETUAL", halfSpreadBps: 1.2, baseSlippageBps: 1.2, sizeImpactBps: 0.6, referenceNotionalUsd: 15_000, stopGapBps: 3.0, carryBpsPerDay: 3.5 },
   SOL: { asset: "SOL", venueModel: "BYBIT_VIP0_PERPETUAL", halfSpreadBps: 2.5, baseSlippageBps: 2.5, sizeImpactBps: 1.2, referenceNotionalUsd: 7_500, stopGapBps: 6.0, carryBpsPerDay: 5.0 },
-  EURUSD: { asset: "EURUSD", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.5, baseSlippageBps: 0.4, sizeImpactBps: 0.2, referenceNotionalUsd: 100_000, stopGapBps: 1.5, carryBpsPerDay: 1.0 },
-  GBPUSD: { asset: "GBPUSD", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.8, baseSlippageBps: 0.6, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
-  USDJPY: { asset: "USDJPY", venueModel: "SYNTHETIC_FX_PROXY", halfSpreadBps: 0.7, baseSlippageBps: 0.5, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
+  EURUSD: { asset: "EURUSD", venueModel: "BYBIT_LINEAR_FX_MODELED", halfSpreadBps: 0.5, baseSlippageBps: 0.4, sizeImpactBps: 0.2, referenceNotionalUsd: 100_000, stopGapBps: 1.5, carryBpsPerDay: 1.0 },
+  GBPUSD: { asset: "GBPUSD", venueModel: "BYBIT_LINEAR_FX_MODELED", halfSpreadBps: 0.8, baseSlippageBps: 0.6, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
+  USDJPY: { asset: "USDJPY", venueModel: "BYBIT_LINEAR_FX_MODELED", halfSpreadBps: 0.7, baseSlippageBps: 0.5, sizeImpactBps: 0.3, referenceNotionalUsd: 100_000, stopGapBps: 2.0, carryBpsPerDay: 1.2 },
   // These three now price from Bybit perpetuals rather than a synthetic proxy.
   // The figures below are deliberately left as they were, because measured
   // against the live book they are now conservative: Bybit quotes gold at about
@@ -106,9 +116,9 @@ const PROFILES: Record<string, ExecutionCostProfile> = {
   // direction to be wrong in, so this is not tuned down. The stop-gap
   // allowances are likewise generous now that these contracts trade through the
   // weekend instead of gapping across a closed session.
-  GOLD: { asset: "GOLD", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 1.5, baseSlippageBps: 1.0, sizeImpactBps: 0.5, referenceNotionalUsd: 20_000, stopGapBps: 4.0, carryBpsPerDay: 1.5 },
-  OIL: { asset: "OIL", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 2.5, baseSlippageBps: 2.0, sizeImpactBps: 0.8, referenceNotionalUsd: 15_000, stopGapBps: 8.0, carryBpsPerDay: 2.0 },
-  SILVER: { asset: "SILVER", venueModel: "SYNTHETIC_COMMODITY_PROXY", halfSpreadBps: 3.0, baseSlippageBps: 2.5, sizeImpactBps: 1.0, referenceNotionalUsd: 12_500, stopGapBps: 8.0, carryBpsPerDay: 2.0 },
+  GOLD: { asset: "GOLD", venueModel: "BYBIT_LINEAR_COMMODITY_MODELED", halfSpreadBps: 1.5, baseSlippageBps: 1.0, sizeImpactBps: 0.5, referenceNotionalUsd: 20_000, stopGapBps: 4.0, carryBpsPerDay: 1.5 },
+  OIL: { asset: "OIL", venueModel: "BYBIT_LINEAR_COMMODITY_MODELED", halfSpreadBps: 2.5, baseSlippageBps: 2.0, sizeImpactBps: 0.8, referenceNotionalUsd: 15_000, stopGapBps: 8.0, carryBpsPerDay: 2.0 },
+  SILVER: { asset: "SILVER", venueModel: "BYBIT_LINEAR_COMMODITY_MODELED", halfSpreadBps: 3.0, baseSlippageBps: 2.5, sizeImpactBps: 1.0, referenceNotionalUsd: 12_500, stopGapBps: 8.0, carryBpsPerDay: 2.0 },
 };
 
 export function getExecutionCostProfile(asset: string): ExecutionCostProfile {
@@ -176,6 +186,7 @@ export function estimatePaperFill(input: {
    * instrument's model, so an exit must not be valued by today's routing.
    */
   instrument?: InstrumentRef;
+  feeScheduleVersion?: string;
 }): PaperFillEstimate {
   if (!Number.isFinite(input.requestedPrice) || input.requestedPrice <= 0) {
     throw new Error(`Invalid requested execution price for ${input.asset}`);
@@ -210,15 +221,18 @@ export function estimatePaperFill(input: {
   const feeUsd = input.feeRate !== undefined
     ? notionalUsd * input.feeRate
     : input.instrument
-      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker")
-      : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
+      ? instrumentFee(input.instrument, input.amount, fillPrice, "taker", input.feeScheduleVersion)
+      : input.feeScheduleVersion
+        ? instrumentFee(getConfiguredInstrument(input.asset), input.amount, fillPrice, "taker", input.feeScheduleVersion)
+        : estimateFeeUsd(input.asset, input.amount, fillPrice, "taker");
   const spreadCostUsd = requestedNotionalUsd * spreadBps / 10_000;
   const slippageCostUsd = requestedNotionalUsd * slippageBps / 10_000;
   const gapCostUsd = requestedNotionalUsd * gapBps / 10_000;
   const priceImpactCostUsd = spreadCostUsd + slippageCostUsd + gapCostUsd;
 
   return {
-    modelVersion: EXECUTION_COST_MODEL_VERSION,
+    modelVersion: input.instrument ? executionCostModelVersionFor(input.instrument, input.feeScheduleVersion)
+      : isDerived && !isConfiguredAsset(input.asset) ? EXECUTION_COST_MODEL_VERSION : executionCostModelVersionFor(getConfiguredInstrument(input.asset), input.feeScheduleVersion),
     venueModel: profile.venueModel,
     action: input.action,
     reason: input.context.reason,
@@ -250,6 +264,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "ENTRY" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
   const targetExit = estimatePaperFill({
     asset: input.asset,
@@ -258,6 +273,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "TAKE_PROFIT" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
   const stopExit = estimatePaperFill({
     asset: input.asset,
@@ -266,6 +282,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
     amount: input.amount,
     context: { ...context, reason: "STOP_LOSS" },
     profile: input.profile,
+    feeScheduleVersion: input.feeScheduleVersion,
   });
 
   const grossRewardUsd = calculatePnlUsd(
@@ -288,7 +305,7 @@ export function buildPaperExecutionPlan(input: PaperExecutionPlanInput): PaperEx
   const netRewardRiskRatio = netLossUsd > 0 ? netRewardUsd / netLossUsd : 0;
 
   return {
-    modelVersion: EXECUTION_COST_MODEL_VERSION,
+    modelVersion: executionCostModelVersionFor(getConfiguredInstrument(input.asset), input.feeScheduleVersion),
     entry,
     targetExit,
     stopExit,
@@ -340,6 +357,31 @@ export function estimateCarryCostUsd(input: {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * Holding period assumed when projecting funding for admission: the 90th
+ * percentile of completed swing holds (44h on 2026-10-03), rounded up.
+ */
+export const PROJECTED_HOLD_HOURS = 48;
+const PROJECTED_FUNDING_FLOOR_RATE = 0.0001;
+
+/**
+ * Funding a new position is expected to pay over the projected hold, for
+ * admission only. Sign-aware: the side that pays is charged its full current
+ * rate; the side that receives is never credited and still pays the 0.01%
+ * floor, since rates can turn. Realized funding is booked from settlements.
+ */
+export function projectedFundingCostUsdt(input: {
+  notionalUsd: number;
+  direction: OpenPosition["direction"];
+  fundingRate?: number;
+  fundingIntervalMinutes: number;
+}): number {
+  const rate = Number(input.fundingRate);
+  const paidRate = Number.isFinite(rate) ? (input.direction === "LONG" ? rate : -rate) : 0;
+  const settlements = (PROJECTED_HOLD_HOURS * 60) / input.fundingIntervalMinutes;
+  return input.notionalUsd * Math.max(paidRate, PROJECTED_FUNDING_FLOOR_RATE) * settlements;
+}
+
 // Perpetual funding, settled at the venue's actual boundaries. Pure: callers
 // supply settlements, intervals and the quantity held, and persist results.
 // ---------------------------------------------------------------------------

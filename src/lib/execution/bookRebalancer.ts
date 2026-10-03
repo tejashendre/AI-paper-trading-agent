@@ -19,7 +19,6 @@ import {
 import {
   BookPlan,
   CROSS_SECTIONAL_STRATEGY_VERSION,
-  DEFAULT_STRATEGY,
   StrategyConfig,
 } from "@/lib/strategy/crossSectionalMomentum";
 import { PerpTicker } from "@/lib/data/perpUniverse";
@@ -130,6 +129,10 @@ export interface BookPortfolio {
     /** Lifetime drawdown reviewed in an authorized release, if any. */
     breachAcknowledgedAtPercent?: number;
     lastUnwind?: { at: string; executed: number; detail: string };
+    /** When the current incident began; release evidence must postdate it. */
+    haltedAt?: string;
+    /** Set by a release: drawdown is then measured from the best equity since. */
+    releaseEpoch?: { releasedAt: string; releaseEquityUsd: number; epochPeakEquityUsd: number };
   };
 }
 
@@ -502,6 +505,28 @@ export async function settleBookFunding(
 /** The capital-free book that keeps forward evidence while the live book is halted. */
 export const SHADOW_BOOK_PORTFOLIO_KEY = "xsec:shadow:portfolio";
 export const SHADOW_BOOK_EQUITY_CURVE_KEY = "xsec:shadow:equityCurve";
+/** Carry-with-momentum research variant: capital-free, runs in every risk state. */
+export const CARRY_SHADOW_PORTFOLIO_KEY = "xsec:carryShadow:portfolio";
+export const CARRY_SHADOW_EQUITY_CURVE_KEY = "xsec:carryShadow:equityCurve";
+/** When the last complete rebalance pass finished (epoch ms). */
+export const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
+/** The book rebalances every holdHours; a pass later than this grace is a fault. */
+export const REBALANCE_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Whether the rebalance loop is keeping time. A missing record counts as
+ * overdue: a running daemon writes one within a minute of starting.
+ */
+export function rebalanceStatus(lastAtMs: number | null, nowMs: number, holdHours = 12) {
+  const periodMs = holdHours * 60 * 60 * 1000;
+  const last = Number.isFinite(lastAtMs) && (lastAtMs as number) > 0 ? (lastAtMs as number) : null;
+  const nextDueAtMs = last === null ? null : last + periodMs;
+  return {
+    lastAtMs: last,
+    nextDueAtMs,
+    overdue: nextDueAtMs === null || nowMs > nextDueAtMs + REBALANCE_GRACE_MS,
+  };
+}
 
 export async function loadBookPortfolio(initialCapitalUsd = 10_000, key = BOOK_PORTFOLIO_KEY): Promise<BookPortfolio> {
   const stored = await getRedis().get<BookPortfolio>(key).catch(() => null);

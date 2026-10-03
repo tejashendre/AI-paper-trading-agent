@@ -1,6 +1,6 @@
 /**
  * V4 Institutional Web Worker
- * Offloads heavy mathematical backtesting simulations and Monte Carlo paths to the client CPU.
+ * Offloads the dashboard's optional candle backtest to the client CPU.
  * Prevents Vercel free-tier serverless execution timeouts (10s cap).
  */
 
@@ -12,16 +12,6 @@ self.onmessage = function (e) {
     try {
       const results = runBacktest(candles, riskPercent);
       self.postMessage({ type: "BACKTEST_SUCCESS", data: results });
-    } catch (err) {
-      self.postMessage({ type: "ERROR", error: err.message });
-    }
-  }
-
-  if (type === "MONTE_CARLO") {
-    const { currentPrice, volatility, paths = 1000, steps = 24 } = data;
-    try {
-      const results = runMonteCarlo(currentPrice, volatility, paths, steps);
-      self.postMessage({ type: "MONTE_CARLO_SUCCESS", data: results });
     } catch (err) {
       self.postMessage({ type: "ERROR", error: err.message });
     }
@@ -269,45 +259,4 @@ function runBacktest(candles, riskPercent) {
     sortinoRatio,
     trades: trades.slice(-30) // Return last 30 trades for visual logging
   };
-}
-
-// ==================== Monte Carlo Price Simulator ====================
-
-function runMonteCarlo(currentPrice, volatility, pathsCount, stepsCount) {
-  const paths = [];
-  const dt = 1 / stepsCount; // step size in daily units
-
-  for (let p = 0; p < pathsCount; p++) {
-    const singlePath = [currentPrice];
-    let price = currentPrice;
-    for (let s = 0; s < stepsCount; s++) {
-      // Box-Muller transform for normal distribution rand value
-      const u1 = Math.random();
-      const u2 = Math.random();
-      const randNormal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-
-      // Geometric Brownian Motion (GBM) equation
-      const drift = 0.0; // Assume zero drift for short term daily forecast
-      const shock = price * volatility * Math.sqrt(dt) * randNormal;
-      price = price + price * drift * dt + shock;
-      singlePath.push(price);
-    }
-    paths.push(singlePath);
-  }
-
-  // Calculate quantile distributions for shading (e.g. 5%, 25%, 50%, 75%, 95%)
-  const distributions = [];
-  for (let s = 0; s <= stepsCount; s++) {
-    const stepPrices = paths.map(p => p[s]).sort((a, b) => a - b);
-    distributions.push({
-      step: s,
-      q05: stepPrices[Math.floor(pathsCount * 0.05)] || currentPrice,
-      q25: stepPrices[Math.floor(pathsCount * 0.25)] || currentPrice,
-      median: stepPrices[Math.floor(pathsCount * 0.50)] || currentPrice,
-      q75: stepPrices[Math.floor(pathsCount * 0.75)] || currentPrice,
-      q95: stepPrices[Math.floor(pathsCount * 0.95)] || currentPrice
-    });
-  }
-
-  return distributions;
 }

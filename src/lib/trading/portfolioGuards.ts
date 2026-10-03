@@ -1,6 +1,7 @@
 import { OpenPosition, Portfolio } from "@/lib/types";
 import { LocalLearningRule } from "./localLearning";
 import { normalizeSetupTags } from "./setupPerformance";
+import { markedEquity } from './markedEquity';
 
 export type PortfolioExposureMode = "NORMAL" | "DRAWDOWN" | "RECOVERY";
 
@@ -35,24 +36,8 @@ function activeSwingPositions(portfolio: Portfolio): OpenPosition[] {
   );
 }
 
-function activeMarginUsd(portfolio: Portfolio): number {
-  const swingMargin = Object.values(portfolio.openPositions || {}).reduce(
-    (sum, position) => sum + (position?.usdInvested || 0),
-    0
-  );
-  const scalpMargin = Object.values(portfolio.scalpPositions || {}).reduce(
-    (sum, position) => sum + (position?.usdInvested || 0),
-    0
-  );
-  return swingMargin + scalpMargin;
-}
-
-function estimateEquity(portfolio: Portfolio): number {
-  return Math.max(portfolio.usd + activeMarginUsd(portfolio), portfolio.usd, 0);
-}
-
 function exposureMode(portfolio: Portfolio): PortfolioExposureMode {
-  const equity = estimateEquity(portfolio);
+  const equity = markedEquity(portfolio);
   const peak = Number(portfolio.peakValue || portfolio.initialCapital || equity);
   if (!Number.isFinite(equity) || !Number.isFinite(peak) || peak <= 0) return "NORMAL";
 

@@ -2,15 +2,6 @@
 import React, { useState, useEffect } from "react";
 import { Lock } from "lucide-react";
 
-export function createAuthFetch(secret: string) {
-  return async (url: string, init?: RequestInit) => {
-    return fetch(url, {
-      ...init,
-      headers: { ...init?.headers, 'Authorization': `Bearer ${secret}` },
-    });
-  };
-}
-
 export function AuthGate({ children }: { children: (secret: string) => React.ReactNode }) {
   const [secret, setSecret] = useState<string | null>(null);
   const [input, setInput] = useState("");
