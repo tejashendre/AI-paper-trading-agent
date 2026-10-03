@@ -14,6 +14,7 @@ export interface BenchmarksResponse {
   };
   btcEthRatio?: { returnPercent: number; maxDrawdownPercent: number; days: number };
   bot: { swingReturnPercent: number | null; crossSectionalReturnPercent: number | null };
+  makerEntryShadow?: { comparisons: number; makerFillRate: number | null; makerMeanNetR: number | null; takerMeanNetR: number | null };
   note: string;
   error?: string;
 }
@@ -64,6 +65,12 @@ export default function Benchmarks({ isDark }: { isDark: boolean }) {
             Trend baseline is a shadow strategy: {data.trendDaily.forwardEvidence.metrics.periods} forward day(s) since {data.trendDaily.registeredAt.slice(0, 10)};
             {data.trendDaily.forwardEvidence.passed ? " its evidence gate has passed." : " it needs 30 days and a positive lower bound before its evidence gate passes."}
           </p>
+          {data.makerEntryShadow && data.makerEntryShadow.comparisons > 0 && (
+            <p className={`text-[9px] font-mono mt-1 ${textMuted}`}>
+              Post-only entry test over {data.makerEntryShadow.comparisons} candidate(s): filled {((data.makerEntryShadow.makerFillRate ?? 0) * 100).toFixed(0)}%,
+              mean {(data.makerEntryShadow.makerMeanNetR ?? 0).toFixed(2)}R versus {(data.makerEntryShadow.takerMeanNetR ?? 0).toFixed(2)}R for immediate entries (misses count as 0R).
+            </p>
+          )}
         </>
       )}
     </div>
