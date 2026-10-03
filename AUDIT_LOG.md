@@ -235,3 +235,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 - src/lib/research/baselines.ts recomputes EQUAL_WEIGHT_HOLD and TREND_DAILY from Bybit daily closes and funding, net of taker fees on turnover; /api/benchmarks caches it 1h; Benchmarks panel under the XSEC book.
 - Live since 2026-08-26 on $10,000: hold the nine +2.00% (max DD 3.48%), trend -0.40% (max DD 1.20%); bot swing about +0.66%, XSEC -15.8%. FX perps only listed 2026-09-08, so trend has no FX signal until 121 daily closes.
 - TREND_DAILY forward evidence counts from 2026-10-04 through the XSEC shadow gate (30 periods, bootstrap lower bound > 0, DD < 15%). It holds no capital: giving it capital is a new sleeve and so new total risk, which is the owner's call. 6 new tests.
+
+## 2026-10-03 E6 XSEC volatility scaling
+- volatilityScale (bookRiskPolicy.ts): min(1, 20% / realized annual vol) from the last 60 recorded equity periods; 1 with fewer than 20 returns. crossSectionalDaemon scales grossExposure for the live plan (live curve) and the shadow plan (shadow curve). Never above 1, so no ceiling moves.
+- Applied live rather than as a parallel book: it only shrinks exposure, and the release gate's sign test is scale-invariant. 5 tests; 377/377, audit 156/0/0.
