@@ -384,7 +384,10 @@ export class MarketService {
     if (beforeMs !== undefined && raw.some(c => c.time * 1000 >= beforeMs)) {
       throw new Error('History provider did not respect the chart cursor');
     }
-    const candles = closedCandles(raw, timeframe, serverTimeMs);
+    // History pages hold completed bars only. The latest page keeps the bar
+    // still forming on 1m to 1h, as the live chart always showed; 4h stays
+    // completed-only, matching the strategy's own higher-timeframe view.
+    const candles = beforeMs === undefined && !CLOSED_BARS_ONLY.has(timeframe) ? raw : closedCandles(raw, timeframe, serverTimeMs);
     return { candles, hasMore: candles.length > 0 && raw.length === limit,
       nextBeforeMs: candles.length ? candles[0].time * 1000 : null };
   }
