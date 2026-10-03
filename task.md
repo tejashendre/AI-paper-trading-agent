@@ -161,6 +161,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 
 ## 2026-10-03 Release: ship PR 11 with the strategy expansion (owner: "make the system upgrade now by shipping all the recent updates")
 - [x] Fast-forward claude/autonomy-hardening to 4b45af6 (PR 11 now carries E0-E12)
-- [ ] PR 11 CI green, then merge to main (merge deploys; auto-merge is disabled in the repo)
-- [ ] Verify deploy: commit live, scans advancing, entry freeze lifted, XSEC healthy, disk after maintenance
+- [x] PR 11 CI green (preflight included), merged as ca40909 at the tested head 4b45af6
+- [x] Deploy run 37124771711 success: live 13:08Z, freeze lifted, scans error-free, XSEC rebalanced 13:08:39Z (still SHADOW), carry shadow opened 10, ledger 362 MB -> 7.9 MB verified, disk 25% used (37 GB free)
+- [ ] Research queue full after deploy (health monitor alert): capacity 4096 -> 8192 and 12 -> 48 labels per sweep on claude/research-queue-capacity; needs owner go to deploy
 - Storage (owner, same day): last deploy log showed 49G disk, 13G used (26%), data 782M, ledger 360M; container logs capped 10m x 3; this deploy prunes all build cache, unused images, backups beyond the newest 3 and compacts the ledger
