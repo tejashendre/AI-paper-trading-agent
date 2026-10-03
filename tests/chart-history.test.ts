@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MarketService, setMarketServiceDeps } from '@/lib/market';
 import * as history from '@/lib/ui/chartHistory';
-import { klineRows, makeFakeBybit, SERVER_NOW } from './helpers/fakeBybitMarket';
+import { barOpen, klineRows, makeFakeBybit, SERVER_NOW } from './helpers/fakeBybitMarket';
 import { GET } from '@/app/api/chart/route';
 import { PortfolioManager } from '@/lib/portfolio';
 
@@ -29,6 +29,19 @@ test('chart pages go back beyond a single batch without touching live caches', a
     assert.ok(fake.calls[1].includes('&end='));
     await assert.rejects(MarketService.getChartCandlePage('1h', 1001, 'BTC'), /Invalid/);
     await assert.rejects(MarketService.getChartCandlePage('1h', 1000, 'BTC', NaN), /Invalid/);
+  } finally { restore(); }
+});
+
+test('the latest chart page keeps the forming candle, as the chart did before paging', async () => {
+  // Dropping it made the 1H chart and its CANDLE header lag up to an hour
+  // while labeling the previous bar as current. 4h stays completed-only, as before.
+  const fake = makeFakeBybit();
+  const restore = setMarketServiceDeps(fake.deps);
+  try {
+    const hourly = await MarketService.getChartCandlePage('1h', 1000, 'BTC');
+    assert.equal(hourly.candles.at(-1)!.time * 1000, barOpen('60', SERVER_NOW), 'the forming hour is missing');
+    const fourHour = await MarketService.getChartCandlePage('4h', 1000, 'BTC');
+    assert.ok(fourHour.candles.at(-1)!.time * 1000 + 4 * 3_600_000 <= SERVER_NOW, '4h shows only completed bars');
   } finally { restore(); }
 });
 
