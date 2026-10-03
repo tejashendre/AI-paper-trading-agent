@@ -158,3 +158,10 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E10 Maker-entry shadow: every 24h candidate evaluation also scores a post-only limit (fill only on a 1-tick trade-through within 30 min, misses = 0R) against an immediate taker entry; summary on the Benchmarks panel
 - [x] E11 Research backfill: npm run research:backfill and a daily off-lock refresh in the XSEC daemon; 1h/1d closed candles, funding, daily account ratio since listing; 3.2 MB for all nine (live run)
 - [x] E12 BTC_ETH_RATIO shadow baseline (2-sigma entry, 0.5 exit, 30-day window, half capital per leg) in baselines.ts, shown on the Benchmarks panel; flat over the last 37 days (no 2-sigma event)
+
+## 2026-10-03 Release: ship PR 11 with the strategy expansion (owner: "make the system upgrade now by shipping all the recent updates")
+- [x] Fast-forward claude/autonomy-hardening to 4b45af6 (PR 11 now carries E0-E12)
+- [x] PR 11 CI green (preflight included), merged as ca40909 at the tested head 4b45af6
+- [x] Deploy run 37124771711 success: live 13:08Z, freeze lifted, scans error-free, XSEC rebalanced 13:08:39Z (still SHADOW), carry shadow opened 10, ledger 362 MB -> 7.9 MB verified, disk 25% used (37 GB free)
+- [ ] Research queue full after deploy (health monitor alert): capacity 4096 -> 8192 and 12 -> 48 labels per sweep on claude/research-queue-capacity; needs owner go to deploy
+- Storage (owner, same day): last deploy log showed 49G disk, 13G used (26%), data 782M, ledger 360M; container logs capped 10m x 3; this deploy prunes all build cache, unused images, backups beyond the newest 3 and compacts the ledger

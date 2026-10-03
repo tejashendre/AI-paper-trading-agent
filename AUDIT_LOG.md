@@ -263,3 +263,8 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 strategy expansion complete (not deployed)
 - Slices E0-E12 committed on claude/strategy-expansion (stacked on PR 11's branch). Final: 395/395 tests, audit 156/0/0, tsc, lint, next build, diff check clean; no em dashes in added lines.
 - Not merged, not deployed: merging to main deploys. Scheduled health monitor only runs once on main.
+
+## 2026-10-03 Release ca40909 deployed (owner-authorized)
+- PR 11 (with E0-E12) merged at the tested head 4b45af6; deploy run 37124771711 succeeded. Ledger compaction: verified full copy in data/deploy-backups/2026-10-03T13-03-03Z-ca40909.../execution-ledger, then 362,012,307 -> 7,873,728 bytes, chain valid. Cleanup removed deploy backups older than the newest 3, unused images and all build cache; disk after 13G of 49G (25%).
+- Live after release: entry freeze lifted, scans without errors, XSEC rebalanced 13:08:39Z for the first time since 2026-10-01 and stays SHADOW, carry shadow opened 10 hypothetical positions, /api/benchmarks serving.
+- Health monitor's first live alert: research queue at 4096/4096 dropping new baseline observations (about 200 arrivals/h held 24h; 12 labels a sweep hit their cap every scan). Fix on claude/research-queue-capacity: MAX_PENDING 8192, 48 labels per sweep inside the existing 45 s deadline. 396/396. Not yet deployed.

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MemoryRedis } from "./helpers/memoryRedis";
 import { setRedisClient } from "@/lib/redis";
-import { OPPORTUNITY_KEYS, OpportunityJournal } from "@/lib/trading/opportunityJournal";
+import { MAX_EVALUATIONS_PER_SWEEP, MAX_PENDING, OPPORTUNITY_KEYS, OpportunityJournal } from "@/lib/trading/opportunityJournal";
 
 const baseline = (asset: string, timestamp: string, price: number) => ({
   asset, timestamp, action: "HOLD", decisionState: "WATCH_LONG", price, stopLoss: price * 0.95, takeProfit: price * 1.1,
@@ -36,17 +36,23 @@ describe("opportunity queue capacity", () => {
     }
   });
 
+  it("capacity holds a full day of observations and labels keep pace with arrivals", () => {
+    const arrivalsPerHour = 200; // production, 2026-10-03
+    assert.ok(MAX_PENDING >= arrivalsPerHour * 24 * 1.5, "a record must survive until its 24h label");
+    assert.ok(MAX_EVALUATIONS_PER_SWEEP * 60 >= arrivalsPerHour * 4 * 1.5, "one sweep per minute must clear four labels per record");
+  });
+
   it("a strategy candidate displaces the oldest baseline record instead of being refused", async () => {
     const memory = new MemoryRedis();
     setRedisClient(memory);
     try {
-      const rows = Array.from({ length: 4096 }, (_, i) => JSON.stringify({ id: `base-${i}`, asset: "BTC", direction: "LONG",
+      const rows = Array.from({ length: MAX_PENDING }, (_, i) => JSON.stringify({ id: `base-${i}`, asset: "BTC", direction: "LONG",
         timestamp: new Date(Date.UTC(2026, 9, 1) + i * 1000).toISOString(), entryPrice: 100, setupTags: [], evaluatedHorizons: [] }));
       for (const row of rows) await memory.lpush(OPPORTUNITY_KEYS.pending, row);
       await OpportunityJournal.recordMany([{ asset: "GOLD", candidateId: "cand-1", family: "RANGE_REVERSION", configHash: "c",
         timestamp: new Date().toISOString(), action: "WATCH", decisionState: "WATCH_LONG", price: 100, stopLoss: 95, takeProfit: 110, finalConviction: 50 }]);
       const queue = pending(memory);
-      assert.equal(queue.length, 4096);
+      assert.equal(queue.length, MAX_PENDING);
       assert.ok(queue.some((row) => row.candidateId === "cand-1"), "the candidate was refused");
       assert.ok(!queue.some((row) => row.id === "base-0"), "the oldest baseline record was not the one displaced");
     } finally {

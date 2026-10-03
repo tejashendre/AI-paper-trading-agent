@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MemoryRedis } from './helpers/memoryRedis';
 import { setRedisClient } from '@/lib/redis';
-import { OpportunityJournal } from '@/lib/trading/opportunityJournal';
+import { MAX_PENDING, OpportunityJournal } from '@/lib/trading/opportunityJournal';
 import { TRADING_STRATEGY_VERSION } from '@/lib/trading/executionLedger';
 import { storeResearchOutcome, reviewRegisteredCandidates } from '@/lib/research/researchLoop';
 import { registerCandidate } from '@/lib/research/candidateRegistry';
@@ -22,10 +22,11 @@ test('a full day of all-asset research preserves the oldest unfinished 24-hour l
     assert.equal(pending.length,900);
     assert.ok(pending.some(row=>row.candidateId==='BTC-0'), 'oldest mature label was discarded');
     assert.equal((await OpportunityJournal.getRecent(1000)).length,500,'display history stays bounded');
-    await OpportunityJournal.recordMany(Array.from({length:4200},(_,i)=>({asset:'BTC',candidateId:`capacity-${i}`,
+    // 900 held plus enough new candidates to overflow the cap by 1004.
+    await OpportunityJournal.recordMany(Array.from({length:MAX_PENDING-900+1004},(_,i)=>({asset:'BTC',candidateId:`capacity-${i}`,
       timestamp:new Date().toISOString(),action:'WATCH',decisionState:'WATCH_LONG',price:100})));
     const bounded=memory.listRows(`opportunity:${TRADING_STRATEGY_VERSION}:v3:pending`).map(raw=>JSON.parse(raw));
-    assert.equal(bounded.length,4096);
+    assert.equal(bounded.length,MAX_PENDING);
     assert.ok(bounded.some(row=>row.candidateId==='BTC-0'));
     const status=await memory.get<any>(`opportunity:${TRADING_STRATEGY_VERSION}:v3:queueStatus`);
     assert.equal(status.status,'CAPACITY_LIMIT');
