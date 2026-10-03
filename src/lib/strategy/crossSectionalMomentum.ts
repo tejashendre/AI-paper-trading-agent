@@ -476,3 +476,51 @@ export function decideBook(input: {
   const targets = buildTargetBook(ranked, input.currentWeights, config);
   return planRebalance(input.currentWeights, targets, config, ranked.length);
 }
+
+/**
+ * Carry with momentum agreement, a SHADOW research variant. Naive crypto carry
+ * (long the lowest funding, short the highest) lost 13.5% over 29 weeks on
+ * Bybit data because high-funding coins kept trending up (2026-10-03 study).
+ * So a name is held only when carry and 72h momentum agree: long low funding
+ * with positive momentum, short high funding with negative momentum. Sides
+ * stay equal in count, so the book is dollar-neutral; with no agreement it is flat.
+ */
+export function buildCarryMomentumBook(
+  momentumBySymbol: Map<string, number>,
+  fundingBySymbol: Map<string, number>,
+  config: StrategyConfig = DEFAULT_STRATEGY
+): TargetPosition[] {
+  const names = [...momentumBySymbol.keys()].filter((s) => Number.isFinite(fundingBySymbol.get(s)) && Number.isFinite(momentumBySymbol.get(s)));
+  const k = Math.max(1, Math.min(config.bookSize, Math.floor(names.length / 3)));
+  if (names.length < 3 * k) return [];
+  const byFunding = [...names].sort((a, b) => fundingBySymbol.get(a)! - fundingBySymbol.get(b)!);
+  const pool = Math.floor(byFunding.length / 3);
+  const longs = byFunding.slice(0, pool).filter((s) => momentumBySymbol.get(s)! > 0).slice(0, k);
+  const shorts = byFunding.slice(-pool).reverse().filter((s) => momentumBySymbol.get(s)! < 0).slice(0, k);
+  const n = Math.min(longs.length, shorts.length);
+  if (n === 0) return [];
+  const perName = Math.min(config.grossExposure / 2 / n, config.maxWeightPerName);
+  const ranks = new Map(rankByMomentum(momentumBySymbol).map((r) => [r.symbol, r.rank]));
+  const target = (symbol: string, sign: 1 | -1): TargetPosition => ({
+    symbol, weight: sign * perName, side: sign > 0 ? "LONG" : "SHORT", momentum: momentumBySymbol.get(symbol)!, rank: ranks.get(symbol)!,
+  });
+  return [...longs.slice(0, n).map((s) => target(s, 1)), ...shorts.slice(0, n).map((s) => target(s, -1))];
+}
+
+/** Like planRebalance, except an empty target closes everything: no agreement means flat. */
+export function planCarryRebalance(
+  currentWeights: Map<string, number>,
+  targets: TargetPosition[],
+  config: StrategyConfig = DEFAULT_STRATEGY,
+  universeSize = 0
+): BookPlan {
+  if (targets.length > 0 || currentWeights.size === 0) return planRebalance(currentWeights, targets, config, universeSize);
+  const orders = [...currentWeights].filter(([, from]) => Math.abs(from) > 1e-9).map<RebalanceOrder>(([symbol, from]) => ({
+    symbol, weightDelta: -from, action: "CLOSE", fromWeight: from, toWeight: 0,
+  }));
+  return {
+    strategyVersion: CROSS_SECTIONAL_STRATEGY_VERSION, targets, orders, universeSize, skipped: orders.length === 0,
+    turnover: orders.reduce((sum, order) => sum + Math.abs(order.weightDelta), 0),
+    reason: "Carry and momentum agree on no name; the variant goes flat.",
+  };
+}

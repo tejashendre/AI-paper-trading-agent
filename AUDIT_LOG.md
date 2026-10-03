@@ -243,3 +243,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E8 session-open breakout family
 - evaluateStrategyFamilies now builds a list of family specs (trend or range by ADX, plus SESSION_BREAKOUT) and finalizes each with the shared cost model and 1.35 net R floor. Existing family config hashes verified unchanged (BTC trend 9c09834a..., OIL range e68a3854...), so their evidence carries over.
 - SESSION_BREAKOUT registers SHADOW cohorts for the six TradFi assets; it trades only via promotion (controlled probe). Two count tests updated deliberately (18 to 24 cohorts; 3 fresh EURUSD cohorts). 382/382.
+
+## 2026-10-03 E9 carry with momentum (shadow)
+- buildCarryMomentumBook: long from the lowest-funding third only with positive 72h momentum, short from the highest-funding third only with negative momentum, equal counts, gross <= 1; planCarryRebalance flattens when nothing agrees. Runs on its own capital-free book each XSEC rebalance; /api/book carryShadow with evaluateShadowEvidence.
+- Standalone carry not built (tested -13.5%). FX carry not buildable (Bybit FX funding about zero). 4 tests; 386/386.

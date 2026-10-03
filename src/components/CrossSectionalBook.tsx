@@ -89,6 +89,11 @@ interface BookResponse {
     hypotheticalRealizedPnlUsdt: number;
     hypotheticalUnrealizedPnlUsdt: number;
   } | null;
+  carryShadow?: {
+    openPositions: number; feesUsdt: number; fundingUsdt: number;
+    hypotheticalRealizedPnlUsdt: number; hypotheticalUnrealizedPnlUsdt: number;
+    evidence: { passed: boolean; metrics: { periods: number } };
+  } | null;
   error?: string;
   releaseEvidence?: { passed: boolean; reasons: string[]; metrics: { periods: number; maxDrawdownPercent: number;
     meanReturn95: { low: number; high: number } | null } };
@@ -227,6 +232,21 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
             <span>Fills: <b className={textPrimary}>{data.shadow.fills}</b></span>
             <span>Fees and funding: <b className={textPrimary}>${(data.shadow.feesUsdt + data.shadow.fundingUsdt).toFixed(2)}</b></span>
             <span>Hypothetical result: <b className={textPrimary}>{money(data.shadow.hypotheticalRealizedPnlUsdt + data.shadow.hypotheticalUnrealizedPnlUsdt)}</b></span>
+          </div>
+        </div>
+      )}
+
+      {data.carryShadow && (
+        <div className={`mt-2 p-2.5 rounded-lg border border-dashed ${bgSub}`}>
+          <div className={`text-[9px] font-bold font-mono uppercase ${textMuted}`}>Research variant: carry with momentum (no capital)</div>
+          <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>
+            Long low-funding names only when their 72h momentum is up, short high-funding names only when it is down. Hypothetical, not profit.
+          </p>
+          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1 mt-1.5 text-[8px] font-mono ${textMuted}`}>
+            <span>Positions: <b className={textPrimary}>{data.carryShadow.openPositions}</b></span>
+            <span>Evidence periods: <b className={textPrimary}>{data.carryShadow.evidence.metrics.periods}/30</b></span>
+            <span>Fees and funding: <b className={textPrimary}>${(data.carryShadow.feesUsdt + data.carryShadow.fundingUsdt).toFixed(2)}</b></span>
+            <span>Hypothetical result: <b className={textPrimary}>{money(data.carryShadow.hypotheticalRealizedPnlUsdt + data.carryShadow.hypotheticalUnrealizedPnlUsdt)}</b></span>
           </div>
         </div>
       )}

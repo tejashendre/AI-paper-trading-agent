@@ -154,7 +154,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E6 XSEC volatility scaling, down-only: gross exposure x min(1, 20% / realized vol of the book's last 60 periods), live and shadow books each from their own curve
 - [x] E7 TREND_DAILY shadow (src/lib/research/baselines.ts): blended 20/60/120 signs, 20% vol target, forward evidence from 2026-10-04 through evaluateShadowEvidence; no capital (a new sleeve would add risk: owner decision)
 - [x] E8 SESSION_BREAKOUT shadow family on the six TradFi perps (London 08:00, COMEX 08:20/08:25, NYMEX 09:00 local): first close outside the opening hour within 3h; stop range midpoint, target 2 ranges. Crowd-fade entry family not built: E4 filter covers the point and ratio history is not replayable
-- [ ] E9 Carry-with-momentum XSEC shadow variant
+- [x] E9 Carry-with-momentum shadow book (xsec:carryShadow:*), every rebalance in every risk state; goes flat without agreement; shown under the XSEC panel with its evidence count
 - [ ] E10 Maker-entry shadow comparison with conservative fill rule
 - [ ] E11 Historical backfill command for research
 - [ ] E12 BTC/ETH ratio mean-reversion shadow tracker

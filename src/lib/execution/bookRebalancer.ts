@@ -505,6 +505,9 @@ export async function settleBookFunding(
 /** The capital-free book that keeps forward evidence while the live book is halted. */
 export const SHADOW_BOOK_PORTFOLIO_KEY = "xsec:shadow:portfolio";
 export const SHADOW_BOOK_EQUITY_CURVE_KEY = "xsec:shadow:equityCurve";
+/** Carry-with-momentum research variant: capital-free, runs in every risk state. */
+export const CARRY_SHADOW_PORTFOLIO_KEY = "xsec:carryShadow:portfolio";
+export const CARRY_SHADOW_EQUITY_CURVE_KEY = "xsec:carryShadow:equityCurve";
 /** When the last complete rebalance pass finished (epoch ms). */
 export const LAST_REBALANCE_KEY = "xsec:lastRebalanceAt";
 /** The book rebalances every holdHours; a pass later than this grace is a fault. */
