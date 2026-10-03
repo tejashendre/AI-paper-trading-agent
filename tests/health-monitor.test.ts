@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// @ts-expect-error plain ESM script without type declarations
 import { evaluateHealth, tradfiWeekend } from "../scripts/health-monitor.mjs";
 
 const NOW = Date.parse("2026-10-06T12:00:00Z"); // a Tuesday
