@@ -136,3 +136,9 @@ Out of scope: raising risk ceilings, leverage or drawdown breakers; account rese
 - [x] Strategy audit 156/0/0: research-quality check now verifies the gate applies its rule on the synthetic fixture (f58b3bb); 285/285 tests; tsc, lint, build, diff-check clean
 
 </details>
+
+## 2026-10-03 Release readiness
+- [x] Post-Codex review: FX fee source verified; fixed forming-candle chart regression, stopped-services failure path, stale-lock compaction block (fc07b9a, e542025, 8e44f4d)
+- [x] Automated verified ledger recovery copy before compaction (43a1d38, 0554741); 340/340, audit 156/0/0, build clean
+- [ ] Merge PR 11 to main = production deploy: waiting for Tejas's explicit approval (optional off-server ledger copy first)
+
