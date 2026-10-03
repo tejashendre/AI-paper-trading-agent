@@ -357,6 +357,31 @@ export function estimateCarryCostUsd(input: {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * Holding period assumed when projecting funding for admission: the 90th
+ * percentile of completed swing holds (44h on 2026-10-03), rounded up.
+ */
+export const PROJECTED_HOLD_HOURS = 48;
+const PROJECTED_FUNDING_FLOOR_RATE = 0.0001;
+
+/**
+ * Funding a new position is expected to pay over the projected hold, for
+ * admission only. Sign-aware: the side that pays is charged its full current
+ * rate; the side that receives is never credited and still pays the 0.01%
+ * floor, since rates can turn. Realized funding is booked from settlements.
+ */
+export function projectedFundingCostUsdt(input: {
+  notionalUsd: number;
+  direction: OpenPosition["direction"];
+  fundingRate?: number;
+  fundingIntervalMinutes: number;
+}): number {
+  const rate = Number(input.fundingRate);
+  const paidRate = Number.isFinite(rate) ? (input.direction === "LONG" ? rate : -rate) : 0;
+  const settlements = (PROJECTED_HOLD_HOURS * 60) / input.fundingIntervalMinutes;
+  return input.notionalUsd * Math.max(paidRate, PROJECTED_FUNDING_FLOOR_RATE) * settlements;
+}
+
 // Perpetual funding, settled at the venue's actual boundaries. Pure: callers
 // supply settlements, intervals and the quantity held, and persist results.
 // ---------------------------------------------------------------------------

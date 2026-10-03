@@ -148,7 +148,7 @@ Intent (Tejas): build every recommendation from docs/RESEARCH_IDEAS_2026-10-03.m
 - [x] E0 Loss-streak lock found live (4 small full stops on 2026-09-23..10-02 blocked every entry with no release path): 72h cool-off, then one probation position at a time
 - [x] E1 Health alerts: scripts/health-monitor.mjs + .github/workflows/health-monitor.yml (every 30 min, runs from main after merge); also alerts on a risk lock (cost-passing candidates all vetoed, no fill for 72h)
 - [ ] E2 Benchmarks: buy-and-hold and daily-trend baseline next to the bot
-- [ ] E3 Funding-aware holding cost in admission (sign-aware, multi-day)
+- [x] E3 Funding-aware holding cost in admission: projectedFundingCostUsdt, 48h hold (p90 of real holds 44h), payer charged full rate, receiver never credited (0.01% floor)
 - [ ] E4 Crowding filter: account long/short ratio + funding extremes block the crowded side
 - [ ] E5 Liquidation recording from Bybit allLiquidation stream
 - [ ] E6 Volatility scaling (down-only) for the XSEC book
