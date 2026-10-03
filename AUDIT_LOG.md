@@ -1,5 +1,13 @@
 # Audit log
 
+## 2026-10-03 Oracle VPS safe cleanup completed
+- Owner authorized removal without hampering either project. Seven path/archive guard checks passed; all nine unique snapshots among 21 old temporary Redis restore files were losslessly compressed, verified before deletion and independently verified afterward. Deleted redundant temporary copies, two regenerable APT metadata files under package-manager locks, and OS journals through `--vacuum-time=14d`; all volumes, financial/learning state and existing backups preserved.
+- Reclaimed 1,999,093,760 bytes of artifacts, about 2.00 GB (1.86 GiB); whole-disk usage fell 1,966,981,120 bytes while services continued writing. At 20:42:25 IST: disk 10.19 GiB used, 38.07 GiB available, 22%. Docker images remain active and 1.231 GB cache is non-reclaimable. Detailed accounting and archive location in docs/PR12_DEPLOYMENT_STORAGE_2026-10-03.md.
+- All seven containers retained original start times; n8n readiness HTTP 200, PostgreSQL readiness exit 0, bot monitor exit 0, scan ERROR 0, book not overdue and research rejectedNew 0. Ledger valid across 57 files and 14,566 events; 88 AI trades, 17 manual trades, manual BTC and nine GOOD feeds preserved. No code change, merge, deployment, database-volume deletion or restart; record only on the separate documentation branch.
+
+## 2026-10-03 Oracle VPS safe cleanup intake
+Owner authorized deleting cloud storage that does not hamper the bot or other projects. Inspect current reclaimable Docker artifacts, package download cache, temporary files and old operating-system journals; remove only verified disposable artifacts. Preserve every running service/image, database volume, account/trade/learning record and recovery copy. Record measured disk reclamation and verify both Compose projects plus bot scans, book, ledger and history after cleanup. No merge, deployment, service restart or trading-code change is in scope.
+
 ## 2026-10-03 PR 12 deployed and storage verified
 - Owner approved "Deploy PR12 and report storage". Merged only tested head bda2b7dcae7a2b7fd1b6f5fb0c1b8b80588ca17c as 732454394a39c178dbf2fae5970223731fe91525; deploy 37126563513 succeeded, 396/396 tests, strategy audit 156/0/0 and VPS live audit 175/0/0.
 - Final checkpoint 14:09:21 UTC, over 30 minutes after release verification: scan 3070 age 49.29 s, ERROR 0, no OPERATOR_FREEZE, queue 4123/8192 with rejectedNew 0, book not overdue, monitor exit 0. Runtime source/image parity and ledger valid; 88 AI and 17 manual trades, manual BTC and recovery copies preserved. Two temporary freshness probe stops traced to subsecond clock differences; observer waits 1 s before the same assertions, without changing production or thresholds.
