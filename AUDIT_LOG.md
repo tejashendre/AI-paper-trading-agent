@@ -1,5 +1,13 @@
 # Audit log
 
+## 2026-10-03 PR 12 deployed and storage verified
+- Owner approved "Deploy PR12 and report storage". Merged only tested head bda2b7dcae7a2b7fd1b6f5fb0c1b8b80588ca17c as 732454394a39c178dbf2fae5970223731fe91525; deploy 37126563513 succeeded, 396/396 tests, strategy audit 156/0/0 and VPS live audit 175/0/0.
+- Final checkpoint 14:09:21 UTC, over 30 minutes after release verification: scan 3070 age 49.29 s, ERROR 0, no OPERATOR_FREEZE, queue 4123/8192 with rejectedNew 0, book not overdue, monitor exit 0. Runtime source/image parity and ledger valid; 88 AI and 17 manual trades, manual BTC and recovery copies preserved. Two temporary freshness probe stops traced to subsecond clock differences; observer waits 1 s before the same assertions, without changing production or thresholds.
+- Storage: 50 GiB disk; usable root 48.28 GiB, used 12.01 GiB, available 36.25 GiB (25%). Bot image 745 MB shared by three app containers; n8n images about 2.88 GB; active Docker cache remains 1.231 GB after cleanup. Detailed evidence in docs/PR12_DEPLOYMENT_STORAGE_2026-10-03.md; documentation committed and pushed only on codex/pr12-deploy-verification-2026-10-03, no additional PR or deployment.
+
+## 2026-10-03 PR 12 deployment and storage intake
+Owner explicitly approved "Deploy PR12 and report storage" after the storage/deployment scope clarification. Read CODEX_DEPLOY_PR12_2026-10-03.md, parent rules and current release state. PR 12 tested head bda2b7dcae7a2b7fd1b6f5fb0c1b8b80588ca17c is mergeable with successful CI and VPS preflight 37125878277; merged only that head as 732454394a39c178dbf2fae5970223731fe91525. Observe main deploy 37126563513, then verify public status, book, monitor and disk; preserve accounts and history, and push only this documentation branch.
+
 ## 2026-10-02 final release intake
 Owner approved final upload/merge conditional on fixes, then requested completion in real time. Resolve official FX public fees first, preserving old recorded fees, financial history and immutable research cohorts. Public Bybit TradFi guide includes forex and applies its published discounted fee table to every TradFi perpetual except Pre-IPO; the official G9 announcement gives exact VIP0 maker 0 and taker 0.0275%. These sources establish a paper baseline, not an authenticated account rate. Test version changes and old shadow observations before applying the new baseline. Live verification follows release; the 14-day/30-independent-position promotion checks remain unchanged.
 
