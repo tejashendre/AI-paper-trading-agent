@@ -138,4 +138,3 @@ describe("ledger compaction", () => {
     assert.equal(ExecutionLedger.verify(dir).valid, true);
   });
 });
-
