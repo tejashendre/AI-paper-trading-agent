@@ -17,7 +17,7 @@ import { isEventBlackout } from "../lib/trading/eventCalendar";
 import { PortfolioGuards } from "../lib/trading/portfolioGuards";
 import { riskMarksReady, updateMarkedRiskStats } from '../lib/trading/markedEquity';
 import { FeedHealthSummary } from "../lib/data/feedHealthSummary";
-import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile } from "../lib/trading/executionCostModel";
+import { buildPaperExecutionPlan, fitPaperExecutionPlanToRiskBudget, getExecutionCostProfile, projectedFundingCostUsdt } from "../lib/trading/executionCostModel";
 import { capacityNotionalCap, evaluateFillCapacity } from "../lib/execution/liquidityCost";
 import { evaluatePortfolioRiskBudget } from "../lib/trading/portfolioRiskBudget";
 import { ExecutionLedger, TRADING_STRATEGY_VERSION } from "../lib/trading/executionLedger";
@@ -993,13 +993,13 @@ async function runEntryScan() {
         }
         const finalRequiredMarginUsd = executionPlan.entry.notionalUsd / admission.leverage;
         const minimumExecutionRewardRisk = effectiveEntryMode === "CONTROLLED_PROBE" ? 1.5 : 1.35;
-        // Projected carry for admission only. Assumption: the position pays
-        // the larger of the current funding rate's magnitude and 0.01% at
-        // every boundary for one day. Realized funding is booked from the
-        // venue's published settlements, never from this estimate.
-        const projectedCarryUsdt = executionPlan.entry.notionalUsd *
-          Math.max(Math.abs(Number(swingSignal.fundingRate ?? 0)), 0.0001) *
-          ((24 * 60) / metadata.fundingIntervalMinutes);
+        // Projected carry for admission only, sign-aware over a multi-day hold.
+        const projectedCarryUsdt = projectedFundingCostUsdt({
+          notionalUsd: executionPlan.entry.notionalUsd,
+          direction: isShort ? "SHORT" : "LONG",
+          fundingRate: swingSignal.fundingRate,
+          fundingIntervalMinutes: metadata.fundingIntervalMinutes,
+        });
         const rewardAfterCarry = executionPlan.netRewardUsd - projectedCarryUsdt;
         const rewardRiskAfterCarry = rewardAfterCarry / (executionPlan.netLossUsd + projectedCarryUsdt);
         const executionFailure = rewardAfterCarry <= 0

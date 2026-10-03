@@ -218,3 +218,7 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-03 E1 health alerts
 - scripts/health-monitor.mjs reads /api/user/status and /api/book with the public SPECTATOR token: stale scan (>5 min), scan errors, quiet ledger (>10 min), research queue drops, stale quotes (>10 min; FX and commodities exempt Fri 21:00 to Sun 22:00 UTC), overdue XSEC rebalance, and a risk lock (an asset with 20+ cost-passing candidates all risk-vetoed while the bot has had no fill for 72h).
 - Workflow runs every 30 min once on main; a failed run emails the owner. Live run today: healthy (GOLD filled 39h ago); it would have flagged the E0 lock after 72h. 6/6 tests.
+
+## 2026-10-03 E3 funding tilt
+- Admission charged one day of |funding| to both sides. Now projectedFundingCostUsdt charges the paying side its full current rate over 48h (p90 of 49 real holds was 44h, median 17h) and the receiving side only the 0.01% floor, never a credit. Oil longs (receivers) get easier, gold longs (payers) stricter.
+- Replay already books real settlements. tests/funding-tilt.test.ts 4/4.
