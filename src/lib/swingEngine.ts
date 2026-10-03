@@ -15,8 +15,9 @@ import { getMarketSessionState } from "./trading/marketSession";
 import { TRADING_STRATEGY_VERSION } from "./trading/executionLedger";
 import { appendResearchEvidence, DEFAULT_RESEARCH_ARCHIVE_BYTES } from "./research/researchArchive";
 import path from "node:path";
+import { BREAKOUT_TARGET_RANGES, BREAKOUT_WINDOW_MS, evaluateSessionBreakout, OPENING_RANGE_MS, SESSION_OPENS } from "./strategy/sessionOpen";
 
-export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION";
+export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION" | "SESSION_BREAKOUT";
 export interface StrategyCandidate {
   candidateId: string;
   asset: ConfiguredAsset;
@@ -69,12 +70,16 @@ export function strategyAdx(candles: Candle[], period = 14): number {
 }
 
 export function strategyFamilyConfigHash(family: StrategyFamily, asset: ConfiguredAsset): string {
+  // Session parameters are added only for the new family, so the existing
+  // families keep their hashes and their accumulated evidence.
+  const session = family === "SESSION_BREAKOUT" ? { session: SESSION_OPENS[asset] ?? null, openingRangeMs: OPENING_RANGE_MS,
+    breakoutWindowMs: BREAKOUT_WINDOW_MS, targetRanges: BREAKOUT_TARGET_RANGES, stop: "RANGE_MIDPOINT" } : {};
   return createHash("sha256").update(JSON.stringify({
     family, riskClass: CONFIGURED_INSTRUMENTS[asset].riskClass,
     data: STRATEGY_DATA_SCHEMA_VERSION, cost: EXECUTION_COST_MODEL_VERSION,
     adxPeriod: 14, trendMin: 25, rangeMax: 20, bbPeriod: 20, bbWidth: 2,
     rangeStopAtr: 0.5, trendStopAtr: SWING_STOP_ATR_MULTIPLE, trendTargetR: SWING_TARGET_R_MULTIPLE,
-    minimumNetR: 1.35,
+    minimumNetR: 1.35, ...session,
   })).digest("hex");
 }
 
@@ -94,27 +99,41 @@ export function evaluateStrategyFamilies(input: StrategyFamilyInput): StrategyCa
   if (!Number.isFinite(adx) || !(atr > 0)) return [];
   const entry = input.quote.price;
   const bar = m15.at(-1)!;
-  let family: StrategyFamily, direction: "LONG" | "SHORT", stop: number, target: number;
+  const specs: FamilySpec[] = [];
   if (adx >= 25) {
     const ema1 = EMA(h1.map(c => c.close), 20).at(-1)!;
     const ema4 = EMA(h4.map(c => c.close), 20).at(-1)!;
     const long = h1.at(-1)!.close > ema1 && h4.at(-1)!.close > ema4 && bar.close > bar.open;
     const short = h1.at(-1)!.close < ema1 && h4.at(-1)!.close < ema4 && bar.close < bar.open;
-    if (!long && !short) return [];
-    family = "TREND_PULLBACK"; direction = long ? "LONG" : "SHORT";
-    const sign = long ? 1 : -1;
-    stop = entry - sign * atr * SWING_STOP_ATR_MULTIPLE;
-    target = entry + sign * atr * SWING_STOP_ATR_MULTIPLE * SWING_TARGET_R_MULTIPLE;
+    if (long || short) {
+      const sign = long ? 1 : -1;
+      specs.push({ family: "TREND_PULLBACK", direction: long ? "LONG" : "SHORT",
+        stop: entry - sign * atr * SWING_STOP_ATR_MULTIPLE,
+        target: entry + sign * atr * SWING_STOP_ATR_MULTIPLE * SWING_TARGET_R_MULTIPLE,
+        reason: `Closed-bar ADX(14) ${adx.toFixed(1)}; TREND_PULLBACK hypothesis` });
+    }
   } else if (adx < 20) {
     const bands = BollingerBands(h1.map(c => c.close)).at(-1)!;
     const setup = h1.at(-1)!;
     const long = setup.low <= bands.lower && bar.close > bands.lower && bar.close < bands.middle;
     const short = setup.high >= bands.upper && bar.close < bands.upper && bar.close > bands.middle;
-    if (!long && !short) return [];
-    family = "RANGE_REVERSION"; direction = long ? "LONG" : "SHORT";
-    stop = long ? Math.min(setup.low, bar.low) - 0.5 * atr : Math.max(setup.high, bar.high) + 0.5 * atr;
-    target = bands.middle;
-  } else return [];
+    if (long || short) {
+      specs.push({ family: "RANGE_REVERSION", direction: long ? "LONG" : "SHORT",
+        stop: long ? Math.min(setup.low, bar.low) - 0.5 * atr : Math.max(setup.high, bar.high) + 0.5 * atr,
+        target: bands.middle, reason: `Closed-bar ADX(14) ${adx.toFixed(1)}; RANGE_REVERSION hypothesis` });
+    }
+  }
+  const breakout = evaluateSessionBreakout(input.instrument.asset, m15, input.nowMs);
+  if (breakout) specs.push({ family: "SESSION_BREAKOUT", direction: breakout.direction, stop: breakout.stop,
+    target: breakout.target, reason: `${breakout.reason}; SESSION_BREAKOUT hypothesis` });
+  return specs.flatMap(spec => finalizeFamilyCandidate(input, spec, bar, entry));
+}
+
+interface FamilySpec { family: StrategyFamily; direction: "LONG" | "SHORT"; stop: number; target: number; reason: string }
+
+/** Shared cost model, net reward/risk floor and identity for every family. */
+function finalizeFamilyCandidate(input: StrategyFamilyInput, spec: FamilySpec, bar: Candle, entry: number): StrategyCandidate[] {
+  const { family, direction, stop, target } = spec;
   const sign = direction === "LONG" ? 1 : -1;
   if (!(stop > 0) || sign * (entry - stop) <= 0 || sign * (target - entry) <= 0) return [];
   const mode = getAssetMode(input.instrument.asset);
@@ -143,8 +162,8 @@ export function evaluateStrategyFamilies(input: StrategyFamilyInput): StrategyCa
   return [{ candidateId, asset: input.instrument.asset, instrument: input.instrument, family,
     regime: family === "TREND_PULLBACK" ? "TREND" : "RANGE", direction, entryPrice: entry,
     stopPrice: stop, targetPrice: target, initialRiskUsdt: risk, featureCutoffMs, configHash,
-    mode: family === "RANGE_REVERSION" ? "SHADOW" : "BASELINE", netRewardRisk,
-    reasons: [`Closed-bar ADX(14) ${adx.toFixed(1)}; ${family} hypothesis`,
+    mode: family === "TREND_PULLBACK" ? "BASELINE" : "SHADOW", netRewardRisk,
+    reasons: [spec.reason,
       `Net reward/risk ${netRewardRisk.toFixed(2)} after modeled execution costs`,
       "Order flow is unavailable to this pure evaluator; no spot-flow substitute",
       ...session.warnings] }];

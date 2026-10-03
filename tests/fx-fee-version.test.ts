@@ -124,7 +124,7 @@ test('new FX research cohorts preserve old definitions and keep old fee evidence
     const registry = await getCandidateRegistry();
     assert.equal(registry.find(d=>d.candidateId===old.candidateId)?.costModelVersion, old.costModelVersion);
     const fresh = registry.filter(d=>d.instrumentVersions.includes(old.instrumentVersions[0]) && d.candidateId!==old.candidateId);
-    assert.equal(fresh.length,2);
+    assert.equal(fresh.length,3, 'trend, range and session breakout');
     assert.ok(fresh.every(d=>d.costModelVersion!==old.costModelVersion));
     const status = await reviewRegisteredCandidates();
     assert.ok(status.candidates.find(d=>d.candidateId===old.candidateId)?.reasons.includes('UNVERIFIED_FEES'));
