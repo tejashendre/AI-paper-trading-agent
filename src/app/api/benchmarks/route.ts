@@ -6,6 +6,7 @@ import { getAssetSpec } from "@/lib/trading/assetSpecs";
 import { SUPPORTED_ASSETS } from "@/lib/market";
 import { fetchTickers } from "@/lib/data/perpUniverse";
 import { bookEquityUsd, loadBookPortfolio } from "@/lib/execution/bookRebalancer";
+import { loadMakerShadowSummary } from "@/lib/research/makerShadow";
 import {
   BASELINES_VERSION, DAY_MS, loadDailySeries, simulateBaselines, TREND_REGISTERED_AT_MS, trendForwardEvidence,
 } from "@/lib/research/baselines";
@@ -47,10 +48,11 @@ export async function GET() {
       return result;
     })();
 
-    const [swing, book, prices] = await Promise.all([
+    const [swing, book, prices, makerEntryShadow] = await Promise.all([
       PortfolioManager.getPortfolio("ai"),
       loadBookPortfolio(),
       fetchTickers().catch(() => new Map()),
+      loadMakerShadowSummary(),
     ]);
     const swingEquity = markedEquity(swing);
     const bookEquity = bookEquityUsd(book, prices);
@@ -60,6 +62,7 @@ export async function GET() {
         swingReturnPercent: swing.initialCapital > 0 ? (swingEquity / swing.initialCapital - 1) * 100 : null,
         crossSectionalReturnPercent: book.initialCapitalUsd > 0 ? (bookEquity / book.initialCapitalUsd - 1) * 100 : null,
       },
+      makerEntryShadow,
       note: "Baselines are hypothetical, recomputed from Bybit daily closes and funding, net of taker fees. They hold no capital.",
     });
   } catch (error) {

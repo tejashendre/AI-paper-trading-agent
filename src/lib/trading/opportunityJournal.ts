@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { getRedis } from "@/lib/redis";
 import { MarketService, SUPPORTED_ASSETS } from "@/lib/market";
 import { Candle, Timeframe } from "@/lib/types";
-import { amountFromNotionalUsd, calculatePnlUsd, feeScheduleFor, PRIOR_FX_FEE_SCHEDULE } from "@/lib/trading/assetSpecs";
+import { amountFromNotionalUsd, calculatePnlUsd, feeScheduleFor, getAssetSpec, PRIOR_FX_FEE_SCHEDULE } from "@/lib/trading/assetSpecs";
+import { compareMakerEntry, recordMakerComparison } from '@/lib/research/makerShadow';
 import { estimatePaperFill } from "@/lib/trading/executionCostModel";
 import { TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { getConfiguredInstrument, type InstrumentRef } from './instrumentRegistry';
@@ -402,6 +403,14 @@ async function evaluatePath(record: OpportunityRecord, horizon: EvaluationHorizo
           (feeScheduleFor(instrument).scope==='forex' ? PRIOR_FX_FEE_SCHEDULE.version : undefined),
         historicalCostsAvailable:shadowCostsObserved(record,instrument),researchOrigin:'SHADOW'});
       if (replay.status==='COMPLETED') await storeResearchOutcome(await bindResearchManifest(replay.outcome));
+      // Maker-entry shadow: the same candidate as a post-only limit. Research only.
+      const tickSize=Number((await MarketService.getInstrumentMetadata(record.asset).catch(()=>null))?.tickSize);
+      const spec=getAssetSpec(record.asset);
+      const maker=compareMakerEntry({direction:record.direction,entryPrice:record.entryPrice,stopLoss:record.stopLoss!,
+        takeProfit:record.takeProfit!,bars:pathCandles,barIntervalMs:intervalMs,startMs,tickSize,
+        makerFeeRate:spec.makerFeeRate,takerFeeRate:spec.takerFeeRate,halfSpreadBps:record.halfSpreadBps});
+      if (maker) await recordMakerComparison({...maker,candidateId:record.candidateId,asset:record.asset,
+        family:record.family,evaluatedAt:new Date().toISOString()}).catch(()=>undefined);
     }
     return {...result,currentPrice:labelPrice};
   } catch {
