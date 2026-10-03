@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DAY_MS, simulateBaselines, trendForwardEvidence, trendWeight, TREND_REGISTERED_AT_MS, type DailySeries } from "@/lib/research/baselines";
+import { DAY_MS, ratioPosition, simulateBaselines, trendForwardEvidence, trendWeight, TREND_REGISTERED_AT_MS, type DailySeries } from "@/lib/research/baselines";
 
 const START = Date.parse("2026-01-01T00:00:00Z");
 
@@ -54,5 +54,27 @@ test("daily baselines are simulated net of fees and real funding", async (t) => 
     const evidence = trendForwardEvidence(trend);
     assert.equal(evidence.passed, false);
     assert.equal(evidence.metrics.periods, 0);
+  });
+
+  await t.test("the BTC/ETH ratio book fades a 2-sigma divergence and exits near the mean", () => {
+    const btc = new Map<number, number>(), eth = new Map<number, number>();
+    for (let d = 0; d < 40; d++) { btc.set(START + d * DAY_MS, 100 * (1 + (d % 2) * 0.001)); eth.set(START + d * DAY_MS, 10); }
+    const last = START + 39 * DAY_MS;
+    assert.equal(ratioPosition(btc, eth, last, 0), 0, "inside the band nothing happens");
+    btc.set(last, 110);
+    assert.equal(ratioPosition(btc, eth, last, 0), -1, "BTC rich: short BTC, long ETH");
+    btc.set(last, 100.05);
+    assert.equal(ratioPosition(btc, eth, last, -1), 0, "back near the mean: flat");
+    btc.set(last, 90);
+    assert.equal(ratioPosition(btc, eth, last, 0), 1, "BTC cheap: long BTC, short ETH");
+    eth.delete(last - DAY_MS);
+    assert.equal(ratioPosition(btc, eth, last, 1), 0, "a missing day means no position");
+  });
+
+  await t.test("the ratio book trades only BTC and ETH, dollar-neutral", () => {
+    const btc = series("BTC", 0.002, 220), eth = series("ETH", 0, 220), gold = series("GOLD", 0.001, 220);
+    const ratio = simulateBaselines({ series: [btc, eth, gold], startMs: START + 150 * DAY_MS, endMs: START + 219 * DAY_MS, capitalUsd: 10_000 })[2];
+    assert.equal(ratio.name, "BTC_ETH_RATIO");
+    assert.equal(ratio.curve.length, 70);
   });
 });

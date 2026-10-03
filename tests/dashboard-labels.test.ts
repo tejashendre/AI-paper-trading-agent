@@ -9,6 +9,9 @@ describe("dashboard labels", () => {
       equalWeightHold: { returnPercent: 2 }, trendDaily: { returnPercent: -0.4 } });
     assert.deepEqual(rows.map((row) => row.value), ["+0.66%", "unknown", "+2.00%", "-0.40%"]);
     assert.match(rows[3].label, /shadow/);
+    const withRatio = labels.benchmarkRows({ bot: { swingReturnPercent: 0, crossSectionalReturnPercent: 0 },
+      equalWeightHold: { returnPercent: 0 }, trendDaily: { returnPercent: 0 }, btcEthRatio: { returnPercent: -1.25 } });
+    assert.equal(withRatio.at(-1)?.value, "-1.25%");
   });
   it('shows approved versus executed initial risk without treating the approval as the fill', () => {
     const usage = (labels as any).entryRiskUsage;

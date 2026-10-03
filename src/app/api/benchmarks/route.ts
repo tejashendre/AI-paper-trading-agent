@@ -29,7 +29,7 @@ export async function GET() {
       const series = await Promise.all(Object.entries(SUPPORTED_ASSETS).map(([asset, config]) =>
         loadDailySeries({ asset, symbol: config.bybitLinearSymbol, takerFeeRate: getAssetSpec(asset).takerFeeRate,
           fromMs: BENCHMARK_START_MS - HISTORY_DAYS * DAY_MS, nowMs })));
-      const [hold, trend] = simulateBaselines({ series, startMs: BENCHMARK_START_MS, endMs: nowMs, capitalUsd: 10_000 });
+      const [hold, trend, ratio] = simulateBaselines({ series, startMs: BENCHMARK_START_MS, endMs: nowMs, capitalUsd: 10_000 });
       const evidence = trendForwardEvidence(trend);
       const summary = (b: typeof hold) => ({
         returnPercent: b.returnPercent, maxDrawdownPercent: b.maxDrawdownPercent, feesUsd: b.feesUsd, fundingUsd: b.fundingUsd,
@@ -41,6 +41,7 @@ export async function GET() {
         startAt: new Date(BENCHMARK_START_MS).toISOString(),
         equalWeightHold: summary(hold),
         trendDaily: { ...summary(trend), mode: "SHADOW", registeredAt: new Date(TREND_REGISTERED_AT_MS).toISOString(), forwardEvidence: evidence },
+        btcEthRatio: { ...summary(ratio), mode: "SHADOW", registeredAt: new Date(TREND_REGISTERED_AT_MS).toISOString(), forwardEvidence: trendForwardEvidence(ratio) },
       };
       await redis.set(CACHE_KEY, result, { ex: CACHE_SECONDS }).catch(() => undefined);
       return result;

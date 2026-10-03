@@ -66,6 +66,7 @@ export function benchmarkRows(data: {
   bot: { swingReturnPercent: number | null; crossSectionalReturnPercent: number | null };
   equalWeightHold: { returnPercent: number };
   trendDaily: { returnPercent: number };
+  btcEthRatio?: { returnPercent: number };
 }): Array<{ label: string; returnPercent: number | null; value: string }> {
   const pct = (v: number | null) => (v === null || !Number.isFinite(v) ? "unknown" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
   return [
@@ -73,5 +74,6 @@ export function benchmarkRows(data: {
     { label: "Bot: cross-sectional book", returnPercent: data.bot.crossSectionalReturnPercent },
     { label: "Hold the nine, equal weight", returnPercent: data.equalWeightHold.returnPercent },
     { label: "Daily trend baseline (shadow)", returnPercent: data.trendDaily.returnPercent },
+    ...(data.btcEthRatio ? [{ label: "BTC/ETH ratio reversion (shadow)", returnPercent: data.btcEthRatio.returnPercent }] : []),
   ].map((row) => ({ ...row, value: pct(row.returnPercent) }));
 }
