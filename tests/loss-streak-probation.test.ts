@@ -70,4 +70,12 @@ test("a loss streak cools off and then admits one probation position, instead of
     assert.equal(decision.approved, true);
     assert.equal(decision.diagnostics.lossStreakProbation, false);
   });
+
+  await t.test("probe-sized losses do not build a streak that freezes full-quality entries", () => {
+    const probes = streak(1).map((trade) => ({ ...trade, entryMode: "CONTROLLED_PROBE" as const }));
+    const decision = evaluatePortfolioRiskBudget({ ...candidate, portfolio: book(), trades: probes });
+    assert.equal(decision.approved, true, decision.reason);
+    assert.equal(decision.diagnostics.consecutiveFullStopLosses, 0);
+    assert.equal(decision.diagnostics.lossStreakProbation, false);
+  });
 });

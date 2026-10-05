@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { promotedFamilySignal, selectPromotedCandidate, type StrategyCandidate } from "@/lib/swingEngine";
+import { LIVE_NEAR_MISS_PROBES, promotedFamilySignal, selectPromotedCandidate, type StrategyCandidate } from "@/lib/swingEngine";
 import { getConfiguredInstrument } from "@/lib/trading/instrumentRegistry";
 
 const instrument = getConfiguredInstrument("GOLD");
@@ -41,4 +41,8 @@ describe("promoted family selection", () => {
     assert.deepEqual(signal.setupTags, ["RANGE_REVERSION"]);
     assert.equal(promotedFamilySignal(base, { ...range, direction: "SHORT", stopPrice: 4120, targetPrice: 4060 }).action, "SWING_SHORT");
   });
+});
+
+it("near-miss probes are research-only; promoted families still enter as probes", () => {
+  assert.equal(LIVE_NEAR_MISS_PROBES, false);
 });

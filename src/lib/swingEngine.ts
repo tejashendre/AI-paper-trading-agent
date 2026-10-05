@@ -18,6 +18,16 @@ import path from "node:path";
 import { BREAKOUT_TARGET_RANGES, BREAKOUT_WINDOW_MS, evaluateSessionBreakout, OPENING_RANGE_MS, SESSION_OPENS } from "./strategy/sessionOpen";
 
 export type StrategyFamily = "TREND_PULLBACK" | "RANGE_REVERSION" | "SESSION_BREAKOUT";
+
+/**
+ * Near-miss probes (setups that fail the full entry rules but come close) no
+ * longer open live positions. Live record to 2026-10-05: 26 probe positions
+ * won 38% for -$48.6, against 24 standard entries winning 62% for +$112.8,
+ * and every loss in the streak that froze the bot was a probe. They are still
+ * recorded and scored as watched setups, so their evidence keeps accruing; a
+ * promoted research family still enters as a small probe through its gates.
+ */
+export const LIVE_NEAR_MISS_PROBES = false;
 export interface StrategyCandidate {
   candidateId: string;
   asset: ConfiguredAsset;
@@ -882,7 +892,7 @@ function paperSizeFromConviction(conviction: number): SwingSignal["paperSize"] {
 
 function simpleStateText(state: SwingDecisionState, direction: "LONG" | "SHORT" | "NEUTRAL") {
   if (state === "ENTRY_READY") return "Trade setup confirmed";
-  if (state === "PROBE_ENTRY") return "Small paper probe approved";
+  if (state === "PROBE_ENTRY") return LIVE_NEAR_MISS_PROBES ? "Small paper probe approved" : "Near-miss setup recorded for research, not traded";
   if (state === "HIGH_ACCURACY_EXCEPTION") return "Special high-confidence setup";
   if (state === "WATCH_LONG") return "Watching for a buy setup";
   if (state === "WATCH_SHORT") return "Watching for a short setup";
@@ -1328,10 +1338,11 @@ function evaluateBaselineSwingSignal(input: SwingSignalInput): SwingSignal {
     });
 
     // Require strong HTF alignment (score >= 14)
-    if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "LONG") {
+    const liveEntry = normalEntry || exceptionEntry || (approvedProbeEntry && LIVE_NEAR_MISS_PROBES);
+    if (liveEntry && bestDirection === "LONG") {
       action = 'SWING_BUY';
       finalScore = htfScore;
-    } else if ((normalEntry || exceptionEntry || approvedProbeEntry) && bestDirection === "SHORT") {
+    } else if (liveEntry && bestDirection === "SHORT") {
       action = 'SWING_SHORT';
       finalScore = htfScore;
     }
