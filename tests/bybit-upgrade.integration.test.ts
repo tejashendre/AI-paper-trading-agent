@@ -505,10 +505,13 @@ describe("Bybit all-assets upgrade, offline end to end", () => {
       assert.ok(frozenScan.results.every((row) => row.action !== "ENTRY"));
 
       await world.memory.del("swing:entryFreeze");
-      world.advanceTo(T + 60_000);
+      // Rescan the same full-quality setup; a minute later the fixture is only
+      // a near-miss, which is research-only and would not test the freeze.
+      world.advanceTo(T + 1_000);
       await m.daemon.runEntryScan();
       const opened = (await m.portfolio.PortfolioManager.getPortfolio("ai")).openPositions[asset];
-      assert.ok(opened, "entries did not resume after the freeze was lifted");
+      const resumed = await scanRow(world.memory, asset);
+      assert.ok(opened, `entries did not resume after the freeze was lifted: ${resumed.action} ${resumed.vetoCode} ${resumed.reason}`);
 
       await world.memory.set("swing:entryFreeze", { reason: "rollback window", setBy: "operator" });
       world.advanceTo(EXIT_AT);

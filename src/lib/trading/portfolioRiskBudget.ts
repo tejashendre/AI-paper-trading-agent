@@ -161,6 +161,9 @@ function riskCluster(asset: string): string {
 }
 
 function isFullStopLoss(trade: Trade): boolean {
+  // Probe-sized positions are bounded by their own small risk, the loss
+  // budgets and research demotion; they do not freeze full-quality entries.
+  if (trade.entryMode === "CONTROLLED_PROBE") return false;
   if (trade.exitReason !== "STOP_LOSS" || Number(trade.pnl) >= 0) return false;
   const maxLossUsd = Number(trade.maxLossUsd);
   if (!Number.isFinite(maxLossUsd) || maxLossUsd <= 0) return true;
