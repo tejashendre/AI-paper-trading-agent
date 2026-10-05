@@ -30,10 +30,11 @@ export function evaluateHealth({ status, book, nowMs }) {
   }
 
   // A breaker that never releases looks healthy everywhere else. Only alert
-  // while the whole bot has gone 72h without a fill, so it clears on recovery.
+  // while the whole bot has gone 96h without a fill: the 72h cool-off after
+  // a probation loss, with margin, so a normal cool-off never alerts.
   const coverageList = status?.assetCoverage ?? [];
   const lastFillMs = Math.max(0, ...coverageList.map((coverage) => new Date(coverage?.lastFillAt ?? 0).getTime() || 0));
-  for (const coverage of nowMs - lastFillMs > 72 * 60 * MINUTE ? coverageList : []) {
+  for (const coverage of nowMs - lastFillMs > 96 * 60 * MINUTE ? coverageList : []) {
     const funnel = coverage?.funnel7d ?? {};
     if (Number(funnel.costPass) >= 20 && Number(funnel.riskPass) === 0) {
       const vetoes = Object.entries(funnel).filter(([key]) => key.startsWith("veto:") && key !== "veto:NO_SETUP").sort((a, b) => b[1] - a[1]);

@@ -10,7 +10,7 @@ import { describeResearchCapture, promotionProgress } from '@/lib/research/resea
 import { livePortfolioGain, formatSignedGain, portfolioEquityMetrics } from '@/lib/ui/livePortfolioGain';
 import { useChartHistory } from '@/lib/ui/useChartHistory';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
-import { swingWinRateTile } from "@/lib/ui/dashboardLabels";
+import { radarSummary, researchCandidateLabel, swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
@@ -327,6 +327,8 @@ function DashboardContent({ secret }: { secret: string }) {
   const [showDataHealth, setShowDataHealth] = useState(false);
   const [showSwingScanDetails, setShowSwingScanDetails] = useState(false);
   const [showLearningDetails, setShowLearningDetails] = useState(false);
+  const [showRadar, setShowRadar] = useState(false);
+  const [showResearchList, setShowResearchList] = useState(false);
   // Plain-language mode. The engine already computes readable sentences on
   // every scan (simpleStatus / simpleReason / nextStep) and the UI was showing
   // the raw scores instead, which made the dashboard unreadable to anyone who
@@ -1569,11 +1571,25 @@ function DashboardContent({ secret }: { secret: string }) {
                           The bot records watched setups and checks later whether they would have worked after estimated fees.
                         </p>
                       </div>
-                      <span className={`text-[8px] font-mono font-bold px-2 py-0.5 rounded border ${isDark ? "border-blue-900/30 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"}`}>
-                        LEARNING
-                      </span>
+                      <button
+                        onClick={() => setShowRadar((value) => !value)}
+                        aria-expanded={showRadar}
+                        className={`shrink-0 px-3 py-1 border text-[9px] font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                      >
+                        {showRadar ? "HIDE DETAILS" : "VIEW DETAILS"}
+                      </button>
                     </div>
 
+                    {!showRadar && (
+                      <p className={`text-[10px] font-mono mt-2 ${textSub}`}>
+                        {radarSummary({ checked: data?.opportunitySummary?.totalHorizonEvaluations || data?.opportunitySummary?.totalEvaluated || 0,
+                          favorableRate: data?.opportunitySummary?.favorableRate || 0, rules: (data?.localLearningRules || []).length,
+                          candidates: data?.research?.candidates || [] })}
+                      </p>
+                    )}
+
+                    {showRadar && (
+                    <>
                     <div className="grid grid-cols-3 gap-2 mt-3">
                       <div className={`p-2 rounded-lg border ${bgSubCard}`}>
                         <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Checked Later</div>
@@ -1616,14 +1632,22 @@ function DashboardContent({ secret }: { secret: string }) {
                     <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
                       <div className={`text-[8px] font-mono uppercase font-bold ${textMuted}`}>Strategy research</div>
                       <p className={`text-[10px] mt-1 leading-relaxed ${textSub}`}>
-                        {data?.research?.trialCount || 0} registered configurations. New range setups collect shadow evidence before trading permissions.
+                        {data?.research?.trialCount || 0} registered configurations. New setups collect shadow evidence before trading permissions.
                         A setup that passes the evidence gates starts trading as a small probe on its own, and is retired if its live results contradict that evidence.
                       </p>
+                      <button
+                        onClick={() => setShowResearchList((value) => !value)}
+                        aria-expanded={showResearchList}
+                        className={`mt-2 px-3 py-1 border text-[9px] font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
+                      >
+                        {showResearchList ? "HIDE CONFIGURATIONS" : `VIEW ALL ${(data?.research?.candidates || []).length} CONFIGURATIONS`}
+                      </button>
+                      {showResearchList && (
                       <div className={`mt-2 space-y-1 text-[9px] font-mono ${textMuted}`}>
                         {(data?.research?.candidates || []).map((candidate:any)=>(
                           <div key={candidate.candidateId} className="space-y-1 border-b pb-1">
                             <div className="flex flex-wrap justify-between gap-1">
-                              <span>{candidate.asset} {candidate.family==='TREND_PULLBACK'?'Trend':'Range'}</span>
+                              <span>{researchCandidateLabel(candidate)}</span>
                               <span>{candidate.mode}</span>
                             </div>
                             <p>{promotionProgress(candidate.metrics ?? {})}</p>
@@ -1631,6 +1655,7 @@ function DashboardContent({ secret }: { secret: string }) {
                           </div>
                         ))}
                       </div>
+                      )}
                       <p className={`text-[9px] mt-2 ${textMuted}`}>
                         Research archive: {describeResearchCapture(data?.researchArchive||[])}
                         {' '}Missing fees, funding or historical execution evidence keeps promotion blocked.
@@ -1658,7 +1683,10 @@ function DashboardContent({ secret }: { secret: string }) {
                       </div>
                     )}
 
-                    {showLearningDetails && (
+                    </>
+                    )}
+
+                    {showRadar && showLearningDetails && (
                     <>
                     {data?.opportunitySummary?.bestMissed ? (
                       <div className={`mt-3 p-2.5 rounded-lg border ${bgSubCard}`}>
