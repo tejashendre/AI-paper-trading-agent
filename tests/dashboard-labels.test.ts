@@ -4,6 +4,16 @@ import { describeLastBookAction, emptyBookMessage, rebalanceScheduleNote, swingW
 import * as labels from '@/lib/ui/dashboardLabels';
 
 describe("dashboard labels", () => {
+  it("research rows name every family and tell the older fee cohort apart", () => {
+    assert.equal(labels.researchCandidateLabel({ asset: "OIL", family: "SESSION_BREAKOUT" }), "OIL Session breakout");
+    assert.equal(labels.researchCandidateLabel({ asset: "USDJPY", family: "RANGE_REVERSION", reasons: ["INSUFFICIENT_FORWARD_SHADOW"] }), "USDJPY Range");
+    assert.match(labels.researchCandidateLabel({ asset: "USDJPY", family: "RANGE_REVERSION", reasons: ["UNVERIFIED_FEES"] }), /older fee model/);
+  });
+  it("the collapsed radar line summarises checks, winners, rules and research modes", () => {
+    const line = labels.radarSummary({ checked: 2000, favorableRate: 0.388, rules: 0,
+      candidates: [{ mode: "SHADOW" }, { mode: "SHADOW" }, { mode: "CONTROLLED_PROBE" }, { mode: "REJECTED" }] });
+    assert.equal(line, "2000 setups checked later, 39% net winners, 0 rules learned. 4 research configurations: 1 trading, 2 in shadow, 1 retired.");
+  });
   it("benchmarks list the bot's books next to the simple baselines, with unknown kept unknown", () => {
     const rows = labels.benchmarkRows({ bot: { swingReturnPercent: 0.659, crossSectionalReturnPercent: null },
       equalWeightHold: { returnPercent: 2 }, trendDaily: { returnPercent: -0.4 } });

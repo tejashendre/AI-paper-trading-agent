@@ -48,7 +48,9 @@ test("health monitor reports each silent failure in plain English", async (t) =>
     // Once any asset fills again the alert clears, although the 7-day funnel still remembers.
     coverage[1].lastFillAt = iso(60);
     assert.deepEqual(evaluateHealth({ status, book, nowMs: NOW }), []);
-    coverage[1].lastFillAt = iso(73 * 60);
+    coverage[1].lastFillAt = iso(80 * 60);
+    assert.deepEqual(evaluateHealth({ status, book, nowMs: NOW }), [], "inside a cool-off plus a day: no alert");
+    coverage[1].lastFillAt = iso(97 * 60);
     const problems: string[] = evaluateHealth({ status, book, nowMs: NOW });
     assert.deepEqual(problems, ["BTC: 171 candidates passed cost checks in 7 days and risk gates blocked all of them (top veto PORTFOLIO_RISK_BUDGET)."]);
   });

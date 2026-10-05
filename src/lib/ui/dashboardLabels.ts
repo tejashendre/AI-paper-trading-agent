@@ -77,3 +77,30 @@ export function benchmarkRows(data: {
     ...(data.btcEthRatio ? [{ label: "BTC/ETH ratio reversion (shadow)", returnPercent: data.btcEthRatio.returnPercent }] : []),
   ].map((row) => ({ ...row, value: pct(row.returnPercent) }));
 }
+
+const FAMILY_LABELS: Record<string, string> = {
+  TREND_PULLBACK: "Trend",
+  RANGE_REVERSION: "Range",
+  SESSION_BREAKOUT: "Session breakout",
+};
+
+/** One research row's name; the older FX fee cohort is named so two rows never look identical. */
+export function researchCandidateLabel(candidate: { asset: string; family: string; reasons?: string[] }): string {
+  const family = FAMILY_LABELS[candidate.family] ?? candidate.family.replaceAll("_", " ").toLowerCase();
+  const older = candidate.reasons?.includes("UNVERIFIED_FEES") ? " (older fee model, kept for the record)" : "";
+  return `${candidate.asset} ${family}${older}`;
+}
+
+/** The collapsed Opportunity Radar line. */
+export function radarSummary(input: {
+  checked: number;
+  favorableRate: number;
+  rules: number;
+  candidates: Array<{ mode: string }>;
+}): string {
+  const byMode = input.candidates.reduce<Record<string, number>>((acc, c) => ({ ...acc, [c.mode]: (acc[c.mode] ?? 0) + 1 }), {});
+  const trading = input.candidates.length - (byMode.SHADOW ?? 0) - (byMode.REJECTED ?? 0);
+  return `${input.checked} setups checked later, ${(input.favorableRate * 100).toFixed(0)}% net winners, ${input.rules} rules learned. ` +
+    `${input.candidates.length} research configurations: ${trading} trading, ${byMode.SHADOW ?? 0} in shadow` +
+    `${byMode.REJECTED ? `, ${byMode.REJECTED} retired` : ""}.`;
+}
