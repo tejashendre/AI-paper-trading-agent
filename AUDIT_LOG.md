@@ -272,3 +272,8 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 ## 2026-10-05 Radar collapse and monitor window
 - Owner asked to fold the Opportunity Radar behind a click. It now shows one summary line (checks, net winners, rules, research modes) with VIEW DETAILS; the 30-row research list has its own toggle. Research rows now name SESSION_BREAKOUT and label the older FX fee cohort, which looked like a duplicate USDJPY Range row.
 - Health monitor failed 2026-10-04 22:10 and 2026-10-05 01:06 UTC: no fill for 72h while BTC sat in its loss-streak cool-off (ended 01:09; probation BTC entry 01:11, stopped 04:17 for -$1.74). Window moved to 96h so a normal cool-off cannot alert. 398/398, audit 156/0/0.
+
+## 2026-10-05 Full-quality entries only
+- Live record: 26 near-miss probe positions won 38% for -$48.6; 24 standard entries won 62% for +$112.8; since 2026-09-20 nearly every entry was a probe and every loss in the freezing streak was a probe.
+- LIVE_NEAR_MISS_PROBES = false: near-miss setups are recorded and scored as watched setups but do not trade; promoted research families still enter as gated probes. Probe-mode losses no longer count toward the full-stop streak (other loss, drawdown and risk budgets unchanged). Against live trades the streak is now 0 (last full-size close was a win).
+- Integration freeze test rescans at the full-quality moment. 400/400, audit 156/0/0, tsc, lint, build clean. PR PENDING owner go.
