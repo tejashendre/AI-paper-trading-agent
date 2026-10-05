@@ -1377,7 +1377,7 @@ function DashboardContent({ secret }: { secret: string }) {
                       <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
                         <div className={`text-[7px] font-mono uppercase ${textMuted}`}>Ready Now</div>
                         <div className="text-lg font-bold font-mono text-emerald-400">
-                          {(data.swingScan.summary?.ENTRY || 0) + (data.swingScan.decisionSummary?.ENTRY_READY || 0) + (data.swingScan.decisionSummary?.PROBE_ENTRY || 0) + (data.swingScan.decisionSummary?.HIGH_ACCURACY_EXCEPTION || 0)}
+                          {(data.swingScan.summary?.ENTRY || 0) + (data.swingScan.decisionSummary?.ENTRY_READY || 0) + (data.swingScan.decisionSummary?.HIGH_ACCURACY_EXCEPTION || 0)}
                         </div>
                       </div>
                       <div className={`p-2.5 rounded-lg border ${bgSubCard}`}>
@@ -1403,7 +1403,7 @@ function DashboardContent({ secret }: { secret: string }) {
 
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                       <p className={`text-[9px] font-mono ${textMuted}`}>
-                        Buy watch: <b className="text-emerald-400">{data.swingScan.decisionSummary?.WATCH_LONG || 0}</b> | Probe ready: <b className="text-cyan-400">{data.swingScan.decisionSummary?.PROBE_ENTRY || 0}</b> | Data unsafe: <b className="text-amber-400">{data.swingScan.decisionSummary?.BLOCKED_DATA || 0}</b>
+                        Buy watch: <b className="text-emerald-400">{data.swingScan.decisionSummary?.WATCH_LONG || 0}</b> | Near-miss (research only): <b className="text-cyan-400">{data.swingScan.decisionSummary?.PROBE_ENTRY || 0}</b> | Data unsafe: <b className="text-amber-400">{data.swingScan.decisionSummary?.BLOCKED_DATA || 0}</b>
                       </p>
                       <button
                         onClick={() => setShowSwingScanDetails((value) => !value)}
