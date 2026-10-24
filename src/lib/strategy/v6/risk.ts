@@ -13,7 +13,7 @@ export interface BrainOrderPlan { approved: boolean; reason: string; quantity: n
   takeProfit: number; notionalUsdt: number; marginUsdt: number; leverage: number; initialRiskUsdt: number;
   fundingReserveUsdt: number; netRewardRisk: number; entryFeeUsdt: number; costHash: string }
 export interface BrainBreakerLatch { kind: 'DRAWDOWN'|'STREAK'|'INTEGRITY'; scope: string; atMs: number; reason: string }
-export interface BrainRiskOutcome { asset: ConfiguredAsset; closedAtMs: number; netPnlUsdt: number; netR: number|null; exitReason: string }
+export interface BrainRiskOutcome { positionId?: string; asset: ConfiguredAsset; closedAtMs: number; netPnlUsdt: number; netR: number|null; exitReason: string }
 export function evaluateBrainBreakers(input: {equity:number;initialCapital:number;peakEquity:number;nowMs:number;
   outcomes:BrainRiskOutcome[];previous?:BrainBreakerLatch[]}):{latches:BrainBreakerLatch[];rollingBlock:string|null} {
   const latches=[...(input.previous??[])];
@@ -22,7 +22,13 @@ export function evaluateBrainBreakers(input: {equity:number;initialCapital:numbe
   };
   if(![input.equity,input.initialCapital,input.peakEquity,input.nowMs].every(x=>Number.isFinite(x)&&x>0)) add('INTEGRITY','account','INVALID_MARKED_ACCOUNT');
   if(input.equity<=Math.max(.9*input.initialCapital,.9*input.peakEquity))add('DRAWDOWN','account','TEN_PERCENT_DRAWDOWN');
-  const outcomes=[...input.outcomes].sort((a,b)=>b.closedAtMs-a.closedAtMs);
+  const distinct=new Map<string,BrainRiskOutcome>();
+  for(const row of input.outcomes){
+    const key=row.positionId??`${row.asset}:${row.closedAtMs}`;
+    if(distinct.has(key)&&JSON.stringify(distinct.get(key))!==JSON.stringify(row))add('INTEGRITY','account','CONFLICTING_POSITION_OUTCOME');
+    else distinct.set(key,row);
+  }
+  const outcomes=[...distinct.values()].sort((a,b)=>b.closedAtMs-a.closedAtMs);
   if(outcomes.some(x=>![x.closedAtMs,x.netPnlUsdt].every(Number.isFinite)||x.closedAtMs>input.nowMs))add('INTEGRITY','account','INVALID_OUTCOME_CLOCK_OR_VALUE');
   for(const x of outcomes)if(x.netR!==null&&(!Number.isFinite(x.netR)||x.netR < -1.5))add('INTEGRITY',x.asset,'LOSS_BEYOND_FROZEN_RISK');
   const cluster=(a:ConfiguredAsset)=>['BTC','ETH','SOL'].includes(a)?'crypto':['GOLD','SILVER'].includes(a)?'metals':a==='OIL'?'oil':'fx';

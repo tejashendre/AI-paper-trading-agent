@@ -43,6 +43,12 @@ test('drawdown and loss-streak latches survive a clock timeout and a tiny interv
   assert.deepEqual(b.latches,a.latches);
   assert.ok(evaluateBrainBreakers({equity:9000,initialCapital:10000,peakEquity:10000,nowMs,outcomes:[]}).latches.some(x=>x.kind==='DRAWDOWN'));
 });
+test('replayed duplicate completion rows cannot manufacture a loss-streak halt',()=>{
+  const nowMs=Date.parse('2026-10-24T12:00:00Z');
+  const row={positionId:'one-position',asset:'BTC' as const,closedAtMs:nowMs-1000,netPnlUsdt:-25,netR:-1,exitReason:'STOP'};
+  const result=evaluateBrainBreakers({equity:10000,initialCapital:10000,peakEquity:10000,nowMs,outcomes:[row,row,row,row]});
+  assert.equal(result.latches.some(x=>x.kind==='STREAK'),false);
+});
 function order() {
   const nowMs=Date.parse('2026-10-24T12:00:00Z');
   const setup={id:'test',asset:'BTC',strategyId:'CRYPTO_TREND_BREAKOUT_V1',configHash:'fixed',direction:'LONG',entryPrice:60000,
