@@ -45,10 +45,22 @@ export class PortfolioManager {
         };
     }
 
+    private static async storageKeys(type: "user" | "ai") {
+        const base = this.getKeys(type);
+        if (type !== 'ai') return { ...base, outcomes: `${type}:positionOutcomes`, backupPrefix: type, runId: null as string|null };
+        const active = await getRedis().get<{runId?:string}>('brain:v6:activeRun');
+        if (active === null) return { ...base, outcomes: 'ai:positionOutcomes', backupPrefix: type, runId: null as string|null };
+        if (!active || typeof active.runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(active.runId)) throw new Error('Invalid active AI epoch');
+        const prefix = `brain:v6:run:${active.runId}:`;
+        return { portfolio: prefix+'portfolio', trades: prefix+'trades', signals: prefix+'signals', outcomes: prefix+'outcomes',
+            backupPrefix: `ai_${active.runId}`, runId: active.runId };
+    }
+
     static async getPortfolio(type: "user" | "ai" = "user"): Promise<Portfolio> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         let data = await redis.get<Portfolio>(keys.portfolio);
+        if (keys.runId && !isValidPortfolio(data)) throw new Error('Active AI run portfolio missing or invalid; recovery must be explicit');
         
         // If data is null or failed to parse into an object (e.g. malformed string), try to recover from backup
         if (!isValidPortfolio(data)) {
@@ -118,6 +130,9 @@ export class PortfolioManager {
         clearHistory = true
     ): Promise<Portfolio> {
         const redis = getRedis();
+        if (type === 'ai' && await redis.get('brain:v6:activeRun') !== null) {
+            throw new Error('Replacement epoch requires the archived AI-only reset');
+        }
         const keys = this.getKeys(type);
         const initial: Portfolio = {
             usd: initialCapital,
@@ -179,15 +194,16 @@ export class PortfolioManager {
 
     static async updatePortfolio(portfolio: Portfolio, type: "user" | "ai" = "user"): Promise<void> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         portfolio.lastUpdated = new Date().toISOString();
         await redis.set(keys.portfolio, portfolio);
+        if (keys.runId) await redis.set('ai:portfolio', portfolio);
 
         // Save local backup to prevent total data loss if Redis crashes
         try {
             const path = require('path');
             const dataDir = path.join(process.cwd(), 'data');
-            const backupPath = path.join(dataDir, `${type}_portfolio_backup.json`);
+            const backupPath = path.join(dataDir, `${keys.backupPrefix}_portfolio_backup.json`);
             writeJsonAtomic(backupPath, portfolio);
         } catch (e) {
             console.error("Failed to save portfolio backup:", e);
@@ -196,7 +212,7 @@ export class PortfolioManager {
 
     static async logTrade(trade: Trade, type: "user" | "ai" = "user"): Promise<void> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         await redis.lpush(keys.trades, JSON.stringify(trade));
         // Trades are only ever read via lrange(0, 999); without a trim the
         // list grows forever and slowly eats the free-tier Redis storage.
@@ -210,7 +226,7 @@ export class PortfolioManager {
             if (!fs.existsSync(dataDir)) {
                 fs.mkdirSync(dataDir, { recursive: true });
             }
-            const backupPath = path.join(dataDir, `${type}_trades_backup.json`);
+            const backupPath = path.join(dataDir, `${keys.backupPrefix}_trades_backup.json`);
             let trades: Trade[] = [];
             if (fs.existsSync(backupPath)) {
                 trades = JSON.parse(fs.readFileSync(backupPath, 'utf-8'));
@@ -230,7 +246,7 @@ export class PortfolioManager {
      */
     static async recordPositionOutcome(outcome: CompletedPositionOutcome, type: "user" | "ai" = "user"): Promise<boolean> {
         const redis = getRedis();
-        const key = `${type}:positionOutcomes`;
+        const key = (await this.storageKeys(type)).outcomes;
         const existing = await redis.lrange(key, 0, 999);
         const already = existing.some((raw) => {
             try {
@@ -253,7 +269,7 @@ export class PortfolioManager {
 
     static async getTrades(type: "user" | "ai" = "user"): Promise<Trade[]> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         const rawTrades = await redis.lrange(keys.trades, 0, 999);
         let parsed = rawTrades.map((t) => {
             if (typeof t === "string") {
@@ -265,11 +281,11 @@ export class PortfolioManager {
         // If data is empty or failed to parse into an object, try to recover from backup.
         // A valid empty backup is an intentional empty history (for example, after
         // an admin reset), not evidence of Redis corruption.
-        if (parsed.length === 0) {
+        if (parsed.length === 0 && !keys.runId) {
             try {
                 const fs = require('fs');
                 const path = require('path');
-                const backupPath = path.join(process.cwd(), 'data', `${type}_trades_backup.json`);
+                const backupPath = path.join(process.cwd(), 'data', `${keys.backupPrefix}_trades_backup.json`);
                 if (fs.existsSync(backupPath)) {
                     const backupRaw = fs.readFileSync(backupPath, 'utf-8');
                     const backup = JSON.parse(backupRaw) as unknown;
@@ -295,14 +311,14 @@ export class PortfolioManager {
 
     static async saveSignal(signal: CompositeSignal, type: "user" | "ai" = "user"): Promise<void> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         await redis.lpush(keys.signals, JSON.stringify(signal));
         await redis.ltrim(keys.signals, 0, 99);
     }
 
     static async getRecentSignals(type: "user" | "ai" = "user"): Promise<CompositeSignal[]> {
         const redis = getRedis();
-        const keys = this.getKeys(type);
+        const keys = await this.storageKeys(type);
         const raw = await redis.lrange(keys.signals, 0, 10);
         return raw.map((s) => {
             if (typeof s === "string") {

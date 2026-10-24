@@ -3,7 +3,7 @@ import { entryInstrumentFor, MarketService } from "@/lib/market";
 import { validateExitQuote } from "@/lib/trading/entryEligibility";
 import { PortfolioManager } from "@/lib/portfolio";
 import { Logger } from "@/lib/logger";
-import { getRedis } from "@/lib/redis";
+import { getRedis, brainEntryReceipt, type RawRedisSnapshot } from "@/lib/redis";
 import { RiskManager } from "@/lib/riskManager";
 import { OpenPosition, Portfolio, Trade } from "@/lib/types";
 import {
@@ -18,7 +18,7 @@ import {
   positionFeeScheduleVersion,
   validateOrderSize,
 } from "@/lib/trading/assetSpecs";
-import { evaluateFillCapacity } from "@/lib/execution/liquidityCost";
+import { capacityNotionalCap, evaluateFillCapacity } from "@/lib/execution/liquidityCost";
 import { SwingEngine } from "@/lib/swingEngine";
 import { bindResearchManifest, paperResearchOutcome, storeResearchOutcome } from "@/lib/research/researchLoop";
 import { TradeReviewJournal } from "@/lib/trading/tradeReviewJournal";
@@ -38,6 +38,8 @@ import { buildPositionOutcomes, CompletedPositionOutcome, outcomeSourceHash } fr
 import { ExecutionLedger, ExecutionLedgerEventInput, TRADING_STRATEGY_VERSION } from "@/lib/trading/executionLedger";
 import { evaluatePortfolioRiskBudget } from "@/lib/trading/portfolioRiskBudget";
 import { markedEquity, riskMarksReady, updateMarkedRiskStats } from '@/lib/trading/markedEquity';
+import { decideBrainExit } from '@/lib/strategy/v6/engine';
+import { evidenceHash } from '@/lib/strategy/v6/evidence';
 import {
   decideSwingExit,
   isOppositeEdgeConfirmed,
@@ -60,6 +62,27 @@ export interface SwingExitSweepResult {
 }
 
 type SwingCloseReason = "STOP_LOSS" | "TAKE_PROFIT" | "SIGNAL_REVERSAL" | "SIGNAL_INVALIDATION";
+
+export interface BrainPortfolioTransaction {runId:string;leaseToken:string;expected:RawRedisSnapshot}
+/** Keep state, fills and pending funding events in one transaction, including during entry freezes. */
+export async function persistBrainPortfolioMutation(portfolio:Portfolio,context:BrainPortfolioTransaction,options:{
+  kind?:'EXIT'|'MARK'|'FUNDING';trades?:Trade[];events?:Array<ExecutionLedgerEventInput&{id:string}>;
+}={}){
+  const pending=portfolio.pendingLedgerEvents??[];
+  const events=[...(options.events??[]),...pending.map(e=>({...e}))];
+  portfolio.pendingLedgerEvents=[];
+  const financial={kind:options.kind??'MARK',portfolio:JSON.stringify(portfolio),trades:(options.trades??[]).map(t=>JSON.stringify(t)),
+    events:events.map(e=>({id:e.id,event:JSON.stringify(e)}))};
+  const receipt=brainEntryReceipt(financial),transactionId='mutation-'+receipt;
+  try{
+    await getRedis().commitBrainEntry({runId:context.runId,transactionId,leaseToken:context.leaseToken,expected:context.expected,
+      ...financial,receipt,expiresAtMs:Date.now()+5000});
+    context.expected[`brain:v6:run:${context.runId}:portfolio`]={type:'string',value:financial.portfolio};
+  }catch(error){
+    portfolio.pendingLedgerEvents=pending;
+    throw error;
+  }
+}
 
 function ensurePortfolioStats(portfolio: Portfolio) {
   portfolio.returns = portfolio.returns || [];
@@ -183,6 +206,13 @@ export async function settleOpenPositionFunding(
       }, deps);
       for (const event of plan.events) {
         book(event, asset);
+        if(pos.brainPolicy&&pos.positionId&&pos.brainFundingIntervalMinutes){
+          const availableAtMs=deps.nowMs();
+          const observation={atMs:event.settlementTimeMs,actualRate:event.rate,mark:event.markPrice,intervalMinutes:pos.brainFundingIntervalMinutes,
+            availableAtMs,sourceHash:evidenceHash({event,availableAtMs,source:'BYBIT_PUBLIC_FUNDING_AND_MARK'})};
+          (pos.brainFundingObservations??=[]).push(observation);
+          ((portfolio.brainFundingObservations??={})[pos.positionId]??=[]).push(observation);
+        }
         pos.fundingBookedUsdt = (pos.fundingBookedUsdt ?? 0) + event.amountUsdt;
         (pos.fundingSettledTimes ??= []).push(event.settlementTimeMs);
       }
@@ -208,6 +238,12 @@ export async function settleOpenPositionFunding(
       }, deps);
       for (const event of plan.events) {
         book(event, tail.asset);
+        if(tail.brainRunId&&tail.brainFundingIntervalMinutes){
+          const availableAtMs=deps.nowMs();
+          ((portfolio.brainFundingObservations??={})[tail.positionId]??=[]).push({atMs:event.settlementTimeMs,actualRate:event.rate,mark:event.markPrice,intervalMinutes:tail.brainFundingIntervalMinutes,
+            availableAtMs,sourceHash:evidenceHash({event,availableAtMs,source:'BYBIT_PUBLIC_FUNDING_AND_MARK'})});
+          portfolio.totalPnl=(portfolio.totalPnl??0)+event.amountUsdt;
+        }
         tail.settledTimes.push(event.settlementTimeMs);
       }
       tail.settledTimes.push(...plan.absentTimes);
@@ -371,6 +407,13 @@ function buildCloseTrade(
     strategyFamily: pos.strategyFamily, strategyConfigHash: pos.strategyConfigHash,
     strategyDataSchemaVersion: pos.strategyDataSchemaVersion, strategyRegime: pos.strategyRegime,
     candidateId: pos.candidateId, featureCutoffMs: pos.featureCutoffMs,
+    brainPolicy: pos.brainPolicy, brainRunId: pos.brainRunId, brainIdentityHash: pos.brainIdentityHash,
+    brainSourceHash: pos.brainSourceHash, brainRiskPolicyHash: pos.brainRiskPolicyHash,
+    brainExitPolicyHash: pos.brainExitPolicyHash, brainCosts: pos.brainCosts,
+    brainEntryObservation: pos.brainEntryObservation,
+    brainExitObservation:pos.brainExitObservation,brainExitSource:pos.brainExitSource,
+    brainFundingIntervalMinutes:pos.brainFundingIntervalMinutes,brainFundingObservations:pos.brainFundingObservations,
+    brainStressedEntry:pos.brainStressedEntry,brainStressedExit:pos.brainStressedExit,
     dataQuality: pos.dataQuality,
     triggerScore: pos.triggerScore,
     marketStructureScore: pos.marketStructureScore,
@@ -475,6 +518,8 @@ function estimatePositionExit(
   amount: number,
   reason: SwingCloseReason | "PARTIAL_EXIT" | "MARK"
 ): PaperFillEstimate {
+  const observedSpread=Number(pos.brainExitSource?.halfSpreadBps);
+  const profile=pos.brainPolicy&&pos.brainCosts?{...pos.brainCosts.profile,halfSpreadBps:Math.max(pos.brainCosts.profile.halfSpreadBps,Number.isFinite(observedSpread)?observedSpread:0)}:undefined;
   return estimatePaperFill({
     asset: pos.asset,
     instrument: positionInstrument(pos),
@@ -482,12 +527,13 @@ function estimatePositionExit(
     action: pos.direction === "SHORT" ? "COVER" : "SELL",
     requestedPrice,
     amount,
+    profile,
     context: {
       reason: paperExitReason(reason),
-      assetMode: isCryptoFastAsset(pos.asset) ? "REALTIME_FAST" : "SLOW_SWING",
-      dataQuality: pos.dataQuality,
-      isPeakLiquidity: false,
-      liquidityState: pos.liquidityState,
+      assetMode: pos.brainPolicy ? 'SLOW_SWING' : isCryptoFastAsset(pos.asset) ? "REALTIME_FAST" : "SLOW_SWING",
+      dataQuality: pos.brainPolicy ? 100 : pos.dataQuality,
+      isPeakLiquidity: Boolean(pos.brainPolicy),
+      liquidityState: pos.brainPolicy ? 'NEUTRAL' : pos.liquidityState,
       orderbookImbalanceRatio: pos.orderbookImbalanceRatio,
     },
   });
@@ -584,23 +630,58 @@ async function closePosition(
   exitPrice: number,
   reason: SwingCloseReason,
   result: SwingExitSweepResult,
-  setCooldown = true
+  setCooldown = true,
+  brainTransaction?:BrainPortfolioTransaction
 ) {
   const redis = getRedis();
   const isShort = pos.direction === "SHORT";
   const linear = isLinearPosition(pos);
+  let closingAmount=pos.amount;
   // Every boundary up to now is booked before the position leaves the book;
   // a settlement that is not yet published follows it as a funding tail.
-  if (linear) {
+  if (linear && !brainTransaction) {
     await settleOpenPositionFunding(portfolio, liveFundingDeps, { onlyAsset: asset, recordLedger: portfolioType === "ai" })
       .catch((error) => console.warn(`[${source}] funding catch-up failed for ${asset}:`, error));
   }
-  const exit = estimatePositionExit(pos, exitPrice, pos.amount, reason);
-  const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, pos.amount);
-  const entryFee = positionEntryFee(pos);
+  if(brainTransaction&&pos.brainPolicy){
+    const [quote,liquidity]=await Promise.all([MarketService.getCurrentPriceSnapshot(asset),MarketService.getLiquiditySnapshot(asset)]);
+    const receivedAtMs=Date.now(),check=validateExitQuote({instrument:positionInstrument(pos),quote,nowMs:receivedAtMs});
+    const side=pos.direction==='SHORT'?'BUY':'SELL';
+    const cap=capacityNotionalCap({side,liquidity});
+    if(!check.valid||!Number.isFinite(liquidity.observedAtMs)||liquidity.observedAtMs>receivedAtMs||receivedAtMs-liquidity.observedAtMs>15000||
+      !Number.isFinite(quote.bid)||!Number.isFinite(quote.ask)||quote.ask!<=quote.bid!||!cap){
+      result.skipped++;
+      pos.brainReductionPending=true;pos.brainReductionReason=reason;pos.scaleInBlockedReason='REDUCTION_QUEUED: fresh executable capacity unavailable';
+      await Logger.warn(`[${source}] ${asset} v6 exit waits for fresh observed capacity; no unobserved fill recorded`);
+      return;
+    }
+    if(pos.amount*quote.price>cap){
+      const metadata=await MarketService.getInstrumentMetadata(asset);
+      closingAmount=Number(floorOrderQty(decimalString(Math.min(pos.amount,cap/quote.price,Number(metadata.maxMarketOrderQty))),metadata));
+      if(!validateOrderSize({quantity:decimalString(closingAmount),price:quote.price,metadata,maxNotionalUsdt:cap}).allowed){
+        result.skipped++;pos.brainReductionPending=true;pos.brainReductionReason=reason;pos.scaleInBlockedReason='REDUCTION_QUEUED: observed capacity below contract minimum';return;
+      }
+    }
+    pos.brainOriginalMarginUsdt??=pos.usdInvested;pos.brainOriginalQuantity??=pos.amount;
+    exitPrice=quote.price;
+    const mid=(quote.ask!+quote.bid!)/2,halfSpreadBps=(quote.ask!-quote.bid!)/mid*5000;
+    pos.brainExitSource={quote,liquidity,availableAtMs:receivedAtMs,halfSpreadBps};
+    pos.brainExitObservation={atMs:receivedAtMs,availableAtMs:receivedAtMs,halfSpreadBps,depthNotionalUsdt:cap,
+      sourceHash:evidenceHash(pos.brainExitSource)};
+    if(!pos.brainCosts)throw new Error('V6 exit missing frozen cost contract');
+    const base={...pos.brainCosts.profile,halfSpreadBps:Math.max(pos.brainCosts.profile.halfSpreadBps,halfSpreadBps)};
+    const stressed=estimatePaperFill({asset,instrument:positionInstrument(pos),feeScheduleVersion:positionFeeScheduleVersion(pos),action:isShort?'COVER':'SELL',requestedPrice:exitPrice,amount:closingAmount,
+      profile:{...base,halfSpreadBps:base.halfSpreadBps*2,baseSlippageBps:base.baseSlippageBps*2,sizeImpactBps:base.sizeImpactBps*2,stopGapBps:base.stopGapBps*2},
+      context:{reason:paperExitReason(reason),assetMode:'SLOW_SWING',dataQuality:100,isPeakLiquidity:true,liquidityState:'NEUTRAL'}});
+    pos.brainStressedExit={fillPrice:stressed.fillPrice,feeUsdt:stressed.feeUsd*2};
+  }
+  const fraction=closingAmount/pos.amount,isFinal=fraction>=1-1e-12;
+  const exit = estimatePositionExit(pos, exitPrice, closingAmount, reason);
+  const grossPnl = positionPnl(pos, pos.entryPrice, exit.fillPrice, closingAmount);
+  const entryFee = positionEntryFee(pos)*fraction;
   const settlement = exitCashSettlement({
     pos,
-    fraction: 1,
+    fraction,
     grossPnl,
     exitFeeUsd: exit.feeUsd,
     legacyCarryUsd: linear ? 0 : estimateCarryCostUsd({
@@ -620,44 +701,64 @@ async function closePosition(
   const exitCarry = linear ? 0 : carryCost;
   portfolio.totalCarryPaid = (portfolio.totalCarryPaid || 0) + exitCarry;
   portfolio.totalExecutionCostsPaid = (portfolio.totalExecutionCostsPaid || 0) + exit.totalExecutionCostUsd + exitCarry;
-  const closedAtMs = Date.now();
-  if (linear && pos.positionId && pos.quantityLegs?.length && (pos.fundingPendingTimes?.length ?? 0) > 0) {
+  const closedAtMs = pos.brainExitObservation?.atMs??Date.now();
+  if(pos.brainPolicy&&pos.brainFundingIntervalMinutes&&pos.quantityLegs){
+    pos.fundingPendingTimes=[...new Set([...(pos.fundingPendingTimes??[]),...expectedFundingTimes(Date.parse(pos.entryTime),closedAtMs,pos.brainFundingIntervalMinutes)
+      .filter(at=>!(pos.fundingSettledTimes??[]).includes(at)&&quantityHeldAt(pos.quantityLegs!,at)>0)])];
+  }
+  if (isFinal && linear && pos.positionId && pos.quantityLegs?.length && (pos.fundingPendingTimes?.length ?? 0) > 0) {
     (portfolio.fundingTail ??= []).push({
       positionId: pos.positionId,
       asset,
       symbol: positionInstrument(pos).symbol,
       direction: pos.direction,
-      quantityLegs: [...pos.quantityLegs, { atMs: closedAtMs, quantityDelta: -pos.amount }],
+      quantityLegs: [...pos.quantityLegs, { atMs: closedAtMs, quantityDelta: -closingAmount }],
       settledTimes: [...(pos.fundingSettledTimes ?? [])],
       pendingTimes: [...(pos.fundingPendingTimes ?? [])],
       closedAtMs,
+      brainRunId:pos.brainRunId,brainFundingIntervalMinutes:pos.brainFundingIntervalMinutes,
     });
   }
 
   if (portfolio.balances && !isShort) {
-    portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - pos.amount);
+    portfolio.balances[asset] = Math.max(0, (portfolio.balances[asset] || 0) - closingAmount);
   }
+  if(brainTransaction&&portfolio.balances&&isShort)portfolio.balances[asset]=Math.min(0,(portfolio.balances[asset]||0)+closingAmount);
 
   portfolio.totalPnl += netPnl;
+  const wholeNet=(pos.brainRealizedNetPnlUsdt??0)+netPnl;
+  if(isFinal){
   portfolio.totalTrades++;
-  portfolio.returns.push(pnlPercent);
+  portfolio.returns.push(pos.brainPolicy?wholeNet/(pos.brainOriginalMarginUsdt??pos.usdInvested)*100:pnlPercent);
   if (portfolio.returns.length > 2000) portfolio.returns.shift();
 
-  if (netPnl >= 0) {
+  if (wholeNet >= 0) {
     portfolio.winningTrades++;
-    portfolio.grossProfit += netPnl;
+    portfolio.grossProfit += wholeNet;
     portfolio.consecutiveWins++;
     portfolio.consecutiveLosses = 0;
     portfolio.maxConsecutiveWins = Math.max(portfolio.maxConsecutiveWins, portfolio.consecutiveWins);
   } else {
     portfolio.losingTrades++;
-    portfolio.grossLoss += Math.abs(netPnl);
+    portfolio.grossLoss += Math.abs(wholeNet);
     portfolio.consecutiveLosses++;
     portfolio.consecutiveWins = 0;
     portfolio.maxConsecutiveLosses = Math.max(portfolio.maxConsecutiveLosses, portfolio.consecutiveLosses);
   }
+  }
 
-  delete portfolio.openPositions[asset];
+  const closingPosition={...pos,amount:closingAmount,btcAmount:closingAmount,usdInvested:pos.usdInvested*fraction,entryFeePaid:entryFee,
+    entryExecutionCostUsd:pos.entryExecutionCostUsd===undefined?undefined:pos.entryExecutionCostUsd*fraction};
+  if(isFinal)delete portfolio.openPositions[asset];
+  else{
+    pos.amount-=closingAmount;pos.btcAmount=pos.amount;pos.usdInvested*=1-fraction;pos.entryFeePaid=positionEntryFee(pos)-entryFee;
+    if(pos.notionalUsd!==undefined)pos.notionalUsd*=1-fraction;
+    if(pos.entryExecutionCostUsd!==undefined)pos.entryExecutionCostUsd*=1-fraction;
+    pos.fundingAllocatedUsdt=(pos.fundingAllocatedUsdt??0)+settlement.fundingAllocatedUsdt;
+    (pos.quantityLegs??=[]).push({atMs:closedAtMs,quantityDelta:-closingAmount});
+    pos.brainRealizedNetPnlUsdt=wholeNet;pos.brainReductionPending=true;pos.brainReductionReason=reason;
+  }
+  if(brainTransaction&&asset==='BTC'){portfolio.btc=portfolio.balances?.BTC??0;portfolio.openPosition=isFinal?null:pos;}
   const exitReason = classifyExitReason(pos, reason, netPnl);
   const cooldownSeconds = setCooldown ? cooldownSecondsForExit(exitReason, netPnl, pos.entryMode) : 0;
   if (cooldownSeconds > 0) {
@@ -666,7 +767,7 @@ async function closePosition(
 
   const closeTrade = buildCloseTrade(
     asset,
-    pos,
+    closingPosition,
     exit,
     exitReason,
     grossPnl,
@@ -675,20 +776,30 @@ async function closePosition(
     entryFee,
     carryCost
   );
+  if(!isFinal)closeTrade.isPartialExit=true;
+  if(pos.brainExitObservation){closeTrade.timestamp=new Date(closedAtMs).toISOString();closeTrade.exitTime=closeTrade.timestamp;}
   if (linear) {
     closeTrade.fundingCashflowUsdt = settlement.fundingAllocatedUsdt;
     closeTrade.fundingStatus = (pos.fundingPendingTimes?.length ?? 0) > 0 ? "PENDING_RECONCILIATION" : "SETTLED";
   }
 
-  await PortfolioManager.updatePortfolio(portfolio, portfolioType);
-  await PortfolioManager.logTrade(closeTrade, portfolioType);
-  if (portfolioType === "ai") {
+  if(brainTransaction&&portfolioType==='ai'&&pos.brainPolicy){
+    await persistBrainPortfolioMutation(portfolio,brainTransaction,{kind:'EXIT',trades:[closeTrade],events:[{
+      id:`brain-exit:${crypto.createHash('sha256').update(`${brainTransaction.runId}:${pos.positionId??''}:${closeTrade.id}`).digest('hex')}`,
+      type:'EXIT_FILLED',source,asset,tradeId:closeTrade.id,positionId:pos.positionId,
+      payload:{trade:closeTrade,position:pos,requestedExitPrice:exitPrice,exit},
+    }]});
+  }else{
+    await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+    await PortfolioManager.logTrade(closeTrade, portfolioType);
+  }
+  if (portfolioType === "ai" && !brainTransaction) {
     await drainPendingLedgerEvents(portfolio, executionLedgerSink, () => PortfolioManager.updatePortfolio(portfolio, portfolioType))
       .catch((error) => console.warn(`[${source}] funding ledger drain deferred:`, error));
   }
   // The fill is recorded before the completion it causes, so a ledger reader
   // never sees a position completed by an exit that is not yet in the chain.
-  if (portfolioType === "ai") {
+  if (portfolioType === "ai" && !brainTransaction) {
     await ExecutionLedger.recordBestEffort({
       type: "EXIT_FILLED",
       source,
@@ -698,8 +809,8 @@ async function closePosition(
       payload: { trade: closeTrade, position: pos, requestedExitPrice: exitPrice, exit },
     });
   }
-  const outcome = await completePositionOutcome(portfolio, portfolioType, closeTrade, source);
-  if (portfolioType === "ai" && pos.strategyType !== "manual" && !pos.isScalp) {
+  const outcome = pos.brainPolicy&&portfolioType==='ai'?null:await completePositionOutcome(portfolio, portfolioType, closeTrade, source);
+  if (portfolioType === "ai" && !pos.brainPolicy && pos.strategyType !== "manual" && !pos.isScalp) {
     await TradeReviewJournal.recordSwingClose(closeTrade, pos, outcome).catch((error) => {
       console.warn(`[${source}] Failed to record trade review for ${asset}:`, error);
     });
@@ -708,7 +819,7 @@ async function closePosition(
     `[${source}] ${asset} ${isShort ? "SHORT COVER" : "LONG SELL"} via ${exitReason} at ${exit.fillPrice.toFixed(6)}. Net PnL: ${netPnl >= 0 ? "+" : ""}$${netPnl.toFixed(2)}`
   );
 
-  result.closed++;
+  if(isFinal)result.closed++;else result.partialExits=(result.partialExits??0)+1;
   if (reason === "SIGNAL_REVERSAL") result.signalReversals++;
 }
 
@@ -734,7 +845,7 @@ async function completePositionOutcome(
     if (!outcome) return null;
     const firstRecord = await PortfolioManager.recordPositionOutcome(outcome, portfolioType);
     // Live results of a registered family feed its autonomous demotion check.
-    if (firstRecord && portfolioType === "ai") {
+    if (firstRecord && portfolioType === "ai" && !closeTrade.brainPolicy) {
       await storeResearchOutcome(await bindResearchManifest(paperResearchOutcome(outcome)))
         .catch((error) => console.warn(`[${source}] research outcome deferred:`, error));
     }
@@ -1134,7 +1245,7 @@ async function manageProfitableWinner(
 
 export async function sweepSwingExits(
   portfolio: Portfolio,
-  options: { portfolioType?: "ai" | "user"; source?: string; checkSignalReversal?: boolean } = {}
+  options: { portfolioType?: "ai" | "user"; source?: string; checkSignalReversal?: boolean; brainTransaction?:BrainPortfolioTransaction;forceReduceOnly?:boolean } = {}
 ): Promise<SwingExitSweepResult> {
   const portfolioType = options.portfolioType || "ai";
   const source = options.source || "SWING_EXIT_SWEEP";
@@ -1169,7 +1280,9 @@ export async function sweepSwingExits(
     result.checked++;
 
     try {
-      const currentLivePrice = await getLivePrice(asset);
+      const v6Quote=portfolioType==='ai'&&pos.brainPolicy?await MarketService.getCurrentPriceSnapshot(asset):null;
+      const currentLivePrice = v6Quote?
+        (validateExitQuote({instrument:positionInstrument(pos),quote:v6Quote,nowMs:Date.now()}).valid?v6Quote.price:Number.NaN):await getLivePrice(asset);
       if (!Number.isFinite(currentLivePrice) || currentLivePrice <= 0) {
         result.skipped++;
         continue;
@@ -1177,9 +1290,27 @@ export async function sweepSwingExits(
 
       if (!Number.isFinite(pos.lastMarkPrice) || Math.abs(currentLivePrice - pos.lastMarkPrice!) > currentLivePrice * 1e-8 ||
           Date.now() - Date.parse(pos.lastMarkAt ?? '') >= 30000 || !pos.lastMarkAt) {
-        pos.lastMarkPrice = currentLivePrice;
+        pos.lastMarkPrice = v6Quote?.markPrice??currentLivePrice;
         pos.lastMarkAt = new Date().toISOString();
         marksChanged = true;
+      }
+
+      if (portfolioType === 'ai' && pos.brainPolicy?.version === 'v6') {
+        const executable=pos.direction==='LONG'?v6Quote?.bid:v6Quote?.ask;
+        if(!Number.isFinite(executable)||!(executable!>0)){result.skipped++;continue;}
+        const decision = decideBrainExit({policy:pos.brainPolicy,direction:pos.direction,entryPrice:pos.entryPrice,
+          stopLoss:pos.stopLoss,currentPrice:executable!,openedAtMs:Date.parse(pos.entryTime),nowMs:Date.now(),
+          watermark:pos.direction==='LONG'?(pos.highestPriceReached??pos.entryPrice):(pos.lowestPriceReached??pos.entryPrice)});
+        if(decision.reason==='INVALID_INPUT'){result.errors++;continue;}
+        if(pos.direction==='LONG')pos.highestPriceReached=decision.watermark;else pos.lowestPriceReached=decision.watermark;
+        if(decision.stopLoss!==pos.stopLoss){pos.stopLoss=decision.stopLoss;pos.isTrailing=true;result.trailed++;}
+        marksChanged=true;
+        if(decision.action==='EXIT'||options.forceReduceOnly||pos.brainReductionPending){
+          const reason=pos.brainReductionReason as SwingCloseReason|undefined??(options.forceReduceOnly?'SIGNAL_INVALIDATION':decision.reason==='TARGET'?'TAKE_PROFIT':decision.reason==='TIME'?'SIGNAL_INVALIDATION':'STOP_LOSS');
+          if(!options.brainTransaction)throw new Error('V6 financial exits require the owning fenced portfolio transaction');
+          await closePosition(portfolio,portfolioType,source,asset,pos,currentLivePrice,reason,result,false,options.brainTransaction);
+        }
+        continue;
       }
 
       // One watermark update, one hard stop/take-profit check, then a single
@@ -1241,11 +1372,16 @@ export async function sweepSwingExits(
     } catch (error) {
       result.errors++;
       await Logger.error(`[${source}] Sweep error on ${asset}: ${error instanceof Error ? error.message : String(error)}`);
+      if(pos.brainPolicy&&portfolioType==='ai')throw error;
     }
   }
 
   const riskStatsChanged = updateMarkedRiskStats(portfolio);
-  if (marksChanged || riskStatsChanged) await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+  if (marksChanged || riskStatsChanged) {
+    if(options.brainTransaction)await persistBrainPortfolioMutation(portfolio,options.brainTransaction);
+    else if(portfolioType==='ai'&&Object.values(portfolio.openPositions??{}).some(p=>p?.brainPolicy))throw new Error('V6 marks require the owning fenced portfolio transaction');
+    else await PortfolioManager.updatePortfolio(portfolio, portfolioType);
+  }
   await redis.set(`swing:lastExitSweep:${portfolioType}`, result, { ex: 120 });
   return result;
 }

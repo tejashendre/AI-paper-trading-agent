@@ -77,3 +77,10 @@ Dense quarter-hour observations cannot share retention with unfinished 24-hour l
 2026-10-03 breaker release paths: A breaker that says "requires a reset or review" with no code path that does either is a permanent stop, not a safety rule. Every halt needs a release path the system can take itself (cool-off, then probation one position at a time), and the health monitor should alert when cost-passing candidates are all risk-vetoed while nothing fills. Check live funnels, not only unit tests, to find these.
 
 2026-10-03 adding research families: Extend config hashes only for the new family; verify the existing families' hashes byte for byte before and after, or their accumulated evidence silently resets. Count tests that pin "two families per asset" are deliberate updates, not regressions.
+
+## Replacement implementation lessons, 24 October 2026
+- A memory store can hide production command bugs. Test production Redis NX forwarding and reject malformed script arguments before eval, because Lua runtime errors do not roll back earlier writes.
+- Compare evidence availability with the actual modeled fill clock. A quote observed after an entry and a future portfolio mark are invalid proof even when both exist by review time.
+- A reset retry must preserve the original archive receipt without requiring the human account to remain inactive forever. Fence the fresh acknowledgement window separately.
+- Protection must not await funding-history transport. Queue liabilities, reconcile from retained public observations separately, and keep entries and reset blocked while critical settlement gaps remain.
+- An empty new-run history is authoritative. Do not auto-recover it from a stale backup or allow a legacy whole-arena reset to touch the human account first.

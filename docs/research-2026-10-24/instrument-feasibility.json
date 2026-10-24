@@ -1,0 +1,123 @@
+{
+  "capturedAt": "2026-10-24T09:15:23.044397+00:00",
+  "source": "Bybit public v5 instruments-info and daily kline, no authentication",
+  "instruments": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "",
+      "launchTimeMs": "1584230400000",
+      "dailyBarsReturned": 1000,
+      "earliestDailyMs": 1706486400000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.10",
+      "minOrderQty": "0.001",
+      "maxLeverage": "150.00"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "",
+      "launchTimeMs": "1615766400000",
+      "dailyBarsReturned": 1000,
+      "earliestDailyMs": 1706486400000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.01",
+      "minOrderQty": "0.01",
+      "maxLeverage": "150.00"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "",
+      "launchTimeMs": "1634256000000",
+      "dailyBarsReturned": 1000,
+      "earliestDailyMs": 1706486400000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.010",
+      "minOrderQty": "0.1",
+      "maxLeverage": "100.00"
+    },
+    {
+      "symbol": "EURUSDUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "forex",
+      "launchTimeMs": "1788858596000",
+      "dailyBarsReturned": 47,
+      "earliestDailyMs": 1788825600000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.00001",
+      "minOrderQty": "0.1",
+      "maxLeverage": "100.00"
+    },
+    {
+      "symbol": "GBPUSDUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "forex",
+      "launchTimeMs": "1788858731000",
+      "dailyBarsReturned": 47,
+      "earliestDailyMs": 1788825600000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.00001",
+      "minOrderQty": "0.1",
+      "maxLeverage": "100.00"
+    },
+    {
+      "symbol": "USDJPYUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "forex",
+      "launchTimeMs": "1788858440000",
+      "dailyBarsReturned": 47,
+      "earliestDailyMs": 1788825600000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.001",
+      "minOrderQty": "0.001",
+      "maxLeverage": "100.00"
+    },
+    {
+      "symbol": "XAUUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "commodity",
+      "launchTimeMs": "1773022440000",
+      "dailyBarsReturned": 230,
+      "earliestDailyMs": 1773014400000,
+      "fundingIntervalMinutes": 240,
+      "tickSize": "0.01",
+      "minOrderQty": "0.001",
+      "maxLeverage": "150.00"
+    },
+    {
+      "symbol": "XAGUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "commodity",
+      "launchTimeMs": "1773024483000",
+      "dailyBarsReturned": 230,
+      "earliestDailyMs": 1773014400000,
+      "fundingIntervalMinutes": 240,
+      "tickSize": "0.01",
+      "minOrderQty": "0.001",
+      "maxLeverage": "150.00"
+    },
+    {
+      "symbol": "CLUSDT",
+      "status": "Trading",
+      "contractType": "LinearPerpetual",
+      "symbolType": "commodity",
+      "launchTimeMs": "1774338320000",
+      "dailyBarsReturned": 215,
+      "earliestDailyMs": 1774310400000,
+      "fundingIntervalMinutes": 480,
+      "tickSize": "0.010",
+      "minOrderQty": "0.01",
+      "maxLeverage": "150.00"
+    }
+  ]
+}

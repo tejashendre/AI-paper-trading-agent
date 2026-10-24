@@ -1,0 +1,78 @@
+{
+  "capturedAt": "2026-10-24T09:15:23.044397+00:00",
+  "definition": "Volatility uses the last 30 completed daily log returns, annualized with sqrt(365) for the continuously quoted perpetual; descriptive risk context only. The API request was capped at 1000 rows.",
+  "instruments": [
+    {
+      "symbol": "BTCUSDT",
+      "completeDailyBarsInRequest": 999,
+      "annualized30dLogReturnVol": 0.24688349784310562,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "ETHUSDT",
+      "completeDailyBarsInRequest": 999,
+      "annualized30dLogReturnVol": 0.32974247232235787,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "SOLUSDT",
+      "completeDailyBarsInRequest": 999,
+      "annualized30dLogReturnVol": 0.4054479937169961,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "EURUSDUSDT",
+      "completeDailyBarsInRequest": 46,
+      "annualized30dLogReturnVol": 0.04602379085167375,
+      "dailyLookback120Available": false,
+      "dailyLookback60Available": false,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "GBPUSDUSDT",
+      "completeDailyBarsInRequest": 46,
+      "annualized30dLogReturnVol": 0.05287473177001646,
+      "dailyLookback120Available": false,
+      "dailyLookback60Available": false,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "USDJPYUSDT",
+      "completeDailyBarsInRequest": 46,
+      "annualized30dLogReturnVol": 0.05553508169104818,
+      "dailyLookback120Available": false,
+      "dailyLookback60Available": false,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "XAUUSDT",
+      "completeDailyBarsInRequest": 229,
+      "annualized30dLogReturnVol": 0.18898622013222724,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "XAGUSDT",
+      "completeDailyBarsInRequest": 229,
+      "annualized30dLogReturnVol": 0.36993257331501517,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    },
+    {
+      "symbol": "CLUSDT",
+      "completeDailyBarsInRequest": 214,
+      "annualized30dLogReturnVol": 0.34917467107696076,
+      "dailyLookback120Available": true,
+      "dailyLookback60Available": true,
+      "fourHourWarmupFeasibleFromLaunch": true
+    }
+  ]
+}

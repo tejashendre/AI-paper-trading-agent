@@ -206,6 +206,7 @@ async function reduceOnlyStep(portfolio: BookPortfolio, prices: Map<string, Perp
 /** Every minute: re-check the risk state and, when reducing, take one staged step. */
 async function runRiskSweep(prices: Map<string, PerpTicker>) {
   await withLock(async () => {
+    if(await replacementEpochRetiresXsec())return;
     const portfolio = await loadBookPortfolio();
     const edge = await getRedis().get<{ verdict?: string }>(EDGE_VERDICT_KEY).catch(() => null);
     const decision = await decideRiskState(portfolio, prices, edge?.verdict ?? "INSUFFICIENT_DATA");
@@ -223,6 +224,7 @@ async function runRiskSweep(prices: Map<string, PerpTicker>) {
  * the verdict the risk policy needs; otherwise return null.
  */
 async function releaseOnShadowEvidence(portfolio: BookPortfolio): Promise<string | null> {
+  if(await replacementEpochRetiresXsec()||await getRedis().get('brain:v6:migration-freeze')!==null)return null;
   const haltedAtMs = Date.parse(portfolio.riskState?.haltedAt ?? "") || 0;
   const curve = (await getCurve(SHADOW_BOOK_EQUITY_CURVE_KEY)).filter((point) => Date.parse(point.at) >= haltedAtMs);
   const evidence = evaluateShadowEvidence(curve);
@@ -289,6 +291,7 @@ async function runRebalance() {
   rebalancing = true;
   try {
     await withLock(async () => {
+      if(await replacementEpochRetiresXsec())return;
       const portfolio = await loadBookPortfolio();
 
       // Equity sampling, funding and the edge review run in every risk state,
@@ -468,12 +471,18 @@ let lastFundingCheckAt = 0;
  * never contends with itself for the book lock.
  */
 async function runCycle() {
+  if(await replacementEpochRetiresXsec())return;
   await runMark().catch(() => undefined);
   await maybeRebalance().catch(() => undefined);
   if (Date.now() - lastFundingCheckAt >= FUNDING_CHECK_INTERVAL_MS) {
     lastFundingCheckAt = Date.now();
     await runFunding().catch(() => undefined);
   }
+}
+
+async function replacementEpochRetiresXsec():Promise<boolean>{
+  const redis=getRedis();
+  return await redis.get('brain:v6:activeRun')!==null||await redis.get('brain:v6:xsecMode')==='HISTORICAL_ONLY';
 }
 
 async function main() {

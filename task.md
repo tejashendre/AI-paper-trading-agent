@@ -1,5 +1,14 @@
 # Active work
 
+## 2026-10-24 Approved replacement swing brain implementation
+Owner approved docs/superpowers/specs/2026-10-24-replacement-swing-brain-design.md and instructed implementation. Execute docs/superpowers/plans/2026-10-24-replacement-swing-brain.md in codex/replacement-swing-brain. One shared $10,000 AI book, 10% drawdown stop, initial $25 planned position risk, later $50 maximum, exact-evidence qualification and no human reset. SSH work is deferred. Preserve old runs and production until the tested replacement and reset preview are reviewable.
+- [x] Four pure causal class strategies and shared risk/evidence policies implemented and locally verified.
+- [x] Native capture, descriptive economic replay and replacement runtime with fenced protective exits implemented and locally verified.
+- [x] Archived AI-only reset protocol and read-only preview API/dashboard implemented and locally verified.
+- [ ] Complete final independent whole-branch review, production preview and reviewed legacy flatten preparation before release/reset. Reviewer usage limits interrupted the final review. Production and human state are unchanged.
+Local release notes: docs/V6_IMPLEMENTATION_AND_RELEASE_PREVIEW_2026-10-24.md. Final local checks: 551 tests passed, strategy audit 156 passed, TypeScript/lint/build passed. No performance qualification was earned.
+Execution recovery ledger: .superpowers/sdd/2026-10-24-replacement-swing-brain/progress.md. Do not redispatch completed tasks without checking their commits and ledger.
+
 ## 2026-10-02 final release intake
 Owner approved final upload and merge after fixes and requested real-time completion of the remaining work. Complete the official FX public baseline with frozen-cost and cohort regressions before release; preserve old records. Verify the running release afterward. Genuine promotion still requires the unchanged forward evidence window; no artificial promotion or shortened check is authorized.
 - [x] Resolve FX public-baseline fees with official symbol-scope evidence and frozen-cost regressions: 334/334 tests, audit 156/0/0, types/lint/build clean.

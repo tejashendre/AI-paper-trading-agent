@@ -277,3 +277,19 @@ Tejas asked to make everything merge-ready if nothing is pending. Pending item f
 - Live record: 26 near-miss probe positions won 38% for -$48.6; 24 standard entries won 62% for +$112.8; since 2026-09-20 nearly every entry was a probe and every loss in the freezing streak was a probe.
 - LIVE_NEAR_MISS_PROBES = false: near-miss setups are recorded and scored as watched setups but do not trade; promoted research families still enter as gated probes. Probe-mode losses no longer count toward the full-stop streak (other loss, drawdown and risk budgets unchanged). Against live trades the streak is now 0 (last full-size close was a win).
 - Integration freeze test rescans at the full-quality moment. 400/400, audit 156/0/0, tsc, lint, build clean. PR PENDING owner go.
+
+## 2026-10-24 continuation intake
+Continued the approved replacement implementation in the attached worktree. Engine and risk commits are saved; evidence, reset and routing changes require local verification and integration.
+Three implementation agents stopped on an account usage limit. Their saved files remain available; no production reset, deployment or human-account mutation has occurred.
+The next slice verifies saved evidence and reset units, completes native capture and replay, and then integrates the guarded runtime.
+
+## 2026-10-24 verified continuation slices
+The saved engine and risk units are implemented. Evidence and reset units passed focused verification, including new regressions for future portfolio observations, late entry quotes, human activity during interrupted reset recovery, and authoritative old-run flatness.
+Account routing now blocks legacy arena reset before either account changes and never restores an empty active-run trade history from a stale backup. Focused routing, evidence and reset verification passed before runtime integration.
+The replacement runtime, dashboard status and financial transaction primitives are now under integrated verification. The default daemon points to v6 and XSEC allocation is retired for an active replacement epoch. A nine-contract native capture produced 10,180 diagnostic decision points; economic qualification remains unavailable without historical execution depth, calendar snapshots and funding marks.
+No production deployment or reset has been performed. Full regression, lint, build, staged unwind, economic replay completion and independent final review remain open.
+
+## 2026-10-24 replacement candidate local verification
+The replacement now has four causal class strategies, one shared risk pool, exact evidence permissions, a separate funding worker, fenced cash/trade/outbox writes, capacity-staged exits, bounded compressed decision archives, and an archive-first AI-only reset protocol. Legacy swing entries and XSEC allocations refuse an active replacement epoch. The human path and prior histories remain preserved.
+The final full regression suite passed 551 tests with zero failures. The strategy audit passed 156 checks with zero warnings or failures. TypeScript, lint, production build and diff checks passed. Desktop and 390-pixel status fixtures were inspected without reading or changing account data. Source manifest: f510c23b325ba98cd50537f10f95c44b9847c54f090ac76136f71597bc753eb5 across 149 runtime/source files.
+The native-data scenario evaluated 23,341 decisions but remains NOT_TESTABLE for activation. Only 18 hypothetical shared-book trades preceded a crypto streak halt; historical execution depth, calendar snapshots and metadata schedules remain inadequate. Final independent review was interrupted by reviewer usage limits. Production preview, reviewed legacy flatten preparation, deployment and AI reset remain open. No production or SSH changes were made.

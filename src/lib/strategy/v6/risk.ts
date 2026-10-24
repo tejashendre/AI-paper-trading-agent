@@ -3,6 +3,16 @@ import { alignStopTowardEntry, decimalString, floorOrderQty, getAssetSpec, valid
 import { buildPaperExecutionPlan, expectedFundingTimes } from '@/lib/trading/executionCostModel';
 import { evidenceHash, freezeBrainCosts } from './evidence';
 import type { SwingSetup } from './engine';
+import type { Candle } from '@/lib/types';
+export function brainVolatilityScale(daily:readonly Candle[],nowMs:number):number|null{
+  const day=86400000,bars=daily.slice(-31);
+  if(!Number.isFinite(nowMs)||bars.length!==31||bars.some((b,i)=>!Number.isFinite(b.close)||b.close<=0||!Number.isFinite(b.time)||
+    b.time*1000%day!==0||(b.time+86400)*1000>nowMs||i>0&&b.time-bars[i-1].time!==86400)||
+    (bars[30].time+86400)*1000!==Math.floor(nowMs/day)*day)return null;
+  const returns=bars.slice(1).map((b,i)=>Math.log(b.close/bars[i].close)),mean=returns.reduce((sum,r)=>sum+r,0)/30;
+  const vol=Math.sqrt(returns.reduce((sum,r)=>sum+(r-mean)**2,0)/29*365);
+  return Number.isFinite(vol)?vol>0?Math.min(1,.2/vol):1:null;
+}
 export interface RiskExposure { asset: ConfiguredAsset; riskUsdt: number; notionalUsdt: number; marginUsdt: number }
 export interface RiskRequest extends RiskExposure { id: string; riskTier?: 'INITIAL' | 'ESCALATED' }
 export interface RiskAllocation extends RiskRequest { scale: number; reason: string }

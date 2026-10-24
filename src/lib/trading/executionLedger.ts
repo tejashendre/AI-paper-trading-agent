@@ -16,6 +16,7 @@ export type ExecutionLedgerEventType =
   | "RESEARCH_DEMOTED"
   | "BOOK_RISK_RELEASED"
   | "SYSTEM_RESET"
+  | "AI_RUN_STARTED"
   | "SCAN_COMPLETED"
   | "ENTRY_APPROVED"
   | "ENTRY_FILLED"
