@@ -1,4 +1,5 @@
 import test from 'node:test';
+import * as riskModule from '../src/lib/strategy/v6/risk';
 import assert from 'node:assert/strict';
 import { allocateBrainRisk, sizeBrainOrder, evaluateBrainBreakers, RiskRequest } from '../src/lib/strategy/v6/risk';
 import { getConfiguredInstrument, validateBybitMetadata } from '../src/lib/trading/instrumentRegistry';
@@ -74,4 +75,13 @@ test('stale setup, wrong contract, missing spread, insufficient liquidity and su
   assert.equal(sizeBrainOrder({...order(),halfSpreadBps:NaN}).approved,false);
   assert.equal(sizeBrainOrder({...order(),capacityNotionalUsdt:0}).approved,false);
   assert.equal(sizeBrainOrder({...order(),riskBudgetUsdt:0.001}).approved,false);
+});
+test('the shared volatility overlay only reduces risk using 30 completed contiguous daily returns',()=>{
+  assert.equal(typeof riskModule.brainVolatilityScale,'function');
+  const day=86400000,now=Date.parse('2026-10-20T12:00:00Z'),end=Math.floor(now/day)*day;
+  const make=(shock:boolean)=>Array.from({length:31},(_,i)=>({time:(end-(31-i)*day)/1000,open:100,high:200,low:50,close:shock?100*Math.exp(i%2?.1:-.1):100,volume:1}));
+  assert.equal(riskModule.brainVolatilityScale(make(false),now),1);
+  const scaled=riskModule.brainVolatilityScale(make(true),now);assert.ok(scaled!==null&&scaled>0&&scaled<.1);
+  assert.equal(riskModule.brainVolatilityScale(make(false).slice(1),now),null);
+  const gap=make(false);gap[12].time-=day;assert.equal(riskModule.brainVolatilityScale(gap,now),null);
 });
