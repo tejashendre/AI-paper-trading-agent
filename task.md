@@ -1,11 +1,17 @@
 # Active work
 
+## 2026-10-28 hide oversized frontend diagnostics
+- [x] Inspect the user's trader website through Computer Use and identify the expanded v6 panel above the account cards.
+- [x] Remove the panel from the dashboard while preserving the compact bot mode, account displays and all backend strategy safeguards.
+- [ ] Complete release checks, deploy and inspect the live page through Computer Use. Preserve the existing AI run and human account; no reset or strategy promotion is part of this frontend fix.
+
 ## 2026-10-28 approved publication and Oracle release
 Owner explicitly approved publishing the existing candidate and getting the replacement running on Oracle Cloud. Future security changes remain separate. The original candidate was pushed unchanged at 86e1a90. Necessary release fixes preserve the four strategies, risk ceilings, qualification and human account.
 - [x] Diagnose repeated health failures: GitHub received HTTP 403 while local public checks and read-only Oracle container checks were healthy.
 - [x] Publish the original branch and repair independently confirmed ledger ordering, entry deduplication and v6 health integration defects.
 - [x] Complete combined GitHub CI with isolated real Redis transaction tests and read-only production reset preview. Run 40665487660 passed 576 tests without skips; the Oracle preview reported no reset blockers.
-- [ ] Deploy the verified release, perform only the approved archive-first AI reset if flat/settled, and verify human preservation, source identity, ledger and healthy scans.
+- [x] Deploy the verified release, perform only the approved archive-first AI reset if flat/settled, and verify human preservation, source identity, ledger and healthy scans. PRs 15 and 16 are merged. Oracle a65528d deployed successfully in run 40668231419; AI-only reset 40669510762 completed with a durable archive and human preservation. The live run has 10000 cash/equity, all nine assets in SHADOW and no account halt reasons. Post-reset health 40669643943 passed origin checks, with the existing Cloudflare public-probe warning reported separately.
+- [x] Run safe Oracle storage maintenance. Run 40669530068 passed with 38 GB free and 22 percent used; the ledger remained valid and all four containers healthy. Deployment reduced Docker build cache from 2.503 GB to 1.231 GB. Local .next/cache deletion was blocked by automatic approval policy; its 121492802 bytes remain. Preserve the shared dependency junction, account state, research evidence and recovery archives.
 
 ## 2026-10-24 Approved replacement swing brain implementation
 Owner approved docs/superpowers/specs/2026-10-24-replacement-swing-brain-design.md and instructed implementation. Execute docs/superpowers/plans/2026-10-24-replacement-swing-brain.md in codex/replacement-swing-brain. One shared $10,000 AI book, 10% drawdown stop, initial $25 planned position risk, later $50 maximum, exact-evidence qualification and no human reset. SSH work is deferred. Preserve old runs and production until the tested replacement and reset preview are reviewable.
