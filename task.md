@@ -1,5 +1,10 @@
 # Active work
 
+## 2026-10-28 hide oversized frontend diagnostics
+- [x] Inspect the user's trader website through Computer Use and identify the expanded v6 panel above the account cards.
+- [x] Remove the panel from the dashboard while preserving the compact bot mode, account displays and all backend strategy safeguards.
+- [ ] Complete release checks, deploy and inspect the live page through Computer Use. Preserve the existing AI run and human account; no reset or strategy promotion is part of this frontend fix.
+
 ## 2026-10-28 approved publication and Oracle release
 Owner explicitly approved publishing the existing candidate and getting the replacement running on Oracle Cloud. Future security changes remain separate. The original candidate was pushed unchanged at 86e1a90. Necessary release fixes preserve the four strategies, risk ceilings, qualification and human account.
 - [x] Diagnose repeated health failures: GitHub received HTTP 403 while local public checks and read-only Oracle container checks were healthy.

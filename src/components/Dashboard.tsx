@@ -1,6 +1,6 @@
 "use client";
 import { AuthGate } from "./AuthGate";
-import { BrainStatusPanel, diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
+import { diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
 import CrossSectionalBook from "@/components/CrossSectionalBook";
 import Benchmarks from "@/components/Benchmarks";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
@@ -765,8 +765,6 @@ function DashboardContent({ secret }: { secret: string }) {
             </button>
           </div>
         </div>
-
-        <BrainStatusPanel status={brainStatus} isDark={isDark} />
 
         {/* Dynamic Leaderboard Comparison Display */}
         <div className={`grid grid-cols-1 md:grid-cols-3 gap-6 rounded-2xl p-5 border relative overflow-hidden ${
