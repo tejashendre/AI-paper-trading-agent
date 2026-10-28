@@ -1,5 +1,12 @@
 # Active work
 
+## 2026-10-28 approved publication and Oracle release
+Owner explicitly approved publishing the existing candidate and getting the replacement running on Oracle Cloud. Future security changes remain separate. The original candidate was pushed unchanged at 86e1a90. Necessary release fixes preserve the four strategies, risk ceilings, qualification and human account.
+- [x] Diagnose repeated health failures: GitHub received HTTP 403 while local public checks and read-only Oracle container checks were healthy.
+- [x] Publish the original branch and repair independently confirmed ledger ordering, entry deduplication and v6 health integration defects.
+- [ ] Complete combined GitHub CI with isolated real Redis transaction tests and read-only production reset preview.
+- [ ] Deploy the verified release, perform only the approved archive-first AI reset if flat/settled, and verify human preservation, source identity, ledger and healthy scans.
+
 ## 2026-10-24 Approved replacement swing brain implementation
 Owner approved docs/superpowers/specs/2026-10-24-replacement-swing-brain-design.md and instructed implementation. Execute docs/superpowers/plans/2026-10-24-replacement-swing-brain.md in codex/replacement-swing-brain. One shared $10,000 AI book, 10% drawdown stop, initial $25 planned position risk, later $50 maximum, exact-evidence qualification and no human reset. SSH work is deferred. Preserve old runs and production until the tested replacement and reset preview are reviewable.
 - [x] Four pure causal class strategies and shared risk/evidence policies implemented and locally verified.

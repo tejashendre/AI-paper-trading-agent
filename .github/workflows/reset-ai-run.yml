@@ -1,0 +1,74 @@
+name: Preview or reset AI run only
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Preview is read-only. Execute archives and resets only the AI run.'
+        type: choice
+        options: [preview, execute]
+        default: preview
+      run_id:
+        description: 'Immutable identifier for the new AI run.'
+        required: true
+        default: ai-v6-2026-10-28
+      expected_commit:
+        description: 'Full verified deployed commit SHA.'
+        required: true
+      confirm:
+        description: 'Execute requires AI_ONLY_RESET. Human state and old histories are preserved.'
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quant-vps
+  cancel-in-progress: false
+
+jobs:
+  reset-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate operation before using the Oracle connection
+        id: operation
+        env:
+          MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ inputs.run_id }}
+          EXPECTED: ${{ inputs.expected_commit }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -eu
+          [[ "$MODE" == preview || "$MODE" == execute ]]
+          [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]]
+          [[ "$EXPECTED" =~ ^[a-f0-9]{40}$ ]]
+          if [ "$MODE" = execute ]; then [ "$CONFIRM" = AI_ONLY_RESET ]; fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "expected=$EXPECTED" >> "$GITHUB_OUTPUT"
+      - name: Archive-first AI-only operation on the verified release
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 8m
+          script: |
+            set -eu
+            umask 077
+            cd /home/ubuntu/version-6
+            EXPECTED='${{ steps.operation.outputs.expected }}'
+            RUN_ID='${{ steps.operation.outputs.run_id }}'
+            MODE='${{ steps.operation.outputs.mode }}'
+            test "$(git rev-parse HEAD)" = "$EXPECTED"
+            test "$(docker inspect quant-swing-daemon --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$EXPECTED"
+            IMAGE="quant-trader:$EXPECTED"
+            if [ "$MODE" = execute ]; then
+              docker run --rm --network container:quant-redis -v "$PWD/data:/app/data" "$IMAGE" \
+                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives --execute
+            else
+              docker run --rm --network container:quant-redis -v "$PWD/data:/app/data" "$IMAGE" \
+                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives
+            fi

@@ -15,6 +15,16 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    services:
+      redis-fixture:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - name: Checkout Code
@@ -39,6 +49,8 @@ jobs:
 
       # Offline: fake Bybit behind fetch, in-memory Redis, temp ledger. No secrets.
       - name: Run Bybit Upgrade Tests
+        env:
+          BRAIN_REDIS_TEST_URL: redis://127.0.0.1:6379/15
         run: npm run test:upgrade
 
       - name: Run Strategy Audit
@@ -131,7 +143,7 @@ jobs:
             docker logs quant-xsec-daemon --tail=20 2>&1 || true
 
             echo "Verifying deployment health and scan advancement..."
-            STATUS_URL=https://trader.tejashendre.com/api/user/status \
+            STATUS_URL=http://127.0.0.1:3000/api/user/status \
             STATUS_AUTH_TOKEN=SPECTATOR \
             WAIT_SECONDS=75 \
             sh scripts/vps-deploy-check.sh --expected-commit "$(git rev-parse --short HEAD)"
