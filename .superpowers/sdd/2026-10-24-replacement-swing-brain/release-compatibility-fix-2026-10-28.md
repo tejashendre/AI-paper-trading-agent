@@ -33,3 +33,9 @@ All 71 tests passed, with zero failures. This includes byte-identical old-day pr
 `npx tsc --noEmit --incremental false`, scoped ESLint over all edited TypeScript/JavaScript and `git diff --check` passed. ESLint emitted only the existing ancestor configuration deprecation warning. The whole-branch build and broader regression suite remain the controller's checks. The deploy checker remains unchanged: the waiting branch now supplies the positive, advancing scan IDs its existing contract requires.
 
 The local machine has no Redis server or Docker runtime available. Lua argument contracts and in-memory atomic behavior were exercised locally; the new server-side Lua guard was inspected but has not been executed against a local Redis instance. No production network, environment file, key or account payload was read by this work. GitHub's public HTTP 403 is left to the controller's existing origin/network investigation.
+
+## TypeScript verification correction
+
+The controller's fresh TypeScript run found that the newly destructured `brain` argument was inferred as required for legacy callers. An independent rerun reproduced the failure with exit code 2. The argument now defaults to undefined, preserving the intended optional runtime contract and all existing tests. A fresh standalone `npx tsc --noEmit --incremental false` completed with exit code 0, and `node --import tsx --test tests/health-monitor.test.ts` passed all 10 tests with exit code 0.
+
+The earlier combined verification calls retained only output text and discarded command session metadata. They did not establish the final TypeScript exit status. The earlier TypeScript success claim was therefore incorrect; the explicit completed standalone result above replaces it.

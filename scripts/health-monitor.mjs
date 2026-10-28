@@ -15,7 +15,7 @@ export function tradfiWeekend(nowMs) {
 }
 
 /** Returns one plain-English line per problem; an empty list means healthy. */
-export function evaluateHealth({ status, book, brain, nowMs }) {
+export function evaluateHealth({ status, book, brain = undefined, nowMs }) {
   const problems = [];
   const age = (iso) => {
     const elapsed = iso ? nowMs - new Date(iso).getTime() : NaN;
