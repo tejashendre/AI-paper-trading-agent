@@ -403,6 +403,7 @@ async function sampleSwingEquity(portfolio: { initialCapital: number; totalPnl: 
 
 async function runExitWatchdog() {
   if (isExitWatching) return;
+  if(await getRedis().get('brain:v6:activeRun')!==null)return;
   isExitWatching = true;
 
   try {
@@ -410,6 +411,7 @@ async function runExitWatchdog() {
       const portfolioRelease = await PortfolioManager.acquireWriteLock("ai");
       if (!portfolioRelease) return;
       try {
+        if(await getRedis().get('brain:v6:activeRun')!==null)return;
         const portfolio = await getAIPortfolio();
         ensurePortfolioShape(portfolio);
         // Book any newly published funding before exit decisions use cash.
@@ -431,6 +433,7 @@ async function runExitWatchdog() {
 
 async function runEntryScan() {
   if (isEntryScanning) return;
+  if(await getRedis().get('brain:v6:activeRun')!==null)return;
   isEntryScanning = true;
 
   // An operator freeze (migration or rollback window) stops new entries only.
@@ -470,6 +473,7 @@ async function runEntryScan() {
   };
 
   try {
+    if(await getRedis().get('brain:v6:activeRun')!==null)return;
     await bootstrapLocalLearningRules();
     await ensureResearchBaselines().catch(error=>Logger.error('Research registration deferred: '+String(error)));
     const redis = getRedis();

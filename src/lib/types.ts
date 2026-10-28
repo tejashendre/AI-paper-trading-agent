@@ -5,6 +5,8 @@
 
 // Type-only: keeps the registry's runtime code out of client bundles.
 import type { EconomicsModel, InstrumentRef } from "@/lib/trading/instrumentRegistry";
+import type { BrainPositionPolicy } from '@/lib/strategy/v6/engine';
+import type { BrainExecutionObservation, BrainFrozenCosts, BrainFundingObservation } from '@/lib/strategy/v6/evidence';
 
 // ======================== Market Data ============================
 
@@ -161,6 +163,25 @@ export interface RiskParameters {
 export type PaperMarginMode = 'PROBE' | 'STANDARD' | 'STRONG';
 
 export interface StrategyProvenance {
+  brainOriginalMarginUsdt?:number;
+  brainOriginalQuantity?:number;
+  brainRealizedNetPnlUsdt?:number;
+  brainReductionPending?:boolean;
+  brainReductionReason?:string;
+  brainPolicy?: BrainPositionPolicy;
+  brainRunId?: string;
+  brainIdentityHash?: string;
+  brainSourceHash?: string;
+  brainRiskPolicyHash?: string;
+  brainExitPolicyHash?: string;
+  brainCosts?: BrainFrozenCosts;
+  brainEntryObservation?: BrainExecutionObservation;
+  brainExitObservation?: BrainExecutionObservation;
+  brainExitSource?: Record<string,unknown>;
+  brainFundingIntervalMinutes?: number;
+  brainFundingObservations?: BrainFundingObservation[];
+  brainStressedEntry?: {fillPrice:number;feeUsdt:number};
+  brainStressedExit?: {fillPrice:number;feeUsdt:number};
   strategyFamily?: string;
   strategyConfigHash?: string;
   strategyDataSchemaVersion?: string;
@@ -292,6 +313,8 @@ export interface PendingLedgerEvent {
 
 /** A closed position whose funding boundaries are still awaiting settlement data. */
 export interface FundingTail {
+  brainRunId?:string;
+  brainFundingIntervalMinutes?:number;
   positionId: string;
   asset: string;
   symbol: string;
@@ -316,6 +339,7 @@ export interface InstrumentMigrationMarker {
 }
 
 export interface Portfolio {
+  brainFundingObservations?:Record<string,BrainFundingObservation[]>;
   usd: number;
   btc: number;            // Left for baseline compatibility
   balances: Record<string, number>; // Dynamic balances: e.g. { BTC: 0.1, ETH: 1.5, GOLD: 2.4 }

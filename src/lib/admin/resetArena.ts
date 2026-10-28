@@ -69,6 +69,10 @@ export async function resetArena(input: {
   capital?: number;
   source: string;
 }): Promise<ResetResult> {
+  // Check before starting either reset: Promise.all could otherwise reset the human first.
+  if (await getRedis().get('brain:v6:activeRun') !== null) {
+    throw new Error('Replacement epoch requires the archived AI-only reset');
+  }
   const capital = Number.isFinite(input.capital) && (input.capital as number) >= 100 && (input.capital as number) <= 1_000_000
     ? (input.capital as number)
     : DEFAULT_RESET_CAPITAL;

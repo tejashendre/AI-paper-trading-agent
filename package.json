@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "daemon:swing": "tsx src/daemon/swingDaemon.ts",
+    "daemon:swing": "tsx src/daemon/replacementSwingDaemon.ts",
     "audit:strategy": "tsx scripts/strategy-audit.ts",
     "agent:status": "tsx scripts/agent-status.ts",
     "agent:audit": "tsx scripts/strategy-audit.ts",
@@ -25,6 +25,10 @@
     "ledger:archive": "tsx scripts/ledger-archive.ts",
     "ledger:compact": "tsx scripts/ledger-compact.ts",
     "research:backfill": "tsx scripts/research-backfill.ts",
+    "brain:capture": "tsx scripts/capture-swing-v6.ts",
+    "brain:calendar": "tsx scripts/capture-calendar-v6.ts",
+    "brain:replay": "tsx scripts/replay-swing-v6.ts",
+    "brain:reset": "tsx scripts/reset-ai-run.ts",
     "test:upgrade": "node scripts/run-upgrade-tests.mjs"
   },
   "dependencies": {

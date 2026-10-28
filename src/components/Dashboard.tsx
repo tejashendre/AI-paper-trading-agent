@@ -1,5 +1,6 @@
 "use client";
 import { AuthGate } from "./AuthGate";
+import { BrainStatusPanel, diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
 import CrossSectionalBook from "@/components/CrossSectionalBook";
 import Benchmarks from "@/components/Benchmarks";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
@@ -308,6 +309,9 @@ function DashboardContent({ secret }: { secret: string }) {
   const [chartInterval, setChartInterval] = useState("1h");
   const [chartTimezone, setChartTimezone] = useState<ChartTimezone>("EU");
   const [data, setData] = useState<any>(null);
+  const [brainStatus, setBrainStatus] = useState<BrainStatusView | null>(null);
+  const replacementActive = Boolean(brainStatus?.currentRun);
+  const legacyStatusVerified = brainStatus?.mode === 'RESET_REQUIRED';
   const [signals, setSignals] = useState<any>(null);
   const [livePrices, setLivePrices] = useState<any>(null);
   const [liveFeed, setLiveFeed] = useState<any>(null);
@@ -336,7 +340,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [plainLanguage, setPlainLanguage] = useState(false);
   // The cross-sectional book is a separate paper account with its own daemon.
   // Without this the headline cards report only the swing engine, so a live
-  // book of 24 positions reads on screen as "no activity" — which is exactly
+  // book of 24 positions reads on screen as "no activity" - which is exactly
   // how a working bot gets mistaken for a broken one.
   const [bookSummary, setBookSummary] = useState<{
     equityUsd: number; totalReturnUsd: number; totalReturnPercent: number;
@@ -352,6 +356,20 @@ function DashboardContent({ secret }: { secret: string }) {
       headers: { ...init?.headers, 'Authorization': `Bearer ${secret}` },
     });
   }, [secret]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadBrain = async () => {
+      try {
+        const response = await fetch('/api/brain', { cache: 'no-store' });
+        const payload = await response.json();
+        if (!cancelled) setBrainStatus(response.ok && payload.version === 'v6' ? payload : null);
+      } catch { if (!cancelled) setBrainStatus(null); }
+    };
+    void loadBrain();
+    const timer = setInterval(loadBrain, 15000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   // Load theme preference from localStorage on mount
   useEffect(() => {
@@ -592,33 +610,18 @@ function DashboardContent({ secret }: { secret: string }) {
   };
 
   const handleReset = async () => {
-    if (isSpectator) {
-      alert("🔒 Spectator Mode: Database mutation blocked. Resets are only permitted for administrators.");
-      return;
-    }
-    if (!confirm("Are you sure you want to reset both portfolios? All trade history will be wiped!")) return;
-    const capitalStr = window.prompt("Enter starting capital (e.g., 10000):", "10000");
-    if (!capitalStr) return; // User cancelled
-    const capital = parseFloat(capitalStr);
-    if (isNaN(capital) || capital <= 0) {
-      alert("Invalid capital amount.");
-      return;
-    }
+    if (isSpectator) return;
     try {
-      const res = await fetcher("/api/user/reset", { 
+      const res = await fetcher('/api/brain', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capital })
+        body: JSON.stringify({ action: 'preview', runId: `preview-${Date.now()}` })
       });
       const json = await res.json();
-      if (json.success) {
-        alert(json.message);
-        await refresh();
-      } else {
-        alert(`Reset failed: ${json.error}`);
-      }
-    } catch (e) {
-      alert(`Error resetting: ${e}`);
+      if (!res.ok) { alert(json.error || 'Preview unavailable'); return; }
+      alert(`Read-only AI reset preview. No accounts changed.\nCapital: $10,000\nSource keys: ${json.counts.archivedKeys}\nReadiness: ${json.canReset ? 'Flatness checks pass; release gates still required' : json.blockers.join(', ')}\nExecution is unavailable from this dashboard.`);
+    } catch {
+      alert('Reset preview unavailable. No reset was requested.');
     }
   };
 
@@ -716,7 +719,7 @@ function DashboardContent({ secret }: { secret: string }) {
               <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
                 <span className="w-1 h-1 rounded-full bg-blue-500 animate-pulse"></span>
                 <span className={`text-[9px] ${textMuted} font-mono font-bold uppercase tracking-wider`}>Bot Engine:</span>
-                <span className="text-[10px] font-mono font-bold text-blue-500">RUNNING</span>
+                <span className="text-[10px] font-mono font-bold text-blue-500">{brainStatus?.mode ?? 'UNAVAILABLE'}</span>
               </div>
               <div className={`flex items-center gap-2 ${isDark ? "bg-[#07070a]/80 border-[#15151c]" : "bg-white border-[#e2e8f0] shadow-2xs"} border rounded-lg px-2.5 py-1`}>
                 <span className="w-1 h-1 rounded-full bg-indigo-500 animate-ping"></span>
@@ -763,6 +766,8 @@ function DashboardContent({ secret }: { secret: string }) {
           </div>
         </div>
 
+        <BrainStatusPanel status={brainStatus} isDark={isDark} />
+
         {/* Dynamic Leaderboard Comparison Display */}
         <div className={`grid grid-cols-1 md:grid-cols-3 gap-6 rounded-2xl p-5 border relative overflow-hidden ${
           isDark ? "bg-[#0c0c10]/40 border-[#1c1c24] shadow-2xl" : "bg-white border-[#e2e8f0] shadow-xs"
@@ -792,7 +797,7 @@ function DashboardContent({ secret }: { secret: string }) {
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
-            {humanGain.gain !== null && swingGain.gain !== null && (
+            {legacyStatusVerified && humanGain.gain !== null && swingGain.gain !== null && (
               <>
                 <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
                   isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
@@ -803,10 +808,11 @@ function DashboardContent({ secret }: { secret: string }) {
                     only. Without this line a reader seeing a live 24-position
                     book would reasonably assume it was counted. */}
                 <div className={`text-[8px] font-mono mt-1 text-center ${textMuted}`}>
-                  total gain: human vs swing · the book is a separate account
+                  {replacementActive ? 'Current AI run compared with human lifetime results; start dates differ.' : 'Historical AI and human results; no current v6 run is verified.'}
                 </div>
               </>
             )}
+            {replacementActive && <p className={`mt-2 text-xs ${textSub}`}>Human lifetime and current AI run have different start dates.</p>}
           </div>
           <button 
             onClick={() => setViewMode("ai")} 
@@ -817,8 +823,8 @@ function DashboardContent({ secret }: { secret: string }) {
             }`}
           >
             <div className="flex justify-between items-center mb-2">
-              <span className="text-[9px] font-bold font-mono tracking-widest text-blue-500 uppercase">AI TRADING AGENT</span>
-              {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">ACTIVE</span>}
+              <span className="text-[9px] font-bold font-mono tracking-widest text-blue-500 uppercase">{replacementActive ? 'AI CURRENT RUN' : 'AI HISTORICAL ACCOUNT'}</span>
+              {viewMode === "ai" && <span className="text-[8px] bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded border border-blue-500/20 font-mono font-bold">SELECTED VIEW</span>}
             </div>
             <h3 data-testid="swing-total-gain" className={`text-2xl font-bold font-mono ${swingGain.gain === null ? textMuted : swingGain.gain >= 0 ? (isDark ? "text-emerald-400" : "text-emerald-700") : (isDark ? "text-red-400" : "text-red-700")}`}>
               {data?.aiTotalValue === null ? 'Unavailable' : formatSignedGain(swingGain.gain)}
@@ -829,11 +835,11 @@ function DashboardContent({ secret }: { secret: string }) {
             <p className={`text-xs font-mono mt-1 ${textMuted}`}>
               Account value: {data?.aiTotalValue === null ? 'Unavailable' : swingGain.totalValue === null ? 'Loading...' : '$' + swingGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
             </p>
-            {bookSummary && (
+            {bookSummary && !replacementActive && (
               <p className={`text-[10px] font-mono font-bold mt-0.5 ${bookSummary.totalReturnUsd >= 0 ? "text-green-500" : "text-red-500"}`}>
                 {formatSignedGain(bookSummary.totalReturnUsd)}{" "}
                 <span className={`font-normal ${textMuted}`}>
-                  book · {bookSummary.openPositions} open ({bookSummary.longs}L/{bookSummary.shorts}S)
+                  historical XSEC · {bookSummary.openPositions} recorded open ({bookSummary.longs}L/{bookSummary.shorts}S)
                 </span>
               </p>
             )}
@@ -1202,8 +1208,8 @@ function DashboardContent({ secret }: { secret: string }) {
             <div className={`border rounded-2xl p-4 ${bgCard}`}>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Strategy Diagnostics</h2>
-                  <p className={`text-[10px] mt-1 ${textMuted}`}>Optional candle replay test for the selected chart. Hidden by default to keep the live dashboard clean.</p>
+                  <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider`}>Separate EMA chart experiment</h2>
+                  <p className={`text-[10px] mt-1 ${textMuted}`}>Different rules from v6. This experiment supplies no v6 validation or trading permission.</p>
                 </div>
                 <button
                   onClick={() => setShowDiagnostics((value) => !value)}
@@ -1216,21 +1222,21 @@ function DashboardContent({ secret }: { secret: string }) {
               {showDiagnostics && (
                 <div className={`mt-4 p-3 rounded-xl border ${bgSubCard}`}>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <p className={`text-xs ${textMuted}`}>Runs a local replay over recent candles. It is a diagnostic check, not live proof of future performance.</p>
+                    <p className={`text-xs ${textMuted}`}>Local EMA replay over recent chart candles. Use the v6 capture/replay evidence for the replacement brain.</p>
                     <button
                       onClick={runWorkerBacktest}
                       disabled={backtesting}
                       className={`px-4 py-1.5 border text-xs font-mono rounded-lg font-bold transition-all ${bgResetBtn}`}
                     >
-                      {backtesting ? "RUNNING..." : "RUN TEST"}
+                      {backtesting ? "RUNNING..." : "RUN EMA EXPERIMENT"}
                     </button>
                   </div>
                   {backtestResult && (
                     <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono mt-3`}>
-                      <div>Win Rate: <span className={`font-bold ${textPrimary}`}>{backtestResult.winRate.toFixed(1)}%</span></div>
-                      <div>Sharpe: <span className={`font-bold ${textPrimary}`}>{backtestResult.sharpeRatio.toFixed(2)}</span></div>
-                      <div>Total Trades: <span className={`font-bold ${textPrimary}`}>{backtestResult.totalTrades}</span></div>
-                      <div>Profit Factor: <span className={`font-bold ${textPrimary}`}>{backtestResult.profitFactor?.toFixed(2) || "1.45"}</span></div>
+                      <div>Win Rate (%): <span className={`font-bold ${textPrimary}`}>{diagnosticMetric(backtestResult.winRate, 1)}</span></div>
+                      <div>Sharpe: <span className={`font-bold ${textPrimary}`}>{diagnosticMetric(backtestResult.sharpeRatio)}</span></div>
+                      <div>Total Trades: <span className={`font-bold ${textPrimary}`}>{diagnosticMetric(backtestResult.totalTrades, 0)}</span></div>
+                      <div>Profit Factor: <span className={`font-bold ${textPrimary}`}>{diagnosticMetric(backtestResult.profitFactor)}</span></div>
                     </div>
                   )}
                 </div>
@@ -1310,7 +1316,7 @@ function DashboardContent({ secret }: { secret: string }) {
                 </div>
 
                 {/* Latest AI Decision Banner (Only visible in AI mode) */}
-                {viewMode === "ai" && signals?.composite && (
+                {viewMode === "ai" && legacyStatusVerified && signals?.composite && (
                   <div className={`p-4 rounded-xl border ${bgCard} flex items-start gap-3`}>
                     <Info size={16} className="text-blue-500 mt-0.5 shrink-0" />
                     <div>
@@ -1340,11 +1346,11 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 )}
 
-                {viewMode === "ai" && data?.swingScan && (
+                {viewMode === "ai" && legacyStatusVerified && data?.swingScan && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Autonomous Swing Scan</div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Historical swing scan (pre-v6)</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
                           Last scan: {formatClock(data.swingScan.completedAt || data.swingScan.startedAt)} | Next: {timeLeft}
                         </p>
@@ -1489,14 +1495,17 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 )}
 
-                {viewMode === "ai" && <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />}
-                {viewMode === "ai" && <Benchmarks isDark={isDark} />}
+                {viewMode === "ai" && legacyStatusVerified && <details className={`border rounded-xl p-4 ${bgCard}`}>
+                  <summary className={`cursor-pointer text-xs font-mono ${textPrimary}`}>Historical XSEC and benchmarks: excluded from v6 capital and evidence</summary>
+                  <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />
+                  <Benchmarks isDark={isDark} />
+                </details>}
 
-                {viewMode === "ai" && (
+                {viewMode === "ai" && legacyStatusVerified && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Asset Book Monitor</div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Historical asset book monitor (pre-v6)</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
                           {data?.aiAssetBookDigest?.headline || "The bot is mapping each market into a simple book state."}
                         </p>
@@ -1562,11 +1571,11 @@ function DashboardContent({ secret }: { secret: string }) {
                   </div>
                 )}
 
-                {viewMode === "ai" && (
+                {viewMode === "ai" && legacyStatusVerified && (
                   <div className={`p-4 rounded-xl border ${bgCard}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Opportunity Radar</div>
+                        <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Legacy Opportunity Radar: no v6 permissions</div>
                         <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
                           The bot records watched setups and checks later whether they would have worked after estimated fees.
                         </p>
@@ -1780,17 +1789,17 @@ function DashboardContent({ secret }: { secret: string }) {
           
             {/* Moved Elements Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              {/* AI Brain Intelligence Panel — Only visible in AI portfolio view */}
-            {viewMode === "ai" && (data?.aiReflection || (data?.aiRecentJournal && data.aiRecentJournal.length > 0)) && (
+              {/* AI Brain Intelligence Panel - Only visible in AI portfolio view */}
+            {viewMode === "ai" && legacyStatusVerified && (data?.aiReflection || (data?.aiRecentJournal && data.aiRecentJournal.length > 0)) && (
               <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
                 <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
                   <h2 className={`text-[10px] font-bold font-mono ${textSub} uppercase tracking-wider flex items-center gap-1.5`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block animate-pulse"></span>
-                    AI Brain Intelligence
+                    Historical AI journal (pre-v6)
                   </h2>
                   <span className={`text-[8px] font-mono font-bold uppercase px-2 py-0.5 rounded border ${
                     isDark ? "bg-blue-950/30 text-blue-400 border-blue-900/30" : "bg-blue-50 text-blue-700 border-blue-200"
-                  }`}>LIVE</span>
+                  }`}>HISTORICAL</span>
                 </div>
 
                 {/* Latest Reflection / Lesson Learned */}
@@ -1817,7 +1826,7 @@ function DashboardContent({ secret }: { secret: string }) {
                 ) : (
                   <div className={`p-3 rounded-xl border ${bgSubCard}`}>
                     <p className={`text-[10px] font-mono italic ${textMuted}`}>
-                      No reflection data yet — AI needs 5+ trades to begin self-analysis.
+                      No reflection data yet - AI needs 5+ trades to begin self-analysis.
                     </p>
                   </div>
                 )}
@@ -2048,7 +2057,7 @@ function DashboardContent({ secret }: { secret: string }) {
                         }`}>
                           {plainLanguage
                             ? "A description of how recent prices have behaved, not a prediction. It was tested against 891 trading periods and the three labels made no difference to what followed. Nothing in the bot trades on it."
-                            : "Rolling Hurst exponent over the reference series. Measured across 891 rebalance periods the three regimes differ by 2.2bps (Welch p = 0.75) — indistinguishable from noise — so it is displayed as description, not forecast. No entry, sizing or exit path reads it."}
+                            : "Rolling Hurst exponent over the reference series. Measured across 891 rebalance periods the three regimes differ by 2.2bps (Welch p = 0.75) - indistinguishable from noise - so it is displayed as description, not forecast. No entry, sizing or exit path reads it."}
                         </div>
                       </div>
                     </div>
@@ -2168,7 +2177,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   {plainLanguage ? "PLAIN ENGLISH: ON" : "PLAIN ENGLISH: OFF"}
                 </button>
               </div>
-              <p className={`text-[9px] font-mono ${textMuted}`}>Swing engine only, closed trades only. The cross-sectional book keeps its own equity and is reported in its own panel.</p>
+              <p className={`text-[9px] font-mono ${textMuted}`}>{replacementActive ? 'Current AI run only, closed trades only. Historical XSEC is excluded and has no v6 capital allocation.' : 'Historical swing account, closed trades only. Historical XSEC is reported separately.'}</p>
               <div className="grid grid-cols-2 gap-3">
                 <div className={`p-3 rounded-xl flex flex-col justify-between border ${bgSubCard}`}>
                   <span className={`text-[8px] font-mono uppercase ${textMuted}`}>Win Rate</span>
@@ -2184,7 +2193,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   <span className="text-md font-bold font-mono text-orange-400 mt-1">
                     {(portfolio?.grossLoss || 0) > 0 
                       ? (portfolio.grossProfit / portfolio.grossLoss).toFixed(2) 
-                      : (portfolio?.grossProfit > 0 ? "∞" : "—")}
+                      : (portfolio?.grossProfit > 0 ? "∞" : "-")}
                   </span>
                   <span className={`text-[7px] font-mono mt-0.5 ${textMuted}`}>
                     G: ${(portfolio?.grossProfit || 0).toFixed(0)} / L: ${(portfolio?.grossLoss || 0).toFixed(0)}
@@ -2222,7 +2231,7 @@ function DashboardContent({ secret }: { secret: string }) {
               </div>
 
               {/* Detailed Breakdown */}
-              {data?.aiDetailedStats && viewMode === "ai" && (
+              {data?.aiDetailedStats && viewMode === "ai" && legacyStatusVerified && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   {/* No scalp daemon exists in the deployed stack, so a scalp
                       ledger could only ever read zero. The second strategy that
@@ -2230,7 +2239,7 @@ function DashboardContent({ secret }: { secret: string }) {
                   <div className={`p-2 rounded-lg border ${bgSubCard} flex flex-col`}>
                     <span className={`text-[8px] font-mono uppercase font-bold text-indigo-400 mb-1`}>Cross-Sectional Book</span>
                     <span className={`text-[10px] font-mono ${textPrimary}`}>
-                      {bookSummary ? `${bookSummary.openPositions} open` : "—"}
+                      {bookSummary ? `${bookSummary.openPositions} open` : "-"}
                     </span>
                     <span className={`text-[10px] font-mono ${(bookSummary?.totalReturnUsd ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       PnL: ${(bookSummary?.totalReturnUsd ?? 0).toFixed(2)}
@@ -2273,8 +2282,8 @@ function DashboardContent({ secret }: { secret: string }) {
                   return (
                     <p className={`text-xs ${textMuted} font-mono italic`}>
                       No active swing positions.
-                      {bookSummary && bookSummary.openPositions > 0
-                        ? ` The cross-sectional book is separately holding ${bookSummary.openPositions} positions — see the Cross-Sectional Book panel above.`
+                      {legacyStatusVerified && bookSummary && bookSummary.openPositions > 0
+                        ? ` The cross-sectional book is separately holding ${bookSummary.openPositions} positions - see the Cross-Sectional Book panel above.`
                         : ""}
                     </p>
                   );
@@ -2385,11 +2394,11 @@ function DashboardContent({ secret }: { secret: string }) {
             </div>
 
             {/* Compact AI Confluence Summary placed near positions for fast reading */}
-            {viewMode === "ai" && (
+            {viewMode === "ai" && legacyStatusVerified && (
               <div className={`border rounded-2xl p-5 space-y-4 ${bgCard}`}>
                 <div className={`flex justify-between items-center border-b ${borderCol} pb-3`}>
                   <h2 className={`text-[10px] font-bold font-mono uppercase tracking-wider ${textSub}`}>
-                    AI Confluence Now
+                    Legacy confluence: no v6 permissions
                   </h2>
                   <span className={`text-[9px] px-2 py-0.5 border rounded font-mono uppercase ${
                     signals?.composite
@@ -2572,9 +2581,9 @@ function DashboardContent({ secret }: { secret: string }) {
               className={`px-3 py-1.5 border rounded-lg transition-all font-bold tracking-wider hover:bg-red-950/20 hover:border-red-900/40 hover:text-red-400 ${
                 isDark ? "bg-[#1f2937]/40 border-slate-800 text-slate-500 hover:text-red-400" : "bg-neutral-100 border-neutral-200 text-neutral-500 hover:text-red-700"
               }`}
-              title="Wipe database portfolios and restart simulation"
+              title="Read-only AI reset readiness preview; human state is preserved"
             >
-              ⚠️ RESET ARENA DATABASE
+              PREVIEW AI RUN RESET
             </button>
           </div>
           )}

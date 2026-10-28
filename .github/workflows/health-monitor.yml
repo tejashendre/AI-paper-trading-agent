@@ -1,7 +1,7 @@
 name: Bot health monitor
 
-# Read-only. A failed run means the bot stopped doing its job; GitHub emails
-# the owner about failed scheduled runs by default.
+# Read-only origin checks use the existing Oracle connection. Public access
+# restrictions are reported separately from application and daemon health.
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -26,5 +26,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Check the live dashboard
-        run: node scripts/health-monitor.mjs
+      - name: Check the running Oracle application and bot
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 3m
+          script: |
+            set -eu
+            docker exec -e MONITOR_BASE_URL=http://127.0.0.1:3000 quant-dashboard node scripts/health-monitor.mjs
+      - name: Check public ingress independently
+        run: |
+          node --input-type=module <<'NODE'
+          const url='https://trader.tejashendre.com/api/user/status';
+          const response=await fetch(url,{headers:{Authorization:'Bearer SPECTATOR'},signal:AbortSignal.timeout(30000)});
+          if(response.ok){console.log('Public spectator status endpoint is reachable.');}
+          else if(response.status===403 && response.headers.get('server')?.toLowerCase()==='cloudflare' &&
+            (response.headers.get('cf-mitigated')==='challenge'||response.headers.get('content-type')?.includes('text/html'))){
+            console.log('::warning::Cloudflare restricted the public probe from GitHub. Oracle application health passed separately; public access policy still needs review.');
+          }else{throw new Error(`Public spectator status endpoint returned HTTP ${response.status}`);}
+          NODE
