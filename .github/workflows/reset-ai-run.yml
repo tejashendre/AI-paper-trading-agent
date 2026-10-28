@@ -65,10 +65,33 @@ jobs:
             test "$(git rev-parse HEAD)" = "$EXPECTED"
             test "$(docker inspect quant-swing-daemon --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$EXPECTED"
             IMAGE="quant-trader:$EXPECTED"
+            RESULT_FILE="$(mktemp)"
+            trap 'rm -f "$RESULT_FILE"' EXIT
             if [ "$MODE" = execute ]; then
               docker run --rm --network container:quant-redis -v "$PWD/data:/app/data" "$IMAGE" \
-                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives --execute
+                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives --execute > "$RESULT_FILE"
             else
               docker run --rm --network container:quant-redis -v "$PWD/data:/app/data" "$IMAGE" \
-                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives
+                tsx scripts/reset-ai-run.ts --run-id "$RUN_ID" --archive-dir /app/data/ai-run-archives > "$RESULT_FILE"
             fi
+            node - "$RESULT_FILE" "$MODE" "$RUN_ID" <<'NODE'
+            const fs=require('fs');
+            const [file,mode,runId]=process.argv.slice(2);
+            const rows=fs.readFileSync(file,'utf8').trim().split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
+            const preview=rows[0];
+            if(!preview || preview.mode!==(mode==='execute'?'EXECUTE':'PREVIEW') || preview.runId!==runId ||
+              preview.capital!==10000 || typeof preview.canReset!=='boolean' || !Array.isArray(preview.blockers) ||
+              !/^[a-f0-9]{64}$/.test(preview.humanDigest??'') || !/^[a-f0-9]{64}$/.test(preview.sourceDigest??'')) throw Error('Missing or invalid reset preview receipt');
+            console.log(JSON.stringify({mode:preview.mode,runId,canReset:preview.canReset,capital:preview.capital,
+              blockers:preview.blockers,humanDigest:preview.humanDigest,sourceDigest:preview.sourceDigest,
+              coveredSourceKeys:preview.coverage?.archivedKeys?.length,oldAiCash:preview.oldAiCash,oldXsecCash:preview.oldXsecCash}));
+            if(mode==='preview' && rows.length!==1) throw Error('Unexpected preview output');
+            if(mode==='execute'){
+              const done=rows[1],run=done?.run;
+              if(!preview.canReset || preview.blockers.length || rows.length!==2 || done.mode!=='COMPLETED' ||
+                run?.runId!==runId || run.capital!==10000 || run.initialCapital!==10000 ||
+                run.mode!=='SHADOW' || run.xsecMode!=='HISTORICAL_ONLY' ||
+                !/^[a-f0-9]{64}$/.test(run.archive?.sha256??'')) throw Error('Missing or invalid completed reset receipt');
+              console.log(JSON.stringify(done));
+            }
+            NODE
