@@ -4,7 +4,7 @@
 Owner explicitly approved publishing the existing candidate and getting the replacement running on Oracle Cloud. Future security changes remain separate. The original candidate was pushed unchanged at 86e1a90. Necessary release fixes preserve the four strategies, risk ceilings, qualification and human account.
 - [x] Diagnose repeated health failures: GitHub received HTTP 403 while local public checks and read-only Oracle container checks were healthy.
 - [x] Publish the original branch and repair independently confirmed ledger ordering, entry deduplication and v6 health integration defects.
-- [ ] Complete combined GitHub CI with isolated real Redis transaction tests and read-only production reset preview.
+- [x] Complete combined GitHub CI with isolated real Redis transaction tests and read-only production reset preview. Run 40665487660 passed 576 tests without skips; the Oracle preview reported no reset blockers.
 - [ ] Deploy the verified release, perform only the approved archive-first AI reset if flat/settled, and verify human preservation, source identity, ledger and healthy scans.
 
 ## 2026-10-24 Approved replacement swing brain implementation
@@ -12,8 +12,8 @@ Owner approved docs/superpowers/specs/2026-10-24-replacement-swing-brain-design.
 - [x] Four pure causal class strategies and shared risk/evidence policies implemented and locally verified.
 - [x] Native capture, descriptive economic replay and replacement runtime with fenced protective exits implemented and locally verified.
 - [x] Archived AI-only reset protocol and read-only preview API/dashboard implemented and locally verified.
-- [ ] Complete final independent whole-branch review, production preview and reviewed legacy flatten preparation before release/reset. Reviewer usage limits interrupted the final review. Production and human state are unchanged.
-Local release notes: docs/V6_IMPLEMENTATION_AND_RELEASE_PREVIEW_2026-10-24.md. Final local checks: 551 tests passed, strategy audit 156 passed, TypeScript/lint/build passed. No performance qualification was earned.
+- [x] Complete final independent whole-branch review and production preview. Four material release findings and the actual Redis snapshot-order mismatch were fixed and independently reviewed. The flat, settled production preview requires no legacy flatten action. PR 15 is merged; the Oracle release and subsequent AI-only reset are tracked above.
+Local release notes: docs/V6_IMPLEMENTATION_AND_RELEASE_PREVIEW_2026-10-24.md. Final combined CI checks: 576 tests passed without skips, including actual Redis; strategy audit, TypeScript, lint and build passed. No performance qualification was earned.
 Execution recovery ledger: .superpowers/sdd/2026-10-24-replacement-swing-brain/progress.md. Do not redispatch completed tasks without checking their commits and ledger.
 
 ## 2026-10-02 final release intake
