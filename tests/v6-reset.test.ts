@@ -7,7 +7,7 @@ import { MemoryRedis } from "./helpers/memoryRedis";
 import * as reset from "@/lib/admin/resetAiRun";
 import { runAiRunResetCli } from "../scripts/reset-ai-run";
 import { ExecutionLedger } from "@/lib/trading/executionLedger";
-import { setRedisClient } from "@/lib/redis";
+import { setRedisClient, type RawRedisValue } from "@/lib/redis";
 
 async function fixture(t: test.TestContext) {
   const redis = new MemoryRedis();
@@ -196,6 +196,65 @@ test("durable acknowledgement is fenced and retry does not acknowledge twice", a
   assert.equal(await f.redis.get(reset.aiRunKeys(p.runId).ledgerAcknowledged), true);
   await reset.resetAiRun({ preview: p, leases: f.leases, redis: f.redis, acknowledge });
   assert.equal(acknowledgements, 1);
+});
+
+test("archived previews resume when Redis reorders snapshot keys and raw-value metadata without changing human bytes", async (t) => {
+  const f = await fixture(t), p = await f.preview();
+  const commit = f.redis.commitAiRunReset.bind(f.redis);
+  f.redis.commitAiRunReset = async () => { throw new Error("crash before commit"); };
+  await assert.rejects(reset.resetAiRun({ preview: p, leases: f.leases, redis: f.redis, acknowledge: async () => undefined }), /crash before commit/);
+  const archivePath = path.join(f.archiveDirectory, p.runId + ".json"), archivedBytes = fs.readFileSync(archivePath, "utf8");
+  const archivedPreview = JSON.parse(archivedBytes).preview as typeof p;
+  function metadata(value: RawRedisValue, reordered = false): RawRedisValue {
+    if (value.type === "none") return { type: "none" };
+    if (value.type === "string") return reordered ? { value: value.value, type: "string" } : { type: "string", value: value.value };
+    return reordered ? { value: value.value, type: "list" } : { type: "list", value: value.value };
+  }
+  // The memory adapter compares JSON text. Match production Lua's field-based
+  // comparison of metadata while retaining every original string/list byte.
+  f.redis.commitAiRunReset = async (input) => commit({ ...input, expected: Object.fromEntries(Object.entries(input.expected).map(([key, value]) =>
+    [key, metadata(value)])) });
+  const read = f.redis.readRaw.bind(f.redis), humanKeys = Object.keys(p.human);
+  f.redis.readRaw = async (keys) => {
+    const values = await read(keys);
+    return keys.length === humanKeys.length && keys.every(key => Object.hasOwn(p.human, key))
+      ? Object.fromEntries(Object.entries(values).reverse().map(([key, value]) =>
+        [key, metadata(value, true)])) : values;
+  };
+  let acknowledgements = 0;
+  const acknowledge = async () => { acknowledgements++; };
+  const active = await reset.resetAiRun({ preview: archivedPreview, leases: f.leases, redis: f.redis, acknowledge });
+  assert.equal(await f.redis.get(reset.aiRunKeys(active.runId).ledgerAcknowledged), true);
+  assert.deepEqual(await read(humanKeys), p.human);
+  assert.equal(fs.readFileSync(archivePath, "utf8"), archivedBytes);
+  assert.equal(JSON.parse(fs.readFileSync(archivePath, "utf8")).preview.humanDigest, p.humanDigest);
+  await f.redis.set("ai:portfolio", { usd: 9950, openPositions: {} });
+  assert.deepEqual(await reset.resetAiRun({ preview: archivedPreview, leases: f.leases, redis: f.redis, acknowledge }), active);
+  assert.equal((await f.redis.get<{ usd: number }>("ai:portfolio"))?.usd, 9950);
+  assert.equal(acknowledgements, 1);
+});
+
+for (const change of ["portfolio-whitespace", "list-order", "list-item-whitespace"] as const) test(`post-commit human ${change} changes still refuse acknowledgement`, async (t) => {
+  const f = await fixture(t);
+  await f.redis.lpush("user:trades", '{ "id": "second-human" }');
+  const p = await f.preview(), read = f.redis.readRaw.bind(f.redis), humanKeys = Object.keys(p.human);
+  let changed = false;
+  f.redis.readRaw = async (keys) => {
+    if (!changed && keys.length === humanKeys.length && keys.every(key => Object.hasOwn(p.human, key))) {
+      changed = true;
+      if (change === "portfolio-whitespace") await f.redis.set("user:portfolio", '{"usd":9999,"openPositions":{}}');
+      else {
+        const rows = await f.redis.lrange("user:trades", 0, -1);
+        await f.redis.del("user:trades");
+        for (const row of change === "list-order" ? rows : rows.reverse().map(raw => JSON.stringify(JSON.parse(raw)))) await f.redis.lpush("user:trades", row);
+      }
+    }
+    return read(keys);
+  };
+  let acknowledgements = 0;
+  await assert.rejects(reset.resetAiRun({ preview: p, leases: f.leases, redis: f.redis, acknowledge: async () => { acknowledgements++; } }), /human values changed after commit/i);
+  assert.equal(acknowledgements, 0);
+  assert.equal(await f.redis.get(reset.aiRunKeys(p.runId).ledgerAcknowledged), null);
 });
 
 test("losing a lease during acknowledgement leaves transition pending", async (t) => {

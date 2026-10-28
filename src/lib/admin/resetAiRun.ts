@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { AI_RESET_EVIDENCE_PATTERNS, getRedis, type RedisClient, type RawRedisSnapshot, type RawRedisValue } from "@/lib/redis";
 import { ExecutionLedger, type ExecutionLedgerEventType } from "@/lib/trading/executionLedger";
 
@@ -275,7 +276,9 @@ export async function resetAiRun(input: {
   // The immutable receipt proves the original switch compared the original raw
   // human bytes. A retry holds a new lease window: legitimate intervening human
   // activity is preserved, and only changes within this new window abort ack.
-  if (!recovering && digest(protectedHuman) !== preview.humanDigest) throw new Error("Human values changed after commit");
+  // Lua cjson may reorder object metadata; raw strings and list order/bytes
+  // still must match exactly. Preserve persisted preview digests and receipts.
+  if (!recovering && !isDeepStrictEqual(protectedHuman, preview.human)) throw new Error("Human values changed after commit");
   // A failed/ambiguous acknowledgement leaves the immutable commit receipt intact.
   // recordOnce's deterministic ID prevents a retry appending a second start event.
   if (await redis.get(keys.ledgerAcknowledged) !== true) {
