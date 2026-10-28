@@ -87,9 +87,14 @@ export class MemoryRedis implements RedisClient {
     }
     if(this.live(prefix+'trades'))throw new Error('Invalid trade history type');
     for(const item of input.events){const old=this.live(prefix+'outbox:'+item.id)?.value;if(old&&old!==item.event)throw new Error('Entry ledger event conflict');}
+    const entryKeys=(!input.kind||input.kind==='ENTRY')?input.trades.flatMap(encoded=>{
+      const trade=JSON.parse(encoded);return [prefix+'entryTrade:'+trade.id,prefix+'entryPosition:'+trade.positionId];
+    }):[];
+    if(entryKeys.some(key=>this.live(key)||this.lists.has(key)))throw new Error('Entry already committed');
     for(const key of [prefix+'portfolio','ai:portfolio'])this.strings.set(key,{value:input.portfolio,expiresAt:null});
     const trades=this.lists.get(prefix+'trades')??[];for(const trade of input.trades)trades.unshift(trade);this.lists.set(prefix+'trades',trades);
     for(const item of input.events)this.strings.set(prefix+'outbox:'+item.id,{value:item.event,expiresAt:null});
+    for(const key of entryKeys)this.strings.set(key,{value:input.receipt,expiresAt:null});
     this.strings.set(receiptKey,{value:input.receipt,expiresAt:null});return input.receipt;
   }
 

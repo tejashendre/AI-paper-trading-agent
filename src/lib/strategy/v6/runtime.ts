@@ -264,6 +264,7 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   for(const setup of setups){
     const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
     if(!r||!proof||!f||portfolio.openPositions?.[setup.asset])continue;
+    if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null)continue;
     const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed))continue;
     const permission=brainPermission(d,proof,now,{runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash,riskTier:proof.riskTier});
     if(!permission.allowed)continue;
@@ -317,7 +318,21 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
 export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Promise<BrainRuntimeStatus>{
   const deps=dependencies(overrides),started=deps.clock(),run=await currentRun(deps);
   if(!run||await deps.redis.get(prefix(run.runId)+'ledgerAcknowledged')!==true){
-    const s=status(deps,run?.runId??null,'RESET_REQUIRED',deps.clock(),deps.assets.map(a=>assetStatus(a,'RESET_REQUIRED')));await publish(deps,s,started);return s;
+    const s=status(deps,run?.runId??null,'RESET_REQUIRED',deps.clock(),deps.assets.map(a=>assetStatus(a,'RESET_REQUIRED')));
+    if(await deps.redis.get('brain:v6:migration-freeze')!==null)return s;
+    const token=randomUUID();if(!await deps.redis.set(LOCK,token,{nx:true,ex:300}))return s;
+    try{
+      // Reset snapshots include scan and ledger heads. Never mutate them
+      // outside the same lease, or publish an epoch observed before reset.
+      if(await deps.redis.get('brain:v6:migration-freeze')!==null)return s;
+      const latest=await currentRun(deps);
+      if(latest?.runId!==run?.runId||latest&&await deps.redis.get(prefix(latest.runId)+'ledgerAcknowledged')===true)return s;
+      s.scanId=(await deps.redis.get<number>('brain:v6:resetRequiredScanSequence')??0)+1;
+      await deps.redis.set('brain:v6:resetRequiredScanSequence',s.scanId);
+      await deps.ledger({id:`reset-required:${s.runId??'no-epoch'}:${s.scanId}`,type:'SCAN_COMPLETED',source:'REPLACEMENT_SWING_V6',timestamp:s.generatedAt,
+        payload:{runId:s.runId,scanId:s.scanId,mode:s.mode,capitalAllocatedUsdt:0}});
+      await publish(deps,s,started);return s;
+    }finally{await deps.redis.compareAndDelete(LOCK,token);}
   }
   const [captures,calendar]=await Promise.all([Promise.allSettled(deps.assets.map(asset=>deps.capture(asset,started))),deps.calendar().catch(()=>null)]);
   const funding=await prefetchFunding(deps,run.runId,deps.clock());

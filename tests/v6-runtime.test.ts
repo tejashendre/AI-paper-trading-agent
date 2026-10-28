@@ -39,10 +39,49 @@ async function seed(h:ReturnType<typeof harness>,ack=true){
 test('replacement has no legacy-entry fallback and does not initialize capital without an acknowledged epoch',async()=>{
   const h=harness();const result=await runReplacementScan(h.deps);
   assert.equal(result.mode,'RESET_REQUIRED');assert.equal(await h.redis.get('ai:portfolio'),null);
+  assert.ok(result.scanId>0);
+  h.setNow(NOW+60000);
+  const waiting=await runReplacementScan(h.deps);
+  assert.ok(waiting.scanId>result.scanId);
+  assert.equal((h.events.at(-1) as any).type,'SCAN_COMPLETED');
+  assert.equal((h.events.at(-1) as any).payload.mode,'RESET_REQUIRED');
+  assert.equal((h.events.at(-1) as any).payload.capitalAllocatedUsdt,0);
   assert.equal(await h.redis.get('brain:v6:run:test-run:portfolio'),null);
   await seed(h,false);const before=await h.redis.readRaw(['brain:v6:run:test-run:portfolio']);
   assert.equal((await runReplacementScan(h.deps)).mode,'RESET_REQUIRED');
   assert.deepEqual(await h.redis.readRaw(['brain:v6:run:test-run:portfolio']),before);
+});
+test('a failed pre-reset ledger heartbeat cannot publish healthy daemon progress',async()=>{
+  const h=harness();h.deps.ledger=async()=>{throw new Error('ledger unavailable');};
+  await assert.rejects(runReplacementScan(h.deps),/ledger unavailable/);
+  assert.equal(await h.redis.get('swing:lastScan:ai'),null);
+  assert.equal(await h.redis.get('brain:v6:status'),null);
+  assert.equal(await h.redis.get('ai:portfolio'),null);
+});
+test('pre-reset heartbeat preserves reset snapshots while the migration freeze or AI lease is held',async()=>{
+  for(const key of ['brain:v6:migration-freeze','portfolio:write-lock:ai']){
+    const h=harness();await h.redis.set(key,'reset-owner',{ex:300});
+    await h.redis.set('swing:lastScan:ai',{scanId:41});
+    await h.redis.set('execution:ledger:head',{hash:'old-head'});
+    const keys=[key,'swing:lastScan:ai','execution:ledger:head','brain:v6:status','brain:v6:resetRequiredScanSequence','ai:portfolio'];
+    const before=await h.redis.readRaw(keys);
+    await runReplacementScan(h.deps);
+    assert.deepEqual(await h.redis.readRaw(keys),before);
+    assert.equal(h.events.length,0);
+  }
+});
+test('an epoch acknowledged while the waiting heartbeat obtains its lease cannot publish stale RESET_REQUIRED',async()=>{
+  const h=harness(),set=h.redis.set.bind(h.redis);let raced=false;
+  h.redis.set=async(key,value,options)=>{
+    const result=await set(key,value,options);
+    if(key==='portfolio:write-lock:ai'&&result==='OK'&&!raced){raced=true;await seed(h);}
+    return result;
+  };
+  await runReplacementScan(h.deps);
+  assert.equal(await h.redis.get('swing:lastScan:ai'),null);
+  assert.equal(await h.redis.get('brain:v6:status'),null);
+  assert.equal(h.events.length,0);
+  assert.equal(await h.redis.get('portfolio:write-lock:ai'),null);
 });
 test('a causal setup opens only virtual exposure and archives all inputs without a financial write',async()=>{
   const h=harness();await seed(h);const before=await h.redis.readRaw(['brain:v6:run:test-run:portfolio','ai:trades']);
@@ -126,6 +165,21 @@ test('only an exact qualified identity commits one durable paper fill and a retr
   await runReplacementScan(h.deps);
   assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,first.usd);
   assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
+});
+test('an already committed setup is excluded before allocating another entry after the position closes',async()=>{
+  const h=await qualified();await runReplacementScan(h.deps);
+  const p='brain:v6:run:test-run:',portfolio=await h.redis.get<any>(p+'portfolio');
+  const positionId=portfolio.openPositions.BTC.positionId;
+  assert.ok(await h.redis.get(p+'entryPosition:'+positionId));
+  // Simulate the completed protective close without creating a new setup.
+  portfolio.openPositions={};portfolio.openPosition=null;portfolio.balances={BTC:0};portfolio.btc=0;
+  await h.redis.set(p+'portfolio',portfolio);
+  let commits=0;const commit=h.redis.commitBrainEntry.bind(h.redis);
+  h.redis.commitBrainEntry=async input=>{commits++;return commit(input);};
+  await runReplacementScan(h.deps);
+  assert.equal(commits,0);
+  assert.equal((await h.redis.get<any>(p+'portfolio')).usd,portfolio.usd);
+  assert.equal((await h.redis.lrange(p+'trades',0,-1)).length,1);
 });
 test('an ambiguous financial commit preserves its outbox and recovers without another fill',async()=>{
   const h=await qualified(),original=h.redis.commitBrainEntry.bind(h.redis);let crashed=false;

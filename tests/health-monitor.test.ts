@@ -69,3 +69,57 @@ test("health monitor reports each silent failure in plain English", async (t) =>
     assert.deepEqual(evaluateHealth({ status: healthy().status, book: {}, nowMs: NOW }), []);
   });
 });
+
+function replacement() {
+  const base=healthy();
+  const status:any={...base.status,deployment:{commit:'release'},
+    swingScan:{...base.status.swingScan,brainVersion:'v6',runId:'run-one',scanId:3,mode:'SHADOW',runtimeCommit:'release'},
+    researchQueue:{rejectedNew:99},assetCoverage:[{asset:'BTC',funnel7d:{costPass:50,riskPass:0}}],
+    aiPortfolio:{initialCapital:10000,usd:10000,openPositions:{},fundingTail:[],pendingLedgerEvents:[]},
+    lastExitSweep:{source:'REPLACEMENT_SWING_WATCHDOG',timestamp:iso(.1),errors:0}};
+  const brain:any={version:'v6',mode:'SHADOW',generatedAt:iso(1),currentRun:{runId:'run-one',initialCapitalUsdt:10000},
+    telemetry:{state:'FRESH',scanId:3},account:{cashUsdt:10000,equityUsdt:10000},risk:{haltReasons:[]},
+    assets:[{asset:'BTC',mode:'SHADOW',decision:{status:'NO_TRADE',code:'NO_SETUP'}}],history:{xsecMode:'HISTORICAL_ONLY',allocatedCapitalUsdt:0}};
+  return {status,brain,book:{positions:[],rebalanceSchedule:{overdue:true}}};
+}
+test('replacement SHADOW checks current epoch and sources while retired v5 funnels, queue and XSEC may be inactive',()=>{
+  assert.deepEqual(evaluateHealth({...replacement(),nowMs:NOW}),[]);
+});
+test('replacement health fails missing, stale or mismatched telemetry and protection/funding faults',()=>{
+  const fixtures=[
+    (f:ReturnType<typeof replacement>)=>{f.brain=null;},
+    (f:ReturnType<typeof replacement>)=>{f.brain.telemetry.state='STALE_OR_DIFFERENT_RUN';},
+    (f:ReturnType<typeof replacement>)=>{f.brain.currentRun.runId='old';},
+    (f:ReturnType<typeof replacement>)=>{f.status.swingScan.runtimeCommit='old';},
+    (f:ReturnType<typeof replacement>)=>{f.brain.mode='ERROR';},
+    (f:ReturnType<typeof replacement>)=>{f.brain.assets[0].decision.code='CAPTURE_FAILED';},
+    (f:ReturnType<typeof replacement>)=>{f.brain.risk.haltReasons=['INTEGRITY'];},
+    (f:ReturnType<typeof replacement>)=>{f.status.lastExitSweep.timestamp=iso(3);},
+    (f:ReturnType<typeof replacement>)=>{f.status.lastExitSweep.errors=1;},
+    (f:ReturnType<typeof replacement>)=>{f.status.aiPortfolio.fundingTail=[{pendingTimes:[NOW-1000]}];},
+    (f:ReturnType<typeof replacement>)=>{f.status.aiPortfolio.pendingLedgerEvents=[{}];},
+    (f:ReturnType<typeof replacement>)=>{f.status.feedHealthMatrix.assets=[];},
+    (f:ReturnType<typeof replacement>)=>{(f.book.positions as unknown[])=[{symbol:'BTCUSDT'}];},
+  ];
+  for(const mutate of fixtures){const f=replacement();mutate(f);assert.ok(evaluateHealth({...f,nowMs:NOW}).length>0,mutate.toString());}
+});
+test('pre-reset replacement progress needs fresh durable events, with legacy XSEC still checked',()=>{
+  const f=replacement();f.status.swingScan.mode='RESET_REQUIRED';f.status.swingScan.runId=null;
+  f.brain={version:'v6',mode:'RESET_REQUIRED',currentRun:null};
+  assert.deepEqual(evaluateHealth({...f,nowMs:NOW}),['Cross-sectional book rebalance is overdue.']);
+  f.book.rebalanceSchedule.overdue=false;
+  assert.deepEqual(evaluateHealth({...f,nowMs:NOW}),[]);
+  f.status.executionLedger.lastEventAt=iso(11);
+  assert.ok(evaluateHealth({...f,nowMs:NOW}).some((p:string)=>/ledger/.test(p)));
+});
+test('closed weekend TradFi execution captures may wait while crypto and integrity checks remain active',()=>{
+  const f=replacement(),saturday=Date.parse('2026-10-10T12:00:00Z'),fresh=new Date(saturday-1000).toISOString();
+  f.status.swingScan.completedAt=fresh;f.status.executionLedger.lastEventAt=fresh;
+  f.status.lastExitSweep.timestamp=fresh;f.brain.generatedAt=fresh;
+  f.status.feedHealthMatrix.assets=[{asset:'BTC',category:'crypto',dataEligibility:{quoteEventTimeMs:saturday-1000}},
+    {asset:'EURUSD',category:'forex',dataEligibility:{quoteEventTimeMs:saturday-86400000}}];
+  f.brain.assets.push({asset:'EURUSD',mode:'SHADOW',decision:{status:'NO_TRADE',code:'INVALID_CAPTURE'}});
+  assert.deepEqual(evaluateHealth({...f,nowMs:saturday}),[]);
+  f.brain.assets[1].decision.code='REGISTRATION_MISMATCH';
+  assert.ok(evaluateHealth({...f,nowMs:saturday}).some((p:string)=>/EURUSD/.test(p)));
+});

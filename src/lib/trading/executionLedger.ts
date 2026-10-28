@@ -478,8 +478,17 @@ async function appendRecord(input: ExecutionLedgerEventInput): Promise<Execution
 }
 
 function appendUnderLock(input: ExecutionLedgerEventInput, timestamp: string, directory: string): ExecutionLedgerRecord {
-  const filePath = dayFile(timestamp, directory);
-  const previous = readHead(directory, filePath);
+  const latest = dayFiles(directory).at(-1);
+  // Event time belongs to the financial proof. Segment order belongs to the
+  // append chain, including delayed outbox and reset acknowledgements.
+  const latestDay = latest?.slice(0, 10) ?? timestamp.slice(0, 10);
+  const appendDay = latest?.endsWith('.gz')
+    ? new Date(Math.max(Date.now(), Date.parse(latestDay) + 86_400_000)).toISOString().slice(0, 10)
+    : latestDay;
+  const filePath = dayFile([timestamp.slice(0, 10), appendDay].sort().at(-1)!, directory);
+  const previous = latest?.endsWith('.gz')
+    ? JSON.parse(readDayFile(directory, latest).trimEnd().split(/\r?\n/).at(-1)!) as ExecutionLedgerRecord
+    : readHead(directory, latest ? path.join(directory, latest) : filePath);
   const unsigned: Omit<ExecutionLedgerRecord, "hash"> = {
     schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
     id: input.id ?? crypto.randomUUID(),

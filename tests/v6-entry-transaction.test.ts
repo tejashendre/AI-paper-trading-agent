@@ -25,6 +25,37 @@ test('atomic entry commits financial state, trade and outbox once across a lost 
   assert.equal(await f.redis.get(f.prefix+'outbox:entry:one')!==null,true);
   await assert.rejects(()=>f.redis.commitBrainEntry({...f.input,portfolio:JSON.stringify({usd:123})}),/receipt|payload/i);
 });
+test('a closed entry cannot be reused by a different partial batch after its outbox is drained',async()=>{
+  const f=await fixture();
+  const second={id:'two',positionId:'two',asset:'ETH',action:'BUY',brainRunId:'entry-test'};
+  const financial={portfolio:JSON.stringify({usd:9980,openPositions:{BTC:{positionId:'one'},ETH:{positionId:'two'}}}),
+    trades:[...f.input.trades,JSON.stringify(second)],events:f.input.events};
+  const batch={...f.input,...financial,transactionId:'one-and-two',receipt:store.brainEntryReceipt(financial)};
+  await f.redis.commitBrainEntry(batch);
+  await f.redis.del(f.prefix+'outbox:entry:one');
+  const close={kind:'EXIT' as const,portfolio:JSON.stringify({usd:9990,openPositions:{ETH:{positionId:'two'}}}),
+    trades:[JSON.stringify({id:'exit-one',positionId:'one',asset:'BTC',action:'SELL',brainRunId:'entry-test'})],
+    events:[{id:'exit:one',event:JSON.stringify({id:'exit:one',type:'EXIT_FILLED'})}]};
+  await f.redis.commitBrainEntry({...f.input,...close,transactionId:'close-one',expected:await f.redis.readRaw(Object.keys(f.input.expected)),receipt:store.brainEntryReceipt(close)});
+  const before=await f.redis.readRaw([f.prefix+'portfolio','ai:portfolio',f.prefix+'trades']);
+  const retry={...f.input,expected:await f.redis.readRaw(Object.keys(f.input.expected))};
+  await assert.rejects(f.redis.commitBrainEntry(retry),/already committed/i);
+  // A changed trade id still cannot reopen the same setup/position.
+  const renamed={...retry,trades:[JSON.stringify({...JSON.parse(f.input.trades[0]),id:'renamed-one'})]};
+  renamed.receipt=store.brainEntryReceipt(renamed);
+  await assert.rejects(f.redis.commitBrainEntry(renamed),/already committed/i);
+  assert.deepEqual(await f.redis.readRaw(Object.keys(before)),before);
+  assert.equal(await f.redis.get(f.prefix+'outbox:entry:one'),null);
+  assert.equal(await f.redis.commitBrainEntry(batch),batch.receipt);
+});
+test('two differently named trades cannot enter the same position in one atomic batch',async()=>{
+  const f=await fixture(),before=await f.redis.readRaw([f.prefix+'portfolio','ai:portfolio',f.prefix+'trades']);
+  const second={...JSON.parse(f.input.trades[0]),id:'different-trade-id'};
+  const input={...f.input,trades:[...f.input.trades,JSON.stringify(second)]};
+  input.receipt=store.brainEntryReceipt(input);
+  await assert.rejects(f.redis.commitBrainEntry(input),/duplicate financial trade/i);
+  assert.deepEqual(await f.redis.readRaw(Object.keys(before)),before);
+});
 for(const fault of ['lease','freeze','ack','epoch','portfolio','deadline'] as const)test(`entry ${fault} race cannot write partial financial state`,async()=>{
   const f=await fixture();assert.equal(typeof (f.redis as any).commitBrainEntry,'function');
   if(fault==='lease')await f.redis.set('portfolio:write-lock:ai','other',{ex:30});

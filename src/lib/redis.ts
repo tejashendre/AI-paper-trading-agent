@@ -42,8 +42,10 @@ export function validateBrainEntryCommit(input: BrainEntryCommit): void {
   if(!['ENTRY','EXIT','MARK','FUNDING'].includes(kind)||!portfolio||!Number.isFinite(portfolio.usd)||(kind==='ENTRY'&&portfolio.usd<0)||!portfolio.openPositions||!Array.isArray(input.trades)||input.trades.length>9||!Array.isArray(input.events)||input.events.length>5000||
     (kind==='ENTRY'||kind==='EXIT')&&(input.trades.length<1||input.events.length<1)||
     (kind==='MARK'||kind==='FUNDING')&&input.trades.length!==0)throw new Error('Invalid financial mutation payload');
-  const ids=new Set<string>();
-  for(const raw of input.trades){const t=JSON.parse(raw);if(!t.id||ids.has(t.id)||t.brainRunId!==input.runId||!(kind==='EXIT'?['SELL','COVER']:['BUY','SHORT']).includes(t.action))throw new Error('Invalid or duplicate financial trade');ids.add(t.id);}
+  const ids=new Set<string>(),positions=new Set<string>();
+  for(const raw of input.trades){const t=JSON.parse(raw);if(typeof t.id!=='string'||!t.id||t.id.length>512||ids.has(t.id)||
+    kind==='ENTRY'&&(typeof t.positionId!=='string'||!t.positionId||t.positionId.length>512||positions.has(t.positionId))||
+    t.brainRunId!==input.runId||!(kind==='EXIT'?['SELL','COVER']:['BUY','SHORT']).includes(t.action))throw new Error('Invalid or duplicate financial trade');ids.add(t.id);positions.add(t.positionId);}
   const events=new Set<string>();
   for(const item of input.events){if(!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,511}$/.test(item.id)||events.has(item.id)||JSON.parse(item.event).id!==item.id)throw new Error('Invalid entry ledger event');events.add(item.id);}
 }
@@ -223,9 +225,20 @@ export class LocalRedisProxy {
         local previous=redis.call('get',prefix..'outbox:'..item.id)
         if previous and previous~=item.event then return redis.error_reply('Entry ledger event conflict') end
       end
+      local entryKeys={}
+      if not p.kind or p.kind=='ENTRY' then
+        for _,encoded in ipairs(p.trades) do
+          local trade=cjson.decode(encoded)
+          for _,key in ipairs({prefix..'entryTrade:'..trade.id,prefix..'entryPosition:'..trade.positionId}) do
+            if redis.call('exists',key)>0 then return redis.error_reply('Entry already committed') end
+            entryKeys[#entryKeys+1]=key
+          end
+        end
+      end
       redis.call('set',prefix..'portfolio',p.portfolio); redis.call('set','ai:portfolio',p.portfolio)
       for _,trade in ipairs(p.trades) do redis.call('lpush',prefix..'trades',trade) end
       for _,item in ipairs(p.events) do redis.call('set',prefix..'outbox:'..item.id,item.event) end
+      for _,key in ipairs(entryKeys) do redis.call('set',key,p.receipt) end
       redis.call('set',receiptKey,p.receipt); return p.receipt
     `,0,JSON.stringify(input)));
   }
