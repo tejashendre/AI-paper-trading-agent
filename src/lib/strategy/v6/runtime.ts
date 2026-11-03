@@ -404,6 +404,13 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   await drainBrainOutbox(deps,runId);return filled;
 }
 /** Fetch outside the financial lease, then use one causal batch boundary and one fenced batch commit. */
+async function acquireLease(deps:RuntimeDeps,token:string,attempts=Number(process.env.BRAIN_LEASE_ATTEMPTS??40),waitMs=250):Promise<boolean>{
+  for(let i=0;i<attempts;i++){
+    if(await deps.redis.set(LOCK,token,{nx:true,ex:300}))return true;
+    if(i<attempts-1)await new Promise(resolve=>setTimeout(resolve,waitMs));
+  }
+  return false;
+}
 export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Promise<BrainRuntimeStatus>{
   const deps=dependencies(overrides),started=deps.clock(),run=await currentRun(deps);
   if(!run||await deps.redis.get(prefix(run.runId)+'ledgerAcknowledged')!==true){
@@ -430,8 +437,13 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     if(result.value.asset!==asset||!frameValid(result.value,now))return assetStatus(asset,'INVALID_CAPTURE');
     frames.push(result.value);return assetStatus(asset,'PENDING');
   });
-  const token=randomUUID();if(!await deps.redis.set(LOCK,token,{nx:true,ex:300})){
-    const s=status(deps,run.runId,'SHADOW',now,assets,['PORTFOLIO_BUSY']);await publish(deps,s,started);return s;
+  // The 5-second protection and shadow sweeps share this lease and hold it only
+  // briefly, so wait for it rather than giving up the scan. A scan that still
+  // cannot get it keeps the last published status instead of overwriting it
+  // with a scanId-0 placeholder (which tripped release checks and alarms).
+  const token=randomUUID();
+  if(!await acquireLease(deps,token)){
+    return status(deps,run.runId,'SHADOW',now,assets,['PORTFOLIO_BUSY']);
   }
   try{
     const p=prefix(run.runId),raw=await deps.redis.readRaw([ACTIVE,p+'portfolio',p+'shadow',p+'breakers']);

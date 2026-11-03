@@ -277,3 +277,16 @@ test('open paper gate turns streak latches into a 48h cooldown instead of a perm
     assert.equal(await cooled.redis.get('brain:v6:run:test-run:breakerResetAtMs'),NOW-49*3600000);
   }finally{mock.timers.reset();process.env.V6_PAPER_GATE='strict';}
 });
+
+test('a scan that cannot get the busy portfolio lease keeps the last published status',async()=>{
+  const prior=process.env.BRAIN_LEASE_ATTEMPTS;process.env.BRAIN_LEASE_ATTEMPTS='2';
+  try{
+    const h=harness();await seed(h);await runReplacementScan(h.deps);
+    const published=await h.redis.get<any>('swing:lastScan:ai');assert.ok(published.scanId>0);
+    await h.redis.set('portfolio:write-lock:ai','protection-owner',{ex:60});
+    h.setNow(NOW+60000);
+    const busy=await runReplacementScan(h.deps);
+    assert.deepEqual(busy.haltReasons,['PORTFOLIO_BUSY']);
+    assert.deepEqual(await h.redis.get('swing:lastScan:ai'),published);
+  }finally{if(prior===undefined)delete process.env.BRAIN_LEASE_ATTEMPTS;else process.env.BRAIN_LEASE_ATTEMPTS=prior;}
+});
