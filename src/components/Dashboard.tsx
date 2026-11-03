@@ -14,6 +14,7 @@ import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { radarSummary, researchCandidateLabel, swingWinRateTile } from "@/lib/ui/dashboardLabels";
 
 const TradingChart = dynamic(() => import("./TradingChart").then(mod => mod.TradingChart), { ssr: false });
+const LiveTickChart = dynamic(() => import("./LiveTickChart").then(mod => mod.LiveTickChart), { ssr: false });
 const EquityCurve = dynamic(() => import("./EquityCurve").then(mod => mod.EquityCurve), { ssr: false });
 
 class DashboardErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; message: string }> {
@@ -307,6 +308,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const [activeAsset, setActiveAsset] = useState("BTC");
   const [activeTab, setActiveTab] = useState<"Crypto" | "Forex" | "Commodities">("Crypto");
   const [chartInterval, setChartInterval] = useState("1h");
+  const [liveMode, setLiveMode] = useState(false);
   const [chartTimezone, setChartTimezone] = useState<ChartTimezone>("EU");
   const [data, setData] = useState<any>(null);
   const [brainStatus, setBrainStatus] = useState<BrainStatusView | null>(null);
@@ -996,12 +998,21 @@ function DashboardContent({ secret }: { secret: string }) {
                     ))}
                   </div>
                   <div className={`flex border rounded-lg overflow-hidden ${isDark ? "bg-[#050508] border-[#1c1c24]" : "bg-[#fafbfc] border-[#e2e8f0]"}`}>
+                    <button
+                      onClick={() => setLiveMode(true)}
+                      className={`px-3 py-1 text-[9px] font-mono font-bold transition-all ${
+                        liveMode ? "bg-green-600 text-white shadow-xs" : `${textMuted} hover:text-green-600 hover:bg-neutral-100`
+                      }`}
+                      title="Live 1-second candles from the Bybit stream, last 60 minutes"
+                    >
+                      LIVE 1S
+                    </button>
                     {["1m", "5m", "15m", "30m", "1h", "4h"].map(tf => (
                       <button 
                         key={tf} 
-                        onClick={() => setChartInterval(tf)} 
+                        onClick={() => { setLiveMode(false); setChartInterval(tf); }} 
                         className={`px-3 py-1 text-[9px] font-mono font-bold transition-all ${
-                          chartInterval === tf 
+                          !liveMode && chartInterval === tf 
                             ? "bg-orange-600 text-white shadow-xs" 
                             : `${textMuted} hover:text-[#0f172a] hover:bg-neutral-100`
                         }`}
@@ -1038,7 +1049,19 @@ function DashboardContent({ secret }: { secret: string }) {
                   {selectedAssetConfig.name} chart unavailable: {chartError}
                 </div>
               )}
-              {!chartLoading && chartData?.asset === activeAsset && (
+              {liveMode && (
+                <LiveTickChart
+                  key={`live-${activeAsset}-${viewMode}`}
+                  asset={activeAsset}
+                  price={livePrices?.[activeAsset]?.price}
+                  source={livePrices?.[activeAsset]?.source}
+                  updatedAt={livePrices?.[activeAsset]?.updatedAt}
+                  position={viewMode === "ai" ? data?.aiPortfolio?.openPositions?.[activeAsset] : data?.userPortfolio?.openPositions?.[activeAsset]}
+                  timezone={chartTimezone}
+                  theme={theme}
+                />
+              )}
+              {!liveMode && !chartLoading && chartData?.asset === activeAsset && (
                 <TradingChart 
                   key={`${activeAsset}-${chartInterval}-${viewMode}-${chartData.windowVersion}`}
                   candles={chartData.candles} 
