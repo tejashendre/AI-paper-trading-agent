@@ -17,9 +17,27 @@ import { brainDefinition, evaluateBrain, type BrainDecision, type CalendarManife
 import { brainEvidenceIdentity, brainPermission, evaluateBrainEvidence, evidenceHash, freezeBrainCosts, readBrainReview, registerBrain, saveBrainReview,
   type BrainEvidenceReview, type BrainFundingObservation, type BrainRegistration, type BrainTrial, type BrainOutcome } from './evidence';
 import { allocateBrainRisk, brainVolatilityScale, evaluateBrainBreakers, sizeBrainOrder, type BrainBreakerLatch, type BrainOrderPlan, type BrainRiskOutcome } from './risk';
+import { paperGateOpen, paperGatePermission } from './paperMode';
+import { buildLearningBook, learnedRisk, readLegacyTradeBackup, samplesFromTrades, type LearningBook } from './learning';
 import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, shadowEquity, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame } from './shadow';
 
 export const BRAIN_SCAN_INTERVAL_MS=60000,BRAIN_WATCHDOG_INTERVAL_MS=5000;
+/** Decision references only point at on-disk tapes; nothing reads them back, so they expire. */
+const DECISION_REFERENCE_TTL_S=3*86400;
+/**
+ * One reference per minute used to accumulate forever (10k+ keys within a week),
+ * which bloated Redis and tripped the release preflight inventory bound.
+ * Deletes references older than the TTL for the active run; returns the count.
+ */
+export async function pruneBrainDecisionReferences(overrides:Partial<RuntimeDeps>={}):Promise<number>{
+  const deps=dependencies(overrides),run=await currentRun(deps);if(!run)return 0;
+  const cutoff=deps.clock()-DECISION_REFERENCE_TTL_S*1000;let removed=0;
+  for(const key of await deps.redis.scanKeys(prefix(run.runId)+'decision:*',1_000_000)){
+    const ref=await deps.redis.get<{decidedAtMs?:number}>(key);
+    if(!ref||!Number.isFinite(ref.decidedAtMs)||ref.decidedAtMs!<cutoff){await deps.redis.del(key);removed++;}
+  }
+  return removed;
+}
 const LOCK='portfolio:write-lock:ai',ACTIVE='brain:v6:activeRun';
 const RISK_POLICY={version:'v6-risk-1',initialCapital:10000,riskFraction:.0025,escalatedRiskFraction:.005,accountRisk:.02,factorRisk:.01,
   grossNotional:2.5,margin:.4,drawdown:.1,volatilityOverlay:{lookbackDays:30,targetAnnualVol:.2,annualDays:365,downOnly:true},executionContext:BRAIN_EXECUTION_CONTEXT};
@@ -103,9 +121,20 @@ async function currentRun(deps:RuntimeDeps){
   if(!active||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(active.runId)||active.brainVersion!=='replacement-swing-v6-2026-10-24'||active.initialCapital!==10000)return null;
   return active;
 }
+function registrationCurrent(r:BrainRegistration,asset:ConfiguredAsset,d:ReturnType<typeof brainDefinition>,source:string):boolean{
+  return r.sourceHash===source&&r.costHash===evidenceHash(freezeBrainCosts(asset))&&r.riskPolicyHash===evidenceHash(RISK_POLICY)&&
+    r.exitPolicyHash===evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT});
+}
 async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,now:number,source:string):Promise<BrainRegistration>{
-  const p=prefix(runId),d=brainDefinition(asset),key=p+'runtimeRegistration:'+asset;
-  let existing=await deps.redis.get<BrainRegistration>(key);
+  const p=prefix(runId),d=brainDefinition(asset),baseKey=p+'runtimeRegistration:'+asset;
+  let key=baseKey,existing=await deps.redis.get<BrainRegistration>(key);
+  // Under the open paper gate a deploy must not silence the brain: a changed
+  // source, cost or policy fingerprint rotates to a fresh registration keyed
+  // by that fingerprint. Strict mode keeps the immutable mismatch refusal.
+  if(existing&&paperGateOpen()&&!registrationCurrent(existing,asset,d,source)){
+    key=baseKey+':'+evidenceHash({source,costs:evidenceHash(freezeBrainCosts(asset)),risk:evidenceHash(RISK_POLICY),exit:evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT})}).slice(0,24);
+    existing=await deps.redis.get<BrainRegistration>(key);
+  }
   if(!existing){
     let trials=await deps.redis.get<BrainTrial[]>(p+'trials');
     if(!trials){
@@ -122,8 +151,7 @@ async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,
       registeredAtMs:now,releasedAtMs:now,firstEvaluationAtMs:now,trialSnapshotHash:evidenceHash(trials),folds:[]};
     await deps.redis.set(key,candidate,{nx:true});existing=(await deps.redis.get<BrainRegistration>(key))!;
   }
-  if(existing.sourceHash!==source||existing.costHash!==evidenceHash(freezeBrainCosts(asset))||existing.riskPolicyHash!==evidenceHash(RISK_POLICY)||
-    existing.exitPolicyHash!==evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT}))throw new Error('REGISTRATION_MISMATCH');
+  if(!registrationCurrent(existing,asset,d,source))throw new Error('REGISTRATION_MISMATCH');
   await registerBrain(deps.redis,d,existing);return existing;
 }
 function frameValid(f:RuntimeFrame,now:number):boolean {
@@ -150,6 +178,19 @@ export async function drainBrainOutbox(deps:RuntimeDeps,runId:string):Promise<vo
     if(!event?.id||key!==prefix(runId)+'outbox:'+event.id)throw new Error('Conflicting financial outbox identity');
     await deps.ledger(event);await deps.redis.compareAndDelete(key,raw.value);
   }
+}
+let legacyCache:{atMs:number;trades:Trade[]}|null=null;
+/** Rebuilds the learning book from every closed AI trade: this run's v6 trades plus pre-v6 history at half weight. */
+export async function refreshBrainLearning(deps:RuntimeDeps,runId:string,nowMs:number):Promise<LearningBook>{
+  const v6=(await deps.redis.lrange(prefix(runId)+'trades',0,-1)).map(x=>parse<Trade>(x)).filter((x):x is Trade=>!!x);
+  if(!legacyCache||nowMs-legacyCache.atMs>600000){
+    const live=(await deps.redis.lrange('ai:trades',0,-1).catch(()=>[] as string[])).map(x=>parse<Trade>(x)).filter((x):x is Trade=>!!x);
+    legacyCache={atMs:nowMs,trades:live.length?live:readLegacyTradeBackup()};
+  }
+  const v6Ids=new Set(v6.map(t=>t.id));
+  const book=buildLearningBook([...samplesFromTrades(v6,'V6'),...samplesFromTrades(legacyCache.trades.filter(t=>!v6Ids.has(t.id)&&!t.brainRunId),'LEGACY')],nowMs);
+  await deps.redis.set(prefix(runId)+'learning',book);
+  return book;
 }
 /** Recover evidence from preserved financial legs. Missing provenance is a diagnostic, never a zero cost. */
 export async function collectBrainPaperOutcomes(deps:RuntimeDeps,runId:string,portfolio:Portfolio,nowMs:number):Promise<{outcomes:BrainOutcome[];riskOutcomes:BrainRiskOutcome[]}>{
@@ -243,7 +284,7 @@ function permissionKeys(r:BrainRegistration,asset:ConfiguredAsset,proof:BrainEvi
 function toPosition(setup:SwingSetup,plan:BrainOrderPlan,r:BrainRegistration,f:RuntimeFrame,now:number):OpenPosition {
   const instrument=getConfiguredInstrument(setup.asset),observation=shadowExecution(f,now,setup.direction,plan.quantity,plan.entryPrice,plan.stopLoss)!;
   return {asset:setup.asset,entryPrice:plan.entryPrice,amount:plan.quantity,btcAmount:plan.quantity,usdInvested:plan.marginUsdt,stopLoss:plan.stopLoss,initialStopLoss:plan.stopLoss,
-    takeProfit:plan.takeProfit,entryTime:new Date(now).toISOString(),signalScore:0,reasoning:'Exact v6 evidence permission and bounded batch risk',direction:setup.direction,strategyType:'swing',
+    takeProfit:plan.takeProfit,entryTime:new Date(now).toISOString(),signalScore:0,reasoning:paperGateOpen()?'v6 setup under open paper gate and bounded batch risk':'Exact v6 evidence permission and bounded batch risk',direction:setup.direction,strategyType:'swing',
     entryFeePaid:plan.entryFeeUsdt,notionalUsd:plan.notionalUsdt,leverageUsed:plan.leverage,riskAmountUsd:plan.initialRiskUsdt,initialRiskUsdt:plan.initialRiskUsdt,
     maxLossUsd:plan.initialRiskUsdt,positionId:`v6:${r.runId}:${setup.id}`,strategyFamily:setup.strategyId,strategyConfigHash:setup.configHash,
     strategyDataSchemaVersion:'v6-native-closed',featureCutoffMs:setup.featureCutoffMs,strategyVersion:'replacement-swing-v6-2026-10-24',instrument,economicsModel:instrument.economicsModel,
@@ -256,24 +297,41 @@ function toPosition(setup:SwingSetup,plan:BrainOrderPlan,r:BrainRegistration,f:R
     brainFundingIntervalMinutes:f.metadata.fundingIntervalMinutes,brainFundingObservations:[],fillLiquidity:{...f.liquidity},fundingRate:f.fundingRate};
 }
 async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:RuntimeFrame[],setups:SwingSetup[],registrations:Map<ConfiguredAsset,BrainRegistration>,
-  reviews:Map<ConfiguredAsset,BrainEvidenceReview>,portfolio:Portfolio,raw:RawRedisSnapshot,latches:BrainBreakerLatch[],now:number):Promise<ConfiguredAsset[]>{
+  reviews:Map<ConfiguredAsset,BrainEvidenceReview>,portfolio:Portfolio,raw:RawRedisSnapshot,latches:BrainBreakerLatch[],now:number,learning:LearningBook|null=null):Promise<ConfiguredAsset[]>{
   const p=prefix(runId),equity=markedEquity(portfolio),candidates=[];
   if(!riskMarksReady(portfolio,now)||await deps.redis.get('swing:entryFreeze')!==null||await deps.redis.get('brain:v6:migration-freeze')!==null||
     (await deps.redis.scanKeys(p+'outbox:*')).length||(portfolio.pendingLedgerEvents?.length??0)>0||
     (portfolio.fundingTail??[]).some(t=>t.pendingTimes.length>0)||Object.values(portfolio.openPositions??{}).some(pos=>(pos.fundingPendingTimes?.length??0)>0))return [];
+  // A full nine-asset scan can outlast the five-second quote deadline, so the
+  // open paper gate re-reads the executable quote/book just before filling.
+  const fresh=new Map<ConfiguredAsset,RuntimeFrame>();
+  if(paperGateOpen()&&deps.executionCapture&&setups.length){
+    await Promise.all(setups.filter(s=>!portfolio.openPositions?.[s.asset]).map(async s=>{
+      const base=frames.find(x=>x.asset===s.asset);if(!base)return;
+      const x=await deps.executionCapture!(s.asset).catch(()=>null);
+      if(x?.quote&&x.liquidity&&Number.isFinite(x.availableAtMs))fresh.set(s.asset,{...base,...x,asset:base.asset,bars:base.bars});
+    }));
+    if(fresh.size)now=Math.max(now,deps.clock());
+  }
   for(const setup of setups){
-    const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
+    const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=fresh.get(setup.asset)??frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
     if(!r||!proof||!f||portfolio.openPositions?.[setup.asset])continue;
     if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null)continue;
     const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed))continue;
-    const permission=brainPermission(d,proof,now,{runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash,riskTier:proof.riskTier});
+    const permissionContext={runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash};
+    const permission=paperGateOpen()?paperGatePermission(proof,now,permissionContext):brainPermission(d,proof,now,{...permissionContext,riskTier:proof.riskTier});
     if(!permission.allowed)continue;
     const observation=shadowExecution(f,now,setup.direction,1,setup.entryPrice,setup.stopLoss),capacity=capacityNotionalCap({side:setup.direction==='LONG'?'BUY':'SELL',liquidity:f.liquidity});
     if(!observation||capacity===null||!Number.isFinite(f.fundingRate)||!Number.isFinite(f.fundingObservedAtMs)||f.fundingObservedAtMs>now||now-f.fundingObservedAtMs>60000)continue;
     const volatility=brainVolatilityScale(f.bars.d1,now);if(volatility===null)continue;
-    const order={setup,metadata:f.metadata,nowMs:now,riskBudgetUsdt:equity*(proof.riskTier==='ESCALATED'?.005:.0025)*volatility,riskTier:proof.riskTier==='ESCALATED'?'ESCALATED' as const:'INITIAL' as const,
+    // Learned allocation (open paper gate only): pause pairs with a clearly losing record,
+    // scale others 0.5x-1.5x of base risk. Above 1x needs the escalated cap (0.5% max).
+    const learned=paperGateOpen()?learnedRisk(learning,setup.asset,setup.direction):{multiplier:1,paused:false,reason:'strict gate'};
+    if(learned.paused)continue;
+    const escalated=proof.riskTier==='ESCALATED'||learned.multiplier>1;
+    const order={setup,metadata:f.metadata,nowMs:now,riskBudgetUsdt:equity*(proof.riskTier==='ESCALATED'?.005:.0025*learned.multiplier)*volatility,riskTier:escalated?'ESCALATED' as const:'INITIAL' as const,
       equity,availableCash:portfolio.usd,capacityNotionalUsdt:capacity,halfSpreadBps:observation.halfSpreadBps,fundingRate:f.fundingRate};
-    const plan=sizeBrainOrder(order);if(plan.approved)candidates.push({setup,r,proof,f,order,plan});
+    const plan=sizeBrainOrder(order);if(plan.approved)candidates.push({setup,r,proof,f,order,plan,learned});
   }
   const allocations=allocateBrainRisk({equity,initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),freeCash:portfolio.usd,
     open:Object.values(portfolio.openPositions??{}).map(pos=>({asset:pos.asset as ConfiguredAsset,riskUsdt:pos.initialRiskUsdt??NaN,notionalUsdt:pos.notionalUsd??NaN,marginUsdt:pos.usdInvested})),
@@ -288,7 +346,7 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
     const current=await readBrainReview(deps.redis,brainDefinition(c.setup.asset),c.r);
     if(current?.proofHash!==c.proof.proofHash)continue;
     expectedKeys.push(...permissionKeys(c.r,c.setup.asset,c.proof));
-    const pos=toPosition(c.setup,plan,c.r,c.f,now);next.openPositions[c.setup.asset]=pos;
+    const pos=toPosition(c.setup,plan,c.r,c.f,now);pos.learningRiskMultiplier=c.learned.multiplier;pos.setupRiskReason=c.learned.reason;next.openPositions[c.setup.asset]=pos;
     next.usd-=plan.marginUsdt+plan.entryFeeUsdt;next.balances[c.setup.asset]=c.setup.direction==='LONG'?plan.quantity:-plan.quantity;
     next.totalFeesPaid=(next.totalFeesPaid??0)+plan.entryFeeUsdt;next.totalExecutionCostsPaid=(next.totalExecutionCostsPaid??0)+plan.entryFeeUsdt;
     if(c.setup.asset==='BTC'){next.btc=next.balances.BTC;next.openPosition=pos;}
@@ -354,7 +412,7 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     for(const f of frames){const row=assets.find(a=>a.asset===f.asset)!;
       try{
         const r=await registration(deps,run.runId,f.asset,now,source);registrations.set(f.asset,r);
-        const decision=evaluateBrain({asset:f.asset,nowMs:now,...f.bars,quote:f.quote,calendar});decisions.push(decision);
+        const decision=evaluateBrain({asset:f.asset,nowMs:now,...f.bars,quote:f.quote,calendar,calendarFailOpen:paperGateOpen()});decisions.push(decision);
         row.decision=decision.status==='SETUP'?{status:'SETUP',setupId:decision.setup.id}:{status:'NO_TRADE',code:decision.code,reason:decision.reason};
         if(decision.status==='SETUP')setups.push(decision.setup);
       }catch(error){row.decision={status:'NO_TRADE',code:'REGISTRATION_MISMATCH',reason:String(error)};row.evidence.reasons=[String(error)];}
@@ -363,7 +421,7 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
       captures:captures.map((c,i)=>c.status==='fulfilled'?{asset:deps.assets[i],status:c.status,value:c.value}:{asset:deps.assets[i],status:c.status,error:String(c.reason)}),
       captureErrors:assets.filter(a=>['CAPTURE_FAILED','INVALID_CAPTURE'].includes(a.decision.code??''))};
     const decisionId=evidenceHash(tape);await deps.archive?.(run.runId,decisionId,tape);
-    await deps.redis.set(p+'decision:'+decisionId,{version:'v6-decision-reference-1',runId:run.runId,decisionId,sourceHash:source,startedAtMs:started,decidedAtMs:now},{nx:true});
+    await deps.redis.set(p+'decision:'+decisionId,{version:'v6-decision-reference-1',runId:run.runId,decisionId,sourceHash:source,startedAtMs:started,decidedAtMs:now},{nx:true,ex:DECISION_REFERENCE_TTL_S});
     const oldShadow=parse<BrainShadowState>(rawString(raw,p+'shadow'))??emptyBrainShadow(run.runId);
     if(oldShadow.runId!==run.runId||oldShadow.version!=='v6-shadow-1')throw new Error('INVALID_SHADOW_EPOCH');
     const shadow=await advanceBrainShadow({state:oldShadow,frames,setups,registrations,nowMs:now,funding});
@@ -376,9 +434,10 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     for(const [asset,r] of registrations){const proof=await review(deps,r,asset,shadow,breakers.latches,paper.outcomes,now,token);if(!proof)continue;reviews.set(asset,proof);
       const row=assets.find(a=>a.asset===asset)!;row.mode=proof.mode;row.riskTier=proof.riskTier;row.evidence={historicalCount:proof.historicalCount,forwardCount:proof.forwardCount,
         paperCount:proof.paperCount,nextEligibleAtMs:proof.nextEligibleAtMs,reasons:proof.reasons};}
-    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now);
+    const learning=await refreshBrainLearning(deps,run.runId,now).catch(()=>null);
+    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning);
     for(const asset of filled)assets.find(a=>a.asset===asset)!.decision.status='ENTRY';
-    const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
+    const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':paperGateOpen()||assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
     const result=status(deps,run.runId,mode,now,assets,[...breakers.latches.map(l=>l.reason),...(breakers.rollingBlock?[breakers.rollingBlock]:[])]);
     result.equityUsdt=markedEquity(portfolio);result.virtualShadow={equityUsdt:shadowEquity(shadow),openPositions:Object.keys(shadow.open).length,capitalAllocatedUsdt:0};
     result.scanId=(await deps.redis.get<number>(p+'scanSequence')??0)+1;await deps.redis.set(p+'scanSequence',result.scanId);

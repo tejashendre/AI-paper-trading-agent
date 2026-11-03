@@ -6,7 +6,7 @@ import { liveFundingDeps } from '../lib/data/bybitPublic';
 import { WebsocketDataMesh } from './websocketDataMesh';
 import { consumeSwingScanRequest } from '../lib/trading/scanControl';
 import { persistBrainPortfolioMutation, settleAndPersistFunding, settleOpenPositionFunding, sweepSwingExits } from '../lib/execution/swingLifecycle';
-import { BRAIN_SCAN_INTERVAL_MS, BRAIN_WATCHDOG_INTERVAL_MS, refreshBrainProtectiveBreakers, runReplacementScan, runReplacementShadowSweep } from '../lib/strategy/v6/runtime';
+import { pruneBrainDecisionReferences, BRAIN_SCAN_INTERVAL_MS, BRAIN_WATCHDOG_INTERVAL_MS, refreshBrainProtectiveBreakers, runReplacementScan, runReplacementShadowSweep } from '../lib/strategy/v6/runtime';
 import type { BrainBreakerLatch } from '../lib/strategy/v6/risk';
 import { expectedFundingTimes,quantityHeldAt,type FundingDeps } from '../lib/trading/executionCostModel';
 import type { Portfolio } from '../lib/types';
@@ -92,11 +92,19 @@ export function startReplacementSwingDaemon(){
   const mesh=new WebsocketDataMesh();mesh.start();
   console.log('Starting replacement v6 swing daemon: 60-second scans and 5-second protection.');
   void runReplacementWatchdog();void scan();void runReplacementFunding();
+  const prune=()=>pruneBrainDecisionReferences().then(n=>{if(n)console.log(`[V6] pruned ${n} expired decision references`);}).catch(error=>Logger.warn(`[V6 prune] ${String(error)}`));
+  void prune();
   const timers=[setInterval(()=>void scan(),BRAIN_SCAN_INTERVAL_MS),setInterval(()=>void runReplacementWatchdog(),BRAIN_WATCHDOG_INTERVAL_MS),
     setInterval(()=>void observe(),BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void runReplacementFunding(),60000),setInterval(()=>{
       if(scanning)return;void consumeSwingScanRequest().then(request=>request?scan():undefined).catch(error=>Logger.warn(`[V6 scan control] ${String(error)}`));
-    },BRAIN_WATCHDOG_INTERVAL_MS)];
+    },BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void prune(),6*3600000)];
   const shutdown=()=>{for(const timer of timers)clearInterval(timer);mesh.stop();};
   process.once('SIGINT',shutdown);process.once('SIGTERM',shutdown);return shutdown;
 }
-if(require.main===module)startReplacementSwingDaemon();
+if(require.main===module){
+  // A transient Redis or network rejection must not kill the 24/7 daemon;
+  // every loop already guards itself, so log and keep running.
+  process.on('unhandledRejection',reason=>console.error('[V6 daemon] unhandled rejection:',reason instanceof Error?reason.message:reason));
+  process.on('uncaughtException',error=>console.error('[V6 daemon] uncaught exception:',error.message));
+  startReplacementSwingDaemon();
+}

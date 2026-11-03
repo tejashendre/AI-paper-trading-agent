@@ -43,6 +43,11 @@ export interface BrainSnapshot {
   quote: MarketPriceSnapshot | null;
   calendar: CalendarManifest | null;
   /**
+   * Paper-gate only: a missing or stale calendar capture does not block entry.
+   * A valid manifest's release exclusion windows are always honoured.
+   */
+  calendarFailOpen?: boolean;
+  /**
    * Actual snapshot receipt/capture clocks. Runtime must supply these.
    * Omitted clocks support pure research fixtures only: engine output then
    * models close-time availability and cannot certify activation evidence.
@@ -164,6 +169,11 @@ export function brainDefinition(asset: ConfiguredAsset): BrainDefinition {
   return { ...definition, configHash: createHash('sha256').update(JSON.stringify(definition)).digest('hex') };
 }
 
+/** True only when the block is about the capture itself, never a scheduled release window. */
+function calendarCaptureUnavailable(reason: string): boolean {
+  return /missing or unsupported|timing, freshness|requires one verified coverage source|provenance or coverage is invalid/.test(reason);
+}
+
 function noTrade(code: BrainNoTradeCode, reason: string): BrainDecision {
   return { status: 'NO_TRADE', code, reason };
 }
@@ -227,7 +237,7 @@ export function evaluateBrain(input: BrainSnapshot): BrainDecision {
   if (p.dailyWarmup > 0 && d1[d1.length - 1].time * 1000 + DAY !== Math.floor(nowMs / DAY) * DAY) return noTrade('INVALID_DATA', 'Most recent completed UTC daily bar is missing');
   if (!strategySessionAllowed(asset, nowMs)) return noTrade('SESSION', 'Outside approved underlying liquid entry hours');
   const calendar = validateCalendar({ asset, manifest: input.calendar, nowMs });
-  if (!calendar.allowed) return noTrade('CALENDAR', calendar.reason);
+  if (!calendar.allowed && !(input.calendarFailOpen && calendarCaptureUnavailable(calendar.reason))) return noTrade('CALENDAR', calendar.reason);
   const quoteCheck = validateExitQuote({ instrument: getConfiguredInstrument(asset), quote, nowMs });
   if (!quote || !quoteCheck.valid) return noTrade('QUOTE', quoteCheck.reasons.join('; '));
   const times = [quote.eventTimeMs, quote.receivedAtMs, quote.quoteTimes.lastPriceMs, quote.quoteTimes.bidAskMs, quote.quoteTimes.markMs];

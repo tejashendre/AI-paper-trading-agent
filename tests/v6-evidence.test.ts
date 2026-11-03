@@ -245,7 +245,10 @@ test("scoped registry preserves immutable registration and review proofs and ter
   await saveBrainReview(redis, review);
   const read = await readBrainReview(redis, input.definition, input.registration);
   assert.equal(read?.proofHash, review.proofHash);
-  await assert.rejects(registerBrain(redis, input.definition, { ...input.registration, sourceHash: "b".repeat(64) }));
+  // Same source fingerprint: the scoped registration stays immutable.
+  await assert.rejects(registerBrain(redis, input.definition, { ...input.registration, registeredAtMs: input.registration.registeredAtMs - 1 }));
+  // A redeployed source registers under its own scope instead of colliding.
+  await registerBrain(redis, input.definition, { ...input.registration, sourceHash: "b".repeat(64) });
   assert.ok([...values.keys()].every(x => x.startsWith("brain:v6:")));
   await saveBrainReview(redis, review);
   const latest = [...values.keys()].find(x => x.includes(":latest:"))!;

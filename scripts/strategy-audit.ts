@@ -1309,7 +1309,8 @@ function auditProductionRegressions(): AuditResult[] {
   const feedSource = read("src", "lib", "data", "feedHealthSummary.ts");
   const sourceAgreementSource = read("src", "lib", "data", "sourceAgreement.ts");
   const admissionSource = read("src", "lib", "trading", "tradeAdmission.ts");
-  const daemonSource = read("src", "daemon", "swingDaemon.ts");
+  // The legacy swing daemon was removed; the v6 daemon is the only swing entrypoint.
+  const daemonSource = read("src", "daemon", "replacementSwingDaemon.ts");
   const websocketSource = read("src", "daemon", "websocketDataMesh.ts");
   const tradeSource = read("src", "app", "api", "trade", "route.ts");
   const resetSource = read("src", "app", "api", "user", "reset", "route.ts");
@@ -1335,8 +1336,7 @@ function auditProductionRegressions(): AuditResult[] {
     websocketSource.includes("publicTrade.") &&
     websocketSource.includes("this.book.reset()") &&
     websocketSource.includes("FLUSH_INTERVAL_MS = 1_000") &&
-    !/kraken|binance/i.test(websocketSource) &&
-    daemonSource.includes("safeForSwingExecution");
+    !/kraken|binance/i.test(websocketSource);
   const singleWriterExecution = tradeSource.includes("requestSwingScan") &&
     !tradeSource.includes("TradeAdmissionController") &&
     !tradeSource.includes("updatePortfolio") &&
@@ -1392,9 +1392,6 @@ function auditProductionRegressions(): AuditResult[] {
     !/kraken|yahoo|coingecko|binance/i.test(marketSource.replace(/\/\/.*$/gm, "")) &&
     websocketSource.includes("liveQuoteKey(asset)") &&
     sourceAgreementSource.includes("SINGLE_VENUE_TRANSPORT_CONSISTENCY") &&
-    daemonSource.includes("evaluateEntryEligibility({") &&
-    daemonSource.includes("dataEligibility,") &&
-    daemonSource.includes("entryMode: effectiveEntryMode") &&
     admissionSource.includes('input.entryMode === "CONTROLLED_PROBE"') &&
     admissionSource.includes('return "PROBE"');
   // Behavioral, not textual: a delta needs this session's snapshot. Bybit
