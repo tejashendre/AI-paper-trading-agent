@@ -328,11 +328,15 @@ function toPosition(setup:SwingSetup,plan:BrainOrderPlan,r:BrainRegistration,f:R
     brainFundingIntervalMinutes:f.metadata.fundingIntervalMinutes,brainFundingObservations:[],fillLiquidity:{...f.liquidity},fundingRate:f.fundingRate};
 }
 async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:RuntimeFrame[],setups:SwingSetup[],registrations:Map<ConfiguredAsset,BrainRegistration>,
-  reviews:Map<ConfiguredAsset,BrainEvidenceReview>,portfolio:Portfolio,raw:RawRedisSnapshot,latches:BrainBreakerLatch[],now:number,learning:LearningBook|null=null):Promise<ConfiguredAsset[]>{
+  reviews:Map<ConfiguredAsset,BrainEvidenceReview>,portfolio:Portfolio,raw:RawRedisSnapshot,latches:BrainBreakerLatch[],now:number,learning:LearningBook|null=null,skips:Map<ConfiguredAsset,string>=new Map()):Promise<ConfiguredAsset[]>{
   const p=prefix(runId),equity=markedEquity(portfolio),candidates=[];
+  // Every setup that does not fill records why, so a SETUP without ENTRY is never silent.
+  const skip=(asset:ConfiguredAsset,code:string)=>{skips.set(asset,code);};
   if(!riskMarksReady(portfolio,now)||await deps.redis.get('swing:entryFreeze')!==null||await deps.redis.get('brain:v6:migration-freeze')!==null||
     (await deps.redis.scanKeys(p+'outbox:*')).length||(portfolio.pendingLedgerEvents?.length??0)>0||
-    (portfolio.fundingTail??[]).some(t=>t.pendingTimes.length>0)||Object.values(portfolio.openPositions??{}).some(pos=>(pos.fundingPendingTimes?.length??0)>0))return [];
+    (portfolio.fundingTail??[]).some(t=>t.pendingTimes.length>0)||Object.values(portfolio.openPositions??{}).some(pos=>(pos.fundingPendingTimes?.length??0)>0)){
+    for(const x of setups)skip(x.asset,'ACCOUNT_NOT_READY_MARKS_FREEZE_OUTBOX_OR_FUNDING');return [];
+  }
   // A full nine-asset scan can outlast the five-second quote deadline, so the
   // open paper gate re-reads the executable quote/book just before filling.
   const fresh=new Map<ConfiguredAsset,RuntimeFrame>();
@@ -346,23 +350,26 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   }
   for(const setup of setups){
     const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=fresh.get(setup.asset)??frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
-    if(!r||!proof||!f||portfolio.openPositions?.[setup.asset])continue;
-    if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null)continue;
-    const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed))continue;
+    if(!r||!proof||!f){skip(setup.asset,'NO_REGISTRATION_PROOF_OR_FRAME');continue;}
+    if(portfolio.openPositions?.[setup.asset]){skip(setup.asset,'POSITION_ALREADY_OPEN');continue;}
+    if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null){skip(setup.asset,'SETUP_ALREADY_ENTERED');continue;}
+    const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed)){skip(setup.asset,'HALT_'+halt.kind);continue;}
     const permissionContext={runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash};
     const permission=paperGateOpen()?paperGatePermission(proof,now,permissionContext):brainPermission(d,proof,now,{...permissionContext,riskTier:proof.riskTier});
-    if(!permission.allowed)continue;
+    if(!permission.allowed){skip(setup.asset,'PERMISSION_'+permission.reason);continue;}
     const observation=shadowExecution(f,now,setup.direction,1,setup.entryPrice,setup.stopLoss),capacity=capacityNotionalCap({side:setup.direction==='LONG'?'BUY':'SELL',liquidity:f.liquidity});
-    if(!observation||capacity===null||!Number.isFinite(f.fundingRate)||!Number.isFinite(f.fundingObservedAtMs)||f.fundingObservedAtMs>now||now-f.fundingObservedAtMs>60000)continue;
-    const volatility=brainVolatilityScale(f.bars.d1,now);if(volatility===null)continue;
+    if(!observation){skip(setup.asset,'NO_FRESH_EXECUTABLE_QUOTE_OR_DEPTH');continue;}
+    if(capacity===null){skip(setup.asset,'NO_LIQUIDITY_CAPACITY');continue;}
+    if(!Number.isFinite(f.fundingRate)||!Number.isFinite(f.fundingObservedAtMs)||f.fundingObservedAtMs>now||now-f.fundingObservedAtMs>60000){skip(setup.asset,'FUNDING_RATE_STALE');continue;}
+    const volatility=brainVolatilityScale(f.bars.d1,now);if(volatility===null){skip(setup.asset,'VOLATILITY_SCALE_UNAVAILABLE');continue;}
     // Learned allocation (open paper gate only): pause pairs with a clearly losing record,
     // scale others 0.5x-1.5x of base risk. Above 1x needs the escalated cap (0.5% max).
     const learned=paperGateOpen()?learnedRisk(learning,setup.asset,setup.direction):{multiplier:1,paused:false,reason:'strict gate'};
-    if(learned.paused)continue;
+    if(learned.paused){skip(setup.asset,'LEARNING_PAUSED');continue;}
     const escalated=proof.riskTier==='ESCALATED'||learned.multiplier>1;
     const order={setup,metadata:f.metadata,nowMs:now,riskBudgetUsdt:equity*(proof.riskTier==='ESCALATED'?.005:.0025*learned.multiplier)*volatility,riskTier:escalated?'ESCALATED' as const:'INITIAL' as const,
       equity,availableCash:portfolio.usd,capacityNotionalUsdt:capacity,halfSpreadBps:observation.halfSpreadBps,fundingRate:f.fundingRate};
-    const plan=sizeBrainOrder(order);if(plan.approved)candidates.push({setup,r,proof,f,order,plan,learned});
+    const plan=sizeBrainOrder(order);if(plan.approved)candidates.push({setup,r,proof,f,order,plan,learned});else skip(setup.asset,'SIZING_'+plan.reason);
   }
   const allocations=allocateBrainRisk({equity,initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),freeCash:portfolio.usd,
     open:Object.values(portfolio.openPositions??{}).map(pos=>({asset:pos.asset as ConfiguredAsset,riskUsdt:pos.initialRiskUsdt??NaN,notionalUsdt:pos.notionalUsd??NaN,marginUsdt:pos.usdInvested})),
@@ -371,11 +378,12 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   const next=structuredClone(portfolio);next.openPositions??={};next.balances??={};
   const expectedKeys:string[]=[ACTIVE,p+'portfolio'];
   for(const allocation of allocations){
-    if(!(allocation.scale>0))continue;const c=candidates.find(x=>x.setup.id===allocation.id)!;
+    const c=candidates.find(x=>x.setup.id===allocation.id)!;
+    if(!(allocation.scale>0)){skip(c.setup.asset,'RISK_ALLOCATION_'+allocation.reason);continue;}
     const plan=sizeBrainOrder({...c.order,riskBudgetUsdt:allocation.riskUsdt,capacityNotionalUsdt:allocation.notionalUsdt,availableCash:Math.min(next.usd,allocation.marginUsdt+c.plan.entryFeeUsdt)});
-    if(!plan.approved||!evaluateFillCapacity({side:c.setup.direction==='LONG'?'BUY':'SELL',quantity:plan.quantity,entryPrice:plan.entryPrice,stopPrice:plan.stopLoss,impactBps:0,liquidity:c.f.liquidity}).allowed)continue;
+    if(!plan.approved||!evaluateFillCapacity({side:c.setup.direction==='LONG'?'BUY':'SELL',quantity:plan.quantity,entryPrice:plan.entryPrice,stopPrice:plan.stopLoss,impactBps:0,liquidity:c.f.liquidity}).allowed){skip(c.setup.asset,'FINAL_SIZE_OR_DEPTH_REFUSED');continue;}
     const current=await readBrainReview(deps.redis,brainDefinition(c.setup.asset),c.r);
-    if(current?.proofHash!==c.proof.proofHash)continue;
+    if(current?.proofHash!==c.proof.proofHash){skip(c.setup.asset,'EVIDENCE_PROOF_CHANGED');continue;}
     expectedKeys.push(...permissionKeys(c.r,c.setup.asset,c.proof));
     const pos=toPosition(c.setup,plan,c.r,c.f,now);pos.learningRiskMultiplier=c.learned.multiplier;pos.signalFeatures=signalFeatures(c.setup,c.f,now);pos.setupRiskReason=c.learned.reason;next.openPositions[c.setup.asset]=pos;
     next.usd-=plan.marginUsdt+plan.entryFeeUsdt;next.balances[c.setup.asset]=c.setup.direction==='LONG'?plan.quantity:-plan.quantity;
@@ -480,9 +488,11 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     const learning=await refreshBrainLearning(deps,run.runId,now).catch(()=>null);
     // A refused commit (deadline, lost race, changed evidence) writes nothing; it must
     // not abort the scan heartbeat, or one bad batch would stall every later scan.
-    let fillError:string|null=null;
-    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning)
+    let fillError:string|null=null;const skips=new Map<ConfiguredAsset,string>();
+    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning,skips)
       .catch(error=>{fillError=error instanceof Error?error.message:String(error);return [] as ConfiguredAsset[];});
+    if(breakers.rollingBlock)for(const setup of setups)skips.set(setup.asset,'LOSS_BRAKE_'+breakers.rollingBlock);
+    for(const [asset,code] of skips){const row=assets.find(a=>a.asset===asset);if(row&&row.decision.status==='SETUP')row.decision={...row.decision,code:'SKIPPED_'+code,reason:'Setup found but not entered: '+code};}
     if(fillError)for(const setup of setups){const row=assets.find(a=>a.asset===setup.asset);if(row)row.evidence.reasons=[...row.evidence.reasons,`ENTRY_COMMIT_REFUSED: ${fillError}`];}
     for(const asset of filled)assets.find(a=>a.asset===asset)!.decision.status='ENTRY';
     const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':paperGateOpen()||assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
