@@ -193,7 +193,9 @@ test('an already committed setup is excluded before allocating another entry aft
 test('an ambiguous financial commit preserves its outbox and recovers without another fill',async()=>{
   const h=await qualified(),original=h.redis.commitBrainEntry.bind(h.redis);let crashed=false;
   h.redis.commitBrainEntry=async input=>{const receipt=await original(input);if(!crashed){crashed=true;throw new Error('fixture crash after atomic commit');}return receipt;};
-  await assert.rejects(runReplacementScan(h.deps),/fixture crash/);
+  // The refused/ambiguous batch no longer aborts the scan heartbeat; it is reported per asset.
+  const crashedScan=await runReplacementScan(h.deps);
+  assert.match(crashedScan.assets[0].evidence.reasons.join(' '),/ENTRY_COMMIT_REFUSED: fixture crash/);
   assert.equal((await h.redis.scanKeys('brain:v6:run:test-run:outbox:*')).length,1);
   const cash=(await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd;
   await runReplacementScan(h.deps);
@@ -204,7 +206,8 @@ test('an ambiguous financial commit preserves its outbox and recovers without an
 test('an expired financial lease refuses the entire batch without a trade or cash write',async()=>{
   const h=await qualified(),original=h.redis.commitBrainEntry.bind(h.redis);
   h.redis.commitBrainEntry=async input=>{await h.redis.del('portfolio:write-lock:ai');return original(input);};
-  await assert.rejects(runReplacementScan(h.deps),/Stale entry lease/);
+  const refused=await runReplacementScan(h.deps);
+  assert.match(refused.assets[0].evidence.reasons.join(' '),/ENTRY_COMMIT_REFUSED: Stale entry lease/);
   assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,10000);
   assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,0);
 });
@@ -256,5 +259,19 @@ test('open paper gate turns a fresh SHADOW setup into one fenced paper fill with
     assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,first.usd);
     assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
     assert.equal((await runReplacementShadowSweep(h.deps),true),true);
+  }finally{mock.timers.reset();process.env.V6_PAPER_GATE='strict';}
+});
+
+test('open paper gate turns streak latches into a 48h cooldown instead of a permanent halt',async()=>{
+  process.env.V6_PAPER_GATE='open';mock.timers.enable({apis:['Date'],now:NOW});
+  try{
+    const fresh=harness();await seed(fresh);
+    await fresh.redis.set('brain:v6:run:test-run:breakers',[{kind:'STREAK',scope:'account',atMs:NOW-3600000,reason:'FOUR_COMPLETED_STOP_LOSSES'}]);
+    assert.notEqual((await runReplacementScan(fresh.deps)).assets[0].decision.status,'ENTRY');
+    const cooled=harness();await seed(cooled);
+    await cooled.redis.set('brain:v6:run:test-run:breakers',[{kind:'STREAK',scope:'account',atMs:NOW-49*3600000,reason:'FOUR_COMPLETED_STOP_LOSSES'}]);
+    assert.equal((await runReplacementScan(cooled.deps)).assets[0].decision.status,'ENTRY');
+    assert.deepEqual(await cooled.redis.get('brain:v6:run:test-run:breakers'),[]);
+    assert.equal(await cooled.redis.get('brain:v6:run:test-run:breakerResetAtMs'),NOW-49*3600000);
   }finally{mock.timers.reset();process.env.V6_PAPER_GATE='strict';}
 });

@@ -112,6 +112,20 @@ test("funding_is_signed_boundary_based_and_once_only", async (t) => {
     assert.ok(noMark.pendingTimes.includes(DAY0 + 4 * H));
   });
 
+  await t.test("a grid time absent a day later while other settlements exist (interval change) no longer blocks forever", () => {
+    const input = {
+      positionId: "interval-change", symbol: "XAUUSDT",
+      positionAt: () => ({ direction: "LONG" as const, quantity: 10 }),
+      settledTimes: [], fromMs: DAY0 + H, toMs: DAY0 + 9 * H,
+      intervalMinutes: 240, nowMs: DAY0 + 48 * H, fetchSucceeded: true,
+    };
+    const plan = planFundingCashflows({ ...input, settlements: [settlement(DAY0 + 8 * H), settlement(DAY0 + 6 * H)] });
+    assert.deepEqual(plan.absentTimes, [DAY0 + 4 * H]);
+    assert.deepEqual(plan.pendingTimes, []);
+    assert.equal(plan.events.length, 2);
+    const recent = planFundingCashflows({ ...input, nowMs: DAY0 + 10 * H, settlements: [settlement(DAY0 + 8 * H)] });
+    assert.deepEqual(recent.pendingTimes, [DAY0 + 4 * H], "a recent gap still waits for reconciliation");
+  });
   await t.test("an older missing boundary stays pending until evidence arrives", () => {
     const input = {
       positionId: "late-history", symbol: "XAUUSDT",

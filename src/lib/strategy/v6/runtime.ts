@@ -192,6 +192,26 @@ export async function refreshBrainLearning(deps:RuntimeDeps,runId:string,nowMs:n
   await deps.redis.set(prefix(runId)+'learning',book);
   return book;
 }
+/**
+ * Open paper gate: streak and single-asset loss latches were permanent, so a
+ * routine run of four stop-losses silenced the bot for good. Here they become
+ * cooldowns. Account drawdown and account integrity latches stay permanent.
+ * Outcomes closed before a cleared latch no longer count toward new streaks.
+ * Daily/weekly loss brakes always see the full history.
+ */
+export const PAPER_STREAK_COOLDOWN_MS=48*3600000,PAPER_ASSET_LOSS_COOLDOWN_MS=72*3600000;
+async function paperAwareBreakers(deps:RuntimeDeps,runId:string,input:Parameters<typeof evaluateBrainBreakers>[0]){
+  if(!paperGateOpen())return evaluateBrainBreakers(input);
+  const p=prefix(runId),previous=input.previous??[];
+  const cleared=(l:BrainBreakerLatch)=>(l.kind==='STREAK'&&input.nowMs-l.atMs>=PAPER_STREAK_COOLDOWN_MS)||
+    (l.kind==='INTEGRITY'&&l.scope!=='account'&&l.reason==='LOSS_BEYOND_FROZEN_RISK'&&input.nowMs-l.atMs>=PAPER_ASSET_LOSS_COOLDOWN_MS);
+  let resetAtMs=await deps.redis.get<number>(p+'breakerResetAtMs')??0;
+  const expired=previous.filter(cleared);
+  if(expired.length){resetAtMs=Math.max(resetAtMs,...expired.map(l=>l.atMs));await deps.redis.set(p+'breakerResetAtMs',resetAtMs);}
+  const latched=evaluateBrainBreakers({...input,previous:previous.filter(l=>!cleared(l)),outcomes:input.outcomes.filter(x=>x.closedAtMs>resetAtMs)});
+  const full=evaluateBrainBreakers({...input,previous:[]});
+  return {latches:latched.latches,rollingBlock:full.rollingBlock};
+}
 /** Recover evidence from preserved financial legs. Missing provenance is a diagnostic, never a zero cost. */
 export async function collectBrainPaperOutcomes(deps:RuntimeDeps,runId:string,portfolio:Portfolio,nowMs:number):Promise<{outcomes:BrainOutcome[];riskOutcomes:BrainRiskOutcome[]}>{
   await drainBrainOutbox(deps,runId);
@@ -426,7 +446,7 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     if(oldShadow.runId!==run.runId||oldShadow.version!=='v6-shadow-1')throw new Error('INVALID_SHADOW_EPOCH');
     const shadow=await advanceBrainShadow({state:oldShadow,frames,setups,registrations,nowMs:now,funding});
     const paper=await collectBrainPaperOutcomes(deps,run.runId,portfolio,now);
-    const breakers=evaluateBrainBreakers({equity:markedEquity(portfolio),initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),nowMs:now,
+    const breakers=await paperAwareBreakers(deps,run.runId,{equity:markedEquity(portfolio),initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),nowMs:now,
       outcomes:paper.riskOutcomes,previous:parse<BrainBreakerLatch[]>(rawString(raw,p+'breakers'))??[]});
     await deps.redis.commitBrainObservation({runId:run.runId,leaseToken:token,expected:{[ACTIVE]:raw[ACTIVE],[p+'shadow']:raw[p+'shadow'],[p+'breakers']:raw[p+'breakers']},
       writes:{[p+'shadow']:JSON.stringify(shadow),[p+'breakers']:JSON.stringify(breakers.latches)}});
@@ -435,7 +455,12 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
       const row=assets.find(a=>a.asset===asset)!;row.mode=proof.mode;row.riskTier=proof.riskTier;row.evidence={historicalCount:proof.historicalCount,forwardCount:proof.forwardCount,
         paperCount:proof.paperCount,nextEligibleAtMs:proof.nextEligibleAtMs,reasons:proof.reasons};}
     const learning=await refreshBrainLearning(deps,run.runId,now).catch(()=>null);
-    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning);
+    // A refused commit (deadline, lost race, changed evidence) writes nothing; it must
+    // not abort the scan heartbeat, or one bad batch would stall every later scan.
+    let fillError:string|null=null;
+    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning)
+      .catch(error=>{fillError=error instanceof Error?error.message:String(error);return [] as ConfiguredAsset[];});
+    if(fillError)for(const setup of setups){const row=assets.find(a=>a.asset===setup.asset);if(row)row.evidence.reasons=[...row.evidence.reasons,`ENTRY_COMMIT_REFUSED: ${fillError}`];}
     for(const asset of filled)assets.find(a=>a.asset===asset)!.decision.status='ENTRY';
     const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':paperGateOpen()||assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
     const result=status(deps,run.runId,mode,now,assets,[...breakers.latches.map(l=>l.reason),...(breakers.rollingBlock?[breakers.rollingBlock]:[])]);
@@ -468,7 +493,7 @@ export async function runReplacementShadowSweep(overrides:Partial<RuntimeDeps>={
 export async function refreshBrainProtectiveBreakers(runId:string,portfolio:Portfolio,leaseToken:string,overrides:Partial<RuntimeDeps>={}):Promise<BrainBreakerLatch[]>{
   const deps=dependencies(overrides),p=prefix(runId),expected=await deps.redis.readRaw([ACTIVE,p+'breakers']);
   const paper=await collectBrainPaperOutcomes(deps,runId,portfolio,deps.clock());
-  const result=evaluateBrainBreakers({equity:markedEquity(portfolio),initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),nowMs:deps.clock(),
+  const result=await paperAwareBreakers(deps,runId,{equity:markedEquity(portfolio),initialCapital:10000,peakEquity:Math.max(10000,portfolio.peakValue??10000),nowMs:deps.clock(),
     outcomes:paper.riskOutcomes,previous:parse<BrainBreakerLatch[]>(rawString(expected,p+'breakers'))??[]});
   await deps.redis.commitBrainObservation({runId,leaseToken,expected,writes:{[p+'breakers']:JSON.stringify(result.latches)}});
   return result.latches;

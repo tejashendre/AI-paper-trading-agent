@@ -452,6 +452,9 @@ export interface FundingCashflowEvent {
  * did not settle there (for example after an interval change); it is listed
  * as absent rather than charged or kept pending forever.
  */
+/** Grid times with no published settlement after this long are treated as absent. */
+export const FUNDING_ABSENT_AFTER_MS = 24 * 3_600_000;
+
 export function planFundingCashflows(input: {
   positionId: string;
   symbol: string;
@@ -485,8 +488,14 @@ export function planFundingCashflows(input: {
     const usable = record && Number.isFinite(record.rate) && Number.isFinite(record.markPrice) && record.markPrice > 0;
     if (!usable) {
       // A successful but incomplete history page is not proof that a due
-      // settlement cost zero. Keep old gaps pending for later reconciliation.
-      pendingTimes.push(at);
+      // settlement cost zero, so recent gaps stay pending for reconciliation.
+      // A grid time that is still absent a day later, with the venue reporting
+      // a complete page, is not a real settlement: Bybit shortens the funding
+      // interval when rates hit their cap. Without this, a pending time that
+      // never resolves blocks every new entry indefinitely.
+      // An empty page proves nothing; a page with other settlements does.
+      if (!record && input.fetchSucceeded && byTime.size > 0 && input.nowMs - at > FUNDING_ABSENT_AFTER_MS) absentTimes.push(at);
+      else pendingTimes.push(at);
       continue;
     }
     events.push({
