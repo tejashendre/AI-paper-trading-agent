@@ -89,6 +89,7 @@ test('a causal setup opens only virtual exposure and archives all inputs without
   const h=harness();await seed(h);const before=await h.redis.readRaw(['brain:v6:run:test-run:portfolio','ai:trades']);
   const result=await runReplacementScan(h.deps);
   assert.equal(result.assets[0].decision.status,'SETUP');assert.equal(result.assets[0].mode,'SHADOW');
+  assert.equal(result.assets[0].decision.code,'SKIPPED_PERMISSION_SHADOW');
   assert.equal(result.virtualShadow.openPositions,1);assert.equal(result.virtualShadow.capitalAllocatedUsdt,0);
   assert.deepEqual(await h.redis.readRaw(['brain:v6:run:test-run:portfolio','ai:trades']),before);
   const files=await h.redis.scanKeys('brain:v6:run:test-run:decision:*');assert.equal(files.length,1);
