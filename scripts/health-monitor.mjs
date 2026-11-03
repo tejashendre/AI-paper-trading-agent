@@ -101,6 +101,17 @@ async function fetchJson(url) {
   return response.json();
 }
 
+/** One readable progress snapshot per run, so the Actions log doubles as a trading diary. */
+export function summarizeBrain(brain) {
+  const money = (v) => Number.isFinite(v) ? v.toFixed(2) : "n/a";
+  const a = brain?.account ?? {};
+  const lines = [`Brain ${brain?.mode ?? "?"}: cash ${money(a.cashUsdt)} USDT, equity ${money(a.equityUsdt)}, realized PnL ${money(a.realizedPnlUsdt)}, completed trades ${a.completedTrades ?? "n/a"}, halts ${(brain?.risk?.haltReasons ?? []).join("; ") || "none"}.`];
+  lines.push("Assets: " + (brain?.assets ?? []).map((x) => `${x.asset}=${x.decision?.status ?? "?"}${x.decision?.code ? `/${x.decision.code}` : ""}`).join(", "));
+  const cells = brain?.learning?.cells ?? [];
+  if (cells.length) lines.push("Learned: " + cells.map((c) => `${c.asset} ${c.direction} ${c.trades}t ${Number.isFinite(c.meanR) ? c.meanR.toFixed(2) : "?"}R x${c.riskMultiplier}${c.paused ? " PAUSED" : ""}`).join(", "));
+  return lines;
+}
+
 async function main() {
   const base = process.env.MONITOR_BASE_URL || "https://trader.tejashendre.com";
   let problems;
@@ -108,6 +119,7 @@ async function main() {
     const [status, book] = await Promise.all([fetchJson(`${base}/api/user/status`), fetchJson(`${base}/api/book`)]);
     const brain = status?.swingScan?.brainVersion === 'v6' ? await fetchJson(`${base}/api/brain`) : undefined;
     console.log(`Deployed commit ${status?.deployment?.commit ?? "unknown"}; scan ${status?.swingScan?.completedAt ?? "none"}.`);
+    if (brain) for (const line of summarizeBrain(brain)) console.log(line);
     problems = evaluateHealth({ status, book, brain, nowMs: Date.now() });
   } catch (error) {
     problems = [`Dashboard unreachable: ${error instanceof Error ? error.message : String(error)}`];

@@ -29,6 +29,11 @@ export function paperGatePermission(review: BrainEvidenceReview | undefined, now
   if (!review) return { allowed: false, reason: 'NO_EVIDENCE_PROOF' };
   if (Object.entries(context).some(([key, value]) => review[key as keyof typeof context] !== value)) return { allowed: false, reason: 'CURRENT_RUN_OR_POLICY_MISMATCH' };
   if (!Number.isFinite(nowMs) || nowMs < review.createdAtMs || nowMs >= review.expiresAtMs) return { allowed: false, reason: 'STALE_OR_FUTURE_PROOF' };
-  if (BLOCKING_MODES.has(review.mode)) return { allowed: false, reason: review.mode };
+  if (BLOCKING_MODES.has(review.mode)) {
+    // A review keeps REDUCE_ONLY after a cleared streak/asset latch; the caller
+    // still refuses any asset with a live latch. Run drawdown stays a hard stop.
+    const drawdown = review.reasons.includes('RUN_DRAWDOWN_LATCH') || review.halt?.kind === 'DRAWDOWN';
+    if (review.mode !== 'REDUCE_ONLY' || drawdown) return { allowed: false, reason: review.mode };
+  }
   return { allowed: true, reason: review.mode === 'PAPER_ACTIVE' ? 'EXACT_EVIDENCE_QUALIFIED' : 'PAPER_GATE_OPEN' };
 }
