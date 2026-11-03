@@ -159,7 +159,10 @@ export function brainDefinition(asset: ConfiguredAsset): BrainDefinition {
     minStopAtr: oil ? 2.5 : 2, maxStopAtr: oil ? 5 : 4, stopBufferAtr: metals || oil ? .2 : .1,
     targetR: fx ? 2.5 : 3, trailActivationR: 2, trailAtr: oil ? 2.5 : 2,
     maxHoldMs: (fx ? 5 : oil ? 7 : 10) * DAY,
-    setupTtlMs: 300_000, entryDriftAtr: .25, eventWindowMs: EVENT_WINDOW_MS,
+    // A completed breakout stays actionable for one hour, not five minutes: one
+    // slow or failed scan no longer loses the setup. Chasing is still refused
+    // by the 0.25-ATR price-drift guard against the signal close.
+    setupTtlMs: 3_600_000, entryDriftAtr: .25, eventWindowMs: EVENT_WINDOW_MS,
   };
   const definition = {
     asset, strategyId: fx ? 'FX_SESSION_BREAKOUT_V1' : metals ? 'METALS_TREND_RECLAIM_V1' : oil ? 'OIL_TREND_EXPANSION_V1' : 'CRYPTO_TREND_BREAKOUT_V1',
