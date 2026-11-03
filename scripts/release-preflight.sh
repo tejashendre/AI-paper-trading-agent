@@ -25,8 +25,11 @@ docker exec -w "$CONTAINER_SOURCE" quant-dashboard tsx scripts/migrate-bybit-ins
 docker exec -w "$CONTAINER_SOURCE" quant-dashboard node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));for(const a of p.accounts){if(!a.accountLabeling.cashUnchanged)throw Error("Cash changed in preview");if(Object.keys(a.blockedAssets||{}).length)throw Error("Open-position migration conflict: "+a.account);console.log(JSON.stringify({account:a.account,originalHash:a.originalHash,quantityModel:a.quantityModel,historicalConflicts:a.conflicts.length}));}' "$CONTAINER_STATE/migration-preview.json"
 docker exec -w "$CONTAINER_SOURCE" quant-dashboard tsx scripts/verify-bybit-public-release.ts --output "$CONTAINER_STATE/public-market-proof.json"
 if [ -f "$STAGING/source/scripts/preview-ai-release.ts" ]; then
+  # The ai-v6-2026-10-28 reset already ran; this preview is informational only
+  # and must not block releases (it refuses an existing run by design).
   docker exec -w "$CONTAINER_SOURCE" quant-dashboard tsx scripts/preview-ai-release.ts \
-    --run-id ai-v6-2026-10-28 --archive-dir /app/data/ai-run-archives
+    --run-id ai-v6-2026-10-28 --archive-dir /app/data/ai-run-archives \
+    || echo "WARN: AI reset preview unavailable (informational; the reset already completed)"
 fi
 # The extracted code is disposable; retain only snapshot and verification evidence.
 docker exec quant-dashboard node -e 'const fs=require("fs");const p=require("path");const root=p.resolve("/app/data/release-preflight");const target=p.resolve(process.argv[1]);if(!target.startsWith(root+"/")||p.basename(target)!=="source")throw Error("Unexpected cleanup path");fs.rmSync(target,{recursive:true,force:true});' "$CONTAINER_SOURCE"

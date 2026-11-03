@@ -26,10 +26,12 @@ export async function GET(_request: Request) {
     const validRun = active && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(active.runId) &&
       active.brainVersion === REPLACEMENT_BRAIN_VERSION && active.initialCapital === 10000 &&
       Number.isFinite(Date.parse(active.startedAt)) ? active : null;
-    const [rawStatus, rawPortfolio] = await Promise.all([
+    const [rawStatus, rawPortfolio, rawLearning] = await Promise.all([
       redis.get<unknown>('brain:v6:status'),
       validRun ? redis.get<unknown>(aiRunKeys(validRun.runId).portfolio) : Promise.resolve(null),
+      validRun ? redis.get<unknown>(`brain:v6:run:${validRun.runId}:learning`) : Promise.resolve(null),
     ]);
+    const learningBook = record(rawLearning);
     const runtime = record(rawStatus), portfolio = record(rawPortfolio);
     const age = Date.now() - (number(runtime.generatedAtMs) ?? 0);
     const fresh = Boolean(validRun && runtime.version === 'v6' && runtime.runId === validRun.runId && age >= 0 && age <= 180000);
@@ -69,6 +71,15 @@ export async function GET(_request: Request) {
             reasons: available ? reasons(evidence.reasons) : [!validRun ? 'RESET_REQUIRED' : 'ASSET_TELEMETRY_UNAVAILABLE'] },
           decision: available ? { status: text(decision.status), code: text(decision.code), reason: text(decision.reason) } : null };
       }),
+      // What the bot has learned from its own closed trades, per asset and direction.
+      learning: learningBook.version === 'v6-learning-1' ? {
+        generatedAt: number(learningBook.generatedAtMs) !== null ? new Date(learningBook.generatedAtMs).toISOString() : null,
+        sampleCount: count(learningBook.sampleCount),
+        cells: (Array.isArray(learningBook.cells) ? learningBook.cells : []).slice(0, 40).map((c: any) => ({
+          asset: text(c?.asset), direction: c?.direction === 'SHORT' ? 'SHORT' : 'LONG', trades: count(c?.trades),
+          effectiveTrades: number(c?.effectiveTrades), winRate: number(c?.winRate), meanR: number(c?.meanR),
+          riskMultiplier: number(c?.riskMultiplier), paused: c?.paused === true, reason: text(c?.reason) })),
+      } : null,
       history: { legacyAi: 'HISTORICAL_ONLY', xsecMode: 'HISTORICAL_ONLY', allocatedCapitalUsdt: 0,
         note: 'Legacy AI and XSEC results are excluded from the current run. XSEC receives no additional capital.' },
       reset: { previewMethod: 'POST', dashboardAuthorizationRequired: true, executionAvailable: false },
