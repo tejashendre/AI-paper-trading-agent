@@ -17,6 +17,7 @@ import { brainDefinition, evaluateBrain, type BrainDecision, type CalendarManife
 import { brainEvidenceIdentity, brainPermission, evaluateBrainEvidence, evidenceHash, freezeBrainCosts, readBrainReview, registerBrain, saveBrainReview,
   type BrainEvidenceReview, type BrainFundingObservation, type BrainRegistration, type BrainTrial, type BrainOutcome } from './evidence';
 import { allocateBrainRisk, brainVolatilityScale, evaluateBrainBreakers, sizeBrainOrder, type BrainBreakerLatch, type BrainOrderPlan, type BrainRiskOutcome } from './risk';
+import { paperGateOpen, paperGatePermission } from './paperMode';
 import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, shadowEquity, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame } from './shadow';
 
 export const BRAIN_SCAN_INTERVAL_MS=60000,BRAIN_WATCHDOG_INTERVAL_MS=5000;
@@ -103,9 +104,20 @@ async function currentRun(deps:RuntimeDeps){
   if(!active||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(active.runId)||active.brainVersion!=='replacement-swing-v6-2026-10-24'||active.initialCapital!==10000)return null;
   return active;
 }
+function registrationCurrent(r:BrainRegistration,asset:ConfiguredAsset,d:ReturnType<typeof brainDefinition>,source:string):boolean{
+  return r.sourceHash===source&&r.costHash===evidenceHash(freezeBrainCosts(asset))&&r.riskPolicyHash===evidenceHash(RISK_POLICY)&&
+    r.exitPolicyHash===evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT});
+}
 async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,now:number,source:string):Promise<BrainRegistration>{
-  const p=prefix(runId),d=brainDefinition(asset),key=p+'runtimeRegistration:'+asset;
-  let existing=await deps.redis.get<BrainRegistration>(key);
+  const p=prefix(runId),d=brainDefinition(asset),baseKey=p+'runtimeRegistration:'+asset;
+  let key=baseKey,existing=await deps.redis.get<BrainRegistration>(key);
+  // Under the open paper gate a deploy must not silence the brain: a changed
+  // source, cost or policy fingerprint rotates to a fresh registration keyed
+  // by that fingerprint. Strict mode keeps the immutable mismatch refusal.
+  if(existing&&paperGateOpen()&&!registrationCurrent(existing,asset,d,source)){
+    key=baseKey+':'+evidenceHash({source,costs:evidenceHash(freezeBrainCosts(asset)),risk:evidenceHash(RISK_POLICY),exit:evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT})}).slice(0,24);
+    existing=await deps.redis.get<BrainRegistration>(key);
+  }
   if(!existing){
     let trials=await deps.redis.get<BrainTrial[]>(p+'trials');
     if(!trials){
@@ -122,8 +134,7 @@ async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,
       registeredAtMs:now,releasedAtMs:now,firstEvaluationAtMs:now,trialSnapshotHash:evidenceHash(trials),folds:[]};
     await deps.redis.set(key,candidate,{nx:true});existing=(await deps.redis.get<BrainRegistration>(key))!;
   }
-  if(existing.sourceHash!==source||existing.costHash!==evidenceHash(freezeBrainCosts(asset))||existing.riskPolicyHash!==evidenceHash(RISK_POLICY)||
-    existing.exitPolicyHash!==evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT}))throw new Error('REGISTRATION_MISMATCH');
+  if(!registrationCurrent(existing,asset,d,source))throw new Error('REGISTRATION_MISMATCH');
   await registerBrain(deps.redis,d,existing);return existing;
 }
 function frameValid(f:RuntimeFrame,now:number):boolean {
@@ -243,7 +254,7 @@ function permissionKeys(r:BrainRegistration,asset:ConfiguredAsset,proof:BrainEvi
 function toPosition(setup:SwingSetup,plan:BrainOrderPlan,r:BrainRegistration,f:RuntimeFrame,now:number):OpenPosition {
   const instrument=getConfiguredInstrument(setup.asset),observation=shadowExecution(f,now,setup.direction,plan.quantity,plan.entryPrice,plan.stopLoss)!;
   return {asset:setup.asset,entryPrice:plan.entryPrice,amount:plan.quantity,btcAmount:plan.quantity,usdInvested:plan.marginUsdt,stopLoss:plan.stopLoss,initialStopLoss:plan.stopLoss,
-    takeProfit:plan.takeProfit,entryTime:new Date(now).toISOString(),signalScore:0,reasoning:'Exact v6 evidence permission and bounded batch risk',direction:setup.direction,strategyType:'swing',
+    takeProfit:plan.takeProfit,entryTime:new Date(now).toISOString(),signalScore:0,reasoning:paperGateOpen()?'v6 setup under open paper gate and bounded batch risk':'Exact v6 evidence permission and bounded batch risk',direction:setup.direction,strategyType:'swing',
     entryFeePaid:plan.entryFeeUsdt,notionalUsd:plan.notionalUsdt,leverageUsed:plan.leverage,riskAmountUsd:plan.initialRiskUsdt,initialRiskUsdt:plan.initialRiskUsdt,
     maxLossUsd:plan.initialRiskUsdt,positionId:`v6:${r.runId}:${setup.id}`,strategyFamily:setup.strategyId,strategyConfigHash:setup.configHash,
     strategyDataSchemaVersion:'v6-native-closed',featureCutoffMs:setup.featureCutoffMs,strategyVersion:'replacement-swing-v6-2026-10-24',instrument,economicsModel:instrument.economicsModel,
@@ -261,12 +272,24 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   if(!riskMarksReady(portfolio,now)||await deps.redis.get('swing:entryFreeze')!==null||await deps.redis.get('brain:v6:migration-freeze')!==null||
     (await deps.redis.scanKeys(p+'outbox:*')).length||(portfolio.pendingLedgerEvents?.length??0)>0||
     (portfolio.fundingTail??[]).some(t=>t.pendingTimes.length>0)||Object.values(portfolio.openPositions??{}).some(pos=>(pos.fundingPendingTimes?.length??0)>0))return [];
+  // A full nine-asset scan can outlast the five-second quote deadline, so the
+  // open paper gate re-reads the executable quote/book just before filling.
+  const fresh=new Map<ConfiguredAsset,RuntimeFrame>();
+  if(paperGateOpen()&&deps.executionCapture&&setups.length){
+    await Promise.all(setups.filter(s=>!portfolio.openPositions?.[s.asset]).map(async s=>{
+      const base=frames.find(x=>x.asset===s.asset);if(!base)return;
+      const x=await deps.executionCapture!(s.asset).catch(()=>null);
+      if(x?.quote&&x.liquidity&&Number.isFinite(x.availableAtMs))fresh.set(s.asset,{...base,...x,asset:base.asset,bars:base.bars});
+    }));
+    if(fresh.size)now=Math.max(now,deps.clock());
+  }
   for(const setup of setups){
-    const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
+    const r=registrations.get(setup.asset),proof=reviews.get(setup.asset),f=fresh.get(setup.asset)??frames.find(x=>x.asset===setup.asset),d=brainDefinition(setup.asset);
     if(!r||!proof||!f||portfolio.openPositions?.[setup.asset])continue;
     if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null)continue;
     const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed))continue;
-    const permission=brainPermission(d,proof,now,{runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash,riskTier:proof.riskTier});
+    const permissionContext={runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash};
+    const permission=paperGateOpen()?paperGatePermission(proof,now,permissionContext):brainPermission(d,proof,now,{...permissionContext,riskTier:proof.riskTier});
     if(!permission.allowed)continue;
     const observation=shadowExecution(f,now,setup.direction,1,setup.entryPrice,setup.stopLoss),capacity=capacityNotionalCap({side:setup.direction==='LONG'?'BUY':'SELL',liquidity:f.liquidity});
     if(!observation||capacity===null||!Number.isFinite(f.fundingRate)||!Number.isFinite(f.fundingObservedAtMs)||f.fundingObservedAtMs>now||now-f.fundingObservedAtMs>60000)continue;
@@ -354,7 +377,7 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     for(const f of frames){const row=assets.find(a=>a.asset===f.asset)!;
       try{
         const r=await registration(deps,run.runId,f.asset,now,source);registrations.set(f.asset,r);
-        const decision=evaluateBrain({asset:f.asset,nowMs:now,...f.bars,quote:f.quote,calendar});decisions.push(decision);
+        const decision=evaluateBrain({asset:f.asset,nowMs:now,...f.bars,quote:f.quote,calendar,calendarFailOpen:paperGateOpen()});decisions.push(decision);
         row.decision=decision.status==='SETUP'?{status:'SETUP',setupId:decision.setup.id}:{status:'NO_TRADE',code:decision.code,reason:decision.reason};
         if(decision.status==='SETUP')setups.push(decision.setup);
       }catch(error){row.decision={status:'NO_TRADE',code:'REGISTRATION_MISMATCH',reason:String(error)};row.evidence.reasons=[String(error)];}
@@ -378,7 +401,7 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
         paperCount:proof.paperCount,nextEligibleAtMs:proof.nextEligibleAtMs,reasons:proof.reasons};}
     const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now);
     for(const asset of filled)assets.find(a=>a.asset===asset)!.decision.status='ENTRY';
-    const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
+    const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':paperGateOpen()||assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
     const result=status(deps,run.runId,mode,now,assets,[...breakers.latches.map(l=>l.reason),...(breakers.rollingBlock?[breakers.rollingBlock]:[])]);
     result.equityUsdt=markedEquity(portfolio);result.virtualShadow={equityUsdt:shadowEquity(shadow),openPositions:Object.keys(shadow.open).length,capitalAllocatedUsdt:0};
     result.scanId=(await deps.redis.get<number>(p+'scanSequence')??0)+1;await deps.redis.set(p+'scanSequence',result.scanId);

@@ -99,4 +99,10 @@ export function startReplacementSwingDaemon(){
   const shutdown=()=>{for(const timer of timers)clearInterval(timer);mesh.stop();};
   process.once('SIGINT',shutdown);process.once('SIGTERM',shutdown);return shutdown;
 }
-if(require.main===module)startReplacementSwingDaemon();
+if(require.main===module){
+  // A transient Redis or network rejection must not kill the 24/7 daemon;
+  // every loop already guards itself, so log and keep running.
+  process.on('unhandledRejection',reason=>console.error('[V6 daemon] unhandled rejection:',reason instanceof Error?reason.message:reason));
+  process.on('uncaughtException',error=>console.error('[V6 daemon] uncaught exception:',error.message));
+  startReplacementSwingDaemon();
+}

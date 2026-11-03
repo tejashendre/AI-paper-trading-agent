@@ -290,7 +290,8 @@ export function brainPermission(definition: BrainDefinition, review: BrainEviden
   if (review.riskTier === "ESCALATED" && review.savedAtMs !== review.createdAtMs) return { allowed: false, reason: "UNSAVED_ESCALATION_REVIEW" };
   return { allowed: true, reason: "EXACT_EVIDENCE_QUALIFIED" };
 }
-const scopeKey = (definition: BrainDefinition, r: BrainRegistration) => `brain:v6:run:${encodeURIComponent(r.runId)}:definition:${encodeURIComponent(definition.asset)}:${encodeURIComponent(definition.strategyId)}:${encodeURIComponent(definition.configHash)}`;
+// Scoped by the frozen source fingerprint too, so a redeploy registers afresh instead of colliding.
+const scopeKey = (definition: BrainDefinition, r: BrainRegistration) => `brain:v6:run:${encodeURIComponent(r.runId)}:definition:${encodeURIComponent(definition.asset)}:${encodeURIComponent(definition.strategyId)}:${encodeURIComponent(definition.configHash)}:${r.sourceHash.slice(0, 16)}`;
 async function readJson<T>(redis: EvidenceRedis, key: string): Promise<T | null> {
   const raw = await redis.get(key);
   if (raw == null) return null;

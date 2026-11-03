@@ -10,6 +10,8 @@ import { DEFAULT_RESEARCH_ARCHIVE_BYTES } from "../lib/research/researchArchive"
 const BYBIT_LINEAR_STREAM = "wss://stream.bybit.com/v5/public/linear";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const STALE_THRESHOLD_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 20_000;
+const MAX_RECONNECT_DELAY_MS = 60_000;
 const QUOTE_RETENTION_SECONDS = 90;
 const FLUSH_INTERVAL_MS = 1_000;
 /** Topics per subscribe request, kept small to stay inside venue limits. */
@@ -35,6 +37,7 @@ export class WebsocketDataMesh {
     private liquidations = new LiquidationMinutes();
     private lastMarketDataAt = 0;
     private connectedAt = 0;
+    private reconnectAttempts = 0;
     private book = new BybitTickerBook();
     private dirty = new Map<string, BybitTickerState>();
     private assetBySymbol = new Map(
@@ -97,10 +100,23 @@ export class WebsocketDataMesh {
     }
 
     private checkStaleness() {
-        if (!this.isRunning || this.ws?.readyState !== WebSocket.OPEN) return;
+        if (!this.isRunning) return;
+        // A socket stuck in CONNECTING (half-open TCP, proxy stall) never emits
+        // close, so without this the mesh would wait forever with no quotes.
+        if (this.ws?.readyState === WebSocket.CONNECTING && Date.now() - this.connectedAt > CONNECT_TIMEOUT_MS) {
+            Logger.warn("Bybit WS connect timed out. Forcing reconnect.");
+            const stalled = this.ws;
+            this.ws = null;
+            try { stalled.terminate(); } catch { /* no-op */ }
+            this.scheduleReconnect();
+            return;
+        }
+        // No socket and no pending reconnect (e.g. a constructor throw path): recover.
+        if (!this.ws && !this.reconnectTimeout) { this.scheduleReconnect(); return; }
+        if (this.ws?.readyState !== WebSocket.OPEN) return;
         const reference = this.lastMarketDataAt || this.connectedAt;
         if (reference > 0 && Date.now() - reference > STALE_THRESHOLD_MS) {
-            Logger.warn(`Bybit WS stale (${Math.round((Date.now() - reference) / 1000)}s since last market update). Forcing reconnect.`);
+            void Logger.warn(`Bybit WS stale (${Math.round((Date.now() - reference) / 1000)}s since last market update). Forcing reconnect.`);
             this.ws.terminate();
             this.ws = null;
             this.scheduleReconnect();
@@ -127,7 +143,8 @@ export class WebsocketDataMesh {
                 if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
                 this.reconnectTimeout = null;
                 this.connectedAt = Date.now();
-                Logger.info("Connected to Bybit linear WebSocket");
+                this.reconnectAttempts = 0;
+                void Logger.info("Connected to Bybit linear WebSocket").catch(() => undefined);
                 const topics = [...this.assetBySymbol.keys()].flatMap((symbol) => [`tickers.${symbol}`, `publicTrade.${symbol}`, `allLiquidation.${symbol}`]);
                 for (let index = 0; index < topics.length; index += SUBSCRIBE_BATCH) {
                     ws.send(JSON.stringify({ op: "subscribe", args: topics.slice(index, index + SUBSCRIBE_BATCH) }));
@@ -150,13 +167,15 @@ export class WebsocketDataMesh {
             });
 
             ws.on("close", () => {
-                if (this.ws === ws) this.ws = null;
-                Logger.warn("Bybit WebSocket disconnected. Reconnecting in 5s...");
+                // A socket already replaced by a forced reconnect must not reschedule.
+                if (this.ws !== ws) return;
+                this.ws = null;
+                Logger.warn("Bybit WebSocket disconnected. Reconnecting...");
                 this.scheduleReconnect();
             });
 
             ws.on("error", (error) => {
-                console.error("Bybit WebSocket Error:", error);
+                console.error("Bybit WebSocket Error:", error instanceof Error ? error.message : error);
             });
         } catch (error) {
             console.error("Failed to start Bybit WebSocket:", error);
@@ -167,6 +186,13 @@ export class WebsocketDataMesh {
     private scheduleReconnect() {
         if (!this.isRunning) return;
         if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-        this.reconnectTimeout = setTimeout(() => this.connect(), 5_000);
+        // 5s, 10s, 20s ... capped at 60s with jitter, so a venue outage or IP
+        // throttle is not hammered while a brief blip still recovers quickly.
+        const base = Math.min(MAX_RECONNECT_DELAY_MS, 5_000 * 2 ** Math.min(this.reconnectAttempts, 4));
+        this.reconnectAttempts += 1;
+        this.reconnectTimeout = setTimeout(() => {
+            this.reconnectTimeout = null;
+            this.connect();
+        }, base + Math.floor(Math.random() * 1_000));
     }
 }

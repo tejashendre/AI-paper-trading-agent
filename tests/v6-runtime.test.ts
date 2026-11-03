@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryRedis } from './helpers/memoryRedis';
 import { evidenceInstrument } from './helpers/fakeBybitMarket';
@@ -9,6 +9,8 @@ import { emptyBrainShadow } from '../src/lib/strategy/v6/shadow';
 import { collectBrainPaperOutcomes, runReplacementScan, runReplacementShadowSweep, type RuntimeDeps, type RuntimeFrame } from '../src/lib/strategy/v6/runtime';
 import type { Portfolio, Trade } from '../src/lib/types';
 
+// These cases pin the original evidence-only permission; the open paper gate has its own test below.
+process.env.V6_PAPER_GATE='strict';
 const DAY=86400000,H4=14400000,NOW=Date.parse('2026-10-20T12:00:00Z');
 function frame(nowMs=NOW,price?:number):RuntimeFrame {
   const bars=(n:number,step:number,end:number,daily=false)=>Array.from({length:n},(_,i)=>{
@@ -110,7 +112,14 @@ test('repeated scans do not duplicate virtual positions and restart retains immu
   assert.equal(again.virtualShadow.openPositions,1);
   assert.deepEqual(await h.redis.get('brain:v6:run:test-run:runtimeRegistration:BTC'),first);
   h.deps.sourceHash=()=>evidenceHash('changed-source');
-  assert.equal((await runReplacementScan(h.deps)).assets[0].decision.code,'REGISTRATION_MISMATCH');
+  const prior=process.env.V6_PAPER_GATE;
+  try{
+    process.env.V6_PAPER_GATE='strict';
+    assert.equal((await runReplacementScan(h.deps)).assets[0].decision.code,'REGISTRATION_MISMATCH');
+    process.env.V6_PAPER_GATE='open';h.setNow(NOW+120000);mock.timers.enable({apis:['Date'],now:NOW+120000});
+    assert.notEqual((await runReplacementScan(h.deps)).assets[0].decision.code,'REGISTRATION_MISMATCH');
+    assert.deepEqual(await h.redis.get('brain:v6:run:test-run:runtimeRegistration:BTC'),first);
+  }finally{mock.timers.reset();process.env.V6_PAPER_GATE=prior??'strict';}
 });
 test('shared shadow exits use the frozen stop and retain actual execution and funding coverage',async()=>{
   const h=harness();await seed(h);await runReplacementScan(h.deps);
@@ -232,4 +241,20 @@ test('a lease lost after the shadow commit cannot publish a later evidence permi
   await assert.rejects(runReplacementScan(h.deps),/lease/i);
   assert.equal((await h.redis.scanKeys('brain:v6:run:test-run:latest:*')).length,0);
   assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,0);
+});
+
+test('open paper gate turns a fresh SHADOW setup into one fenced paper fill without duplicate debits',async()=>{
+  process.env.V6_PAPER_GATE='open';mock.timers.enable({apis:['Date'],now:NOW});
+  try{
+    const h=harness();await seed(h);
+    const result=await runReplacementScan(h.deps);
+    assert.equal(result.assets[0].mode,'SHADOW');assert.equal(result.assets[0].decision.status,'ENTRY');assert.equal(result.mode,'PAPER_ACTIVE');
+    const first=await h.redis.get<any>('brain:v6:run:test-run:portfolio');
+    assert.ok(first.usd<10000);assert.ok(first.openPositions.BTC.initialRiskUsdt<=25);
+    assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
+    h.setNow(NOW+60000);mock.timers.setTime(NOW+60000);await runReplacementScan(h.deps);
+    assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,first.usd);
+    assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
+    assert.equal((await runReplacementShadowSweep(h.deps),true),true);
+  }finally{mock.timers.reset();process.env.V6_PAPER_GATE='strict';}
 });

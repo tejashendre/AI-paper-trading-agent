@@ -319,3 +319,12 @@ The owner also requested cache and storage cleanup. Oracle maintenance 406695300
 
 ## 2026-10-28 frontend diagnostics removal intake
 The owner identified the oversized Replacement swing brain v6 panel on the trader website and requested hiding or removing it. Computer Use confirmed the expanded technical table dominates the dashboard above the account cards. Remove this panel from the dashboard while retaining the existing compact bot-mode indicator, account displays, backend telemetry and trading safeguards. Verify the frontend change and deploy it under the existing publication authorization, then inspect the live page again. This request does not authorize bypassing strategy qualification or resetting either account.
+
+## 2026-11-03 bot revival: why the AI account stopped trading
+Root causes found after a week with no AI trades:
+1. The v6 evidence gate allowed paper entries only after an asset reached PAPER_ACTIVE (30+ forward shadow outcomes over 30+ days with deflated Sharpe >= 0.95, or 30 historical rows in purged folds). No asset could get there, so every v6 setup stayed virtual. A new `V6_PAPER_GATE` setting (default `open`, in `src/lib/strategy/v6/paperMode.ts`) now lets current, run-matched, non-retired/non-halted proofs place paper fills. Breakers, sizing, capacity, funding checks and fenced Redis commits are unchanged. `V6_PAPER_GATE=strict` restores the old behaviour.
+2. Six of the nine assets (FX, metals, oil) also needed a daily official calendar capture (`BRAIN_CALENDAR_MANIFEST`). Without one they were blocked forever. Under the open gate a missing or stale capture no longer blocks entry, but a valid manifest's release windows still do.
+3. Registrations fingerprint the v6 source files, so every code deploy caused REGISTRATION_MISMATCH on every asset until a manual AI reset. Under the open gate a changed fingerprint now gets a fresh registration scoped to that fingerprint.
+4. Entries had to commit within 5s of the scan's quote, which a full nine-asset scan could exceed. The open gate now re-reads the executable quote and book just before filling.
+Connection fixes: the Bybit WebSocket now recovers from a socket stuck in CONNECTING, ignores close events from replaced sockets, and backs off with jitter. Bybit busy retCodes (10000/10006/10016) are retried. The v6 daemon logs unhandled rejections instead of exiting.
+Verification: 570 tests pass (1 skipped), plus TypeScript, lint and the 156-check strategy audit. The changes have not been deployed or observed against live Bybit data from this environment.

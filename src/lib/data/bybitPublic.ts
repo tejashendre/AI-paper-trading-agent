@@ -20,6 +20,7 @@ const MAX_BACKOFF_MS = 2_000;
 /** Cached metadata is revalidated before admitting an entry past this age. */
 export const METADATA_REFRESH_MS = 6 * 3_600_000;
 const MAX_INSTRUMENT_PAGES = 20;
+const TRANSIENT_RET_CODES = new Set([10000, 10006, 10016]);
 
 export interface BybitRequestOptions {
   fetchImpl?: typeof fetch;
@@ -104,7 +105,11 @@ async function attemptOnce(
     const retCode = (payload as { retCode?: unknown } | null)?.retCode;
     if (typeof retCode === "number" && retCode !== 0) {
       const retMsg = (payload as { retMsg?: unknown }).retMsg;
-      throw new PermanentBybitError(`Bybit ${retCode}: ${String(retMsg ?? "")}`);
+      const message = `Bybit ${retCode}: ${String(retMsg ?? "")}`;
+      // 10000 server timeout, 10006 too many visits, 10016 server error:
+      // the venue is busy, not refusing the request, so retry with backoff.
+      if (TRANSIENT_RET_CODES.has(retCode)) throw new Error(message);
+      throw new PermanentBybitError(message);
     }
     const parsed = envelopeSchema.safeParse(payload);
     if (!parsed.success) {
