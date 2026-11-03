@@ -91,7 +91,7 @@ for (const asset of ['BTC', 'EURUSD', 'GOLD', 'OIL'] as const) {
     assert.equal(long.policy.priceRDistance, long.priceRDistance);
     assert.equal(long.takeProfit, long.entryPrice + long.priceRDistance * (asset === 'EURUSD' ? 2.5 : 3));
     assert.equal(long.featureCutoffMs, NOW);
-    assert.equal(long.expiresAtMs, NOW + 300_000);
+    assert.equal(long.expiresAtMs, NOW + 3_600_000);
   });
   test(`${asset}: missing required native history is warmup, not a setup`, () => {
     const input = snapshot(asset);
@@ -146,7 +146,7 @@ test('daily features reject future/forming, duplicate and gapped data', () => {
 
 test('stale signal and stale/future component quotes cannot admit a setup', () => {
   const expired = snapshot();
-  expired.nowMs += 300_001;
+  expired.nowMs += 3_600_001;
   assert.equal((evaluateBrain(expired) as { code: string }).code, 'STALE_SETUP');
   for (const stamp of [NOW - 10_001, NOW + 1]) for (const field of ['lastPriceMs', 'bidAskMs', 'markMs'] as const) {
     const input = snapshot();
