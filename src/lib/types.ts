@@ -213,6 +213,8 @@ export interface OpenPosition extends StrategyProvenance {
   maxLossUsd?: number;
   admissionScore?: number;
   learningRiskMultiplier?: number;
+  /** Market conditions at entry, recorded for later win/loss attribution (meta-labeling). */
+  signalFeatures?: SignalFeatures;
   learningAdjustment?: number;
   setupRiskMultiplier?: number;
   setupRiskReason?: string;
@@ -407,6 +409,8 @@ export interface Trade extends StrategyProvenance {
   setupRiskMultiplier?: number;
   setupRiskReason?: string;
   learningRiskMultiplier?: number;
+  /** Market conditions at entry, recorded for later win/loss attribution (meta-labeling). */
+  signalFeatures?: SignalFeatures;
   learningAdjustment?: number;
   targetReachabilityScore?: number;
   rawTakeProfit?: number;
@@ -563,4 +567,10 @@ export interface TradeJournalEntry {
   wasPredictionCorrect: boolean;
   mistakesMade: string[];
   lessonsLearned: string[];
+}
+
+/** Entry-time features of a v6 setup. All are known before the fill; none use the outcome. */
+export interface SignalFeatures {
+  breakoutAtr: number | null; atrPctOfPrice: number; stopAtr: number; fundingRate: number | null;
+  dailyReturn20: number | null; hourUtc: number; weekdayUtc: number; halfSpreadBps: number | null; minutesAfterBarClose: number;
 }

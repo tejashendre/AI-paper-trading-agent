@@ -254,6 +254,8 @@ test('open paper gate turns a fresh SHADOW setup into one fenced paper fill with
     assert.equal(result.assets[0].mode,'SHADOW');assert.equal(result.assets[0].decision.status,'ENTRY');assert.equal(result.mode,'PAPER_ACTIVE');
     const first=await h.redis.get<any>('brain:v6:run:test-run:portfolio');
     assert.ok(first.usd<10000);assert.ok(first.openPositions.BTC.initialRiskUsdt<=25);
+    const features=first.openPositions.BTC.signalFeatures;
+    assert.ok(features&&features.breakoutAtr>0&&features.stopAtr>=2&&features.hourUtc===12&&features.minutesAfterBarClose===0&&features.fundingRate===.0001);
     assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
     h.setNow(NOW+60000);mock.timers.setTime(NOW+60000);await runReplacementScan(h.deps);
     assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,first.usd);

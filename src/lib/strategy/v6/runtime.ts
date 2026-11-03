@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getRedis, brainEntryReceipt, type RedisClient, type RawRedisSnapshot } from '@/lib/redis';
-import type { OpenPosition, Portfolio, Trade } from '@/lib/types';
+import type { OpenPosition, Portfolio, SignalFeatures, Trade } from '@/lib/types';
 import { MarketService, type MarketPriceSnapshot } from '@/lib/market';
 import { bybitPublicGet } from '@/lib/data/bybitPublic';
 import { CONFIGURED_ASSETS, getConfiguredInstrument, type ConfiguredAsset } from '@/lib/trading/instrumentRegistry';
@@ -301,6 +301,17 @@ function permissionKeys(r:BrainRegistration,asset:ConfiguredAsset,proof:BrainEvi
   return [p+'runtimeRegistration:'+asset,p+'registration:'+id,p+'latest:'+id,p+'proof:'+proof.proofHash,
     'brain:v6:retired:'+proof.semanticHash,p+'drawdown',p+'breakers',p+'shadow',p+'ledgerAcknowledged'];
 }
+/** Records the conditions behind every paper entry so 100+ trades can show which ones win. */
+export function signalFeatures(setup:SwingSetup,f:RuntimeFrame,now:number):SignalFeatures{
+  const sign=setup.direction==='LONG'?1:-1,d1=f.bars.d1,last=d1.at(-1)?.close,base=d1.at(-21)?.close;
+  const spread=f.quote&&f.quote.bid&&f.quote.ask?(f.quote.ask-f.quote.bid)/((f.quote.ask+f.quote.bid)/2)*5000:null;
+  const round=(v:number)=>Number(v.toFixed(6));
+  return {breakoutAtr:setup.channel?round(sign*(setup.referencePrice-setup.channel.current)/setup.atr):null,
+    atrPctOfPrice:round(setup.atr/setup.entryPrice*100),stopAtr:round(setup.priceRDistance/setup.atr),
+    fundingRate:Number.isFinite(f.fundingRate)?f.fundingRate:null,
+    dailyReturn20:last&&base?round(last/base-1):null,hourUtc:new Date(now).getUTCHours(),weekdayUtc:new Date(now).getUTCDay(),
+    halfSpreadBps:spread!==null&&Number.isFinite(spread)?round(spread):null,minutesAfterBarClose:Math.round((now-setup.featureCutoffMs)/60000)};
+}
 function toPosition(setup:SwingSetup,plan:BrainOrderPlan,r:BrainRegistration,f:RuntimeFrame,now:number):OpenPosition {
   const instrument=getConfiguredInstrument(setup.asset),observation=shadowExecution(f,now,setup.direction,plan.quantity,plan.entryPrice,plan.stopLoss)!;
   return {asset:setup.asset,entryPrice:plan.entryPrice,amount:plan.quantity,btcAmount:plan.quantity,usdInvested:plan.marginUsdt,stopLoss:plan.stopLoss,initialStopLoss:plan.stopLoss,
@@ -366,7 +377,7 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
     const current=await readBrainReview(deps.redis,brainDefinition(c.setup.asset),c.r);
     if(current?.proofHash!==c.proof.proofHash)continue;
     expectedKeys.push(...permissionKeys(c.r,c.setup.asset,c.proof));
-    const pos=toPosition(c.setup,plan,c.r,c.f,now);pos.learningRiskMultiplier=c.learned.multiplier;pos.setupRiskReason=c.learned.reason;next.openPositions[c.setup.asset]=pos;
+    const pos=toPosition(c.setup,plan,c.r,c.f,now);pos.learningRiskMultiplier=c.learned.multiplier;pos.signalFeatures=signalFeatures(c.setup,c.f,now);pos.setupRiskReason=c.learned.reason;next.openPositions[c.setup.asset]=pos;
     next.usd-=plan.marginUsdt+plan.entryFeeUsdt;next.balances[c.setup.asset]=c.setup.direction==='LONG'?plan.quantity:-plan.quantity;
     next.totalFeesPaid=(next.totalFeesPaid??0)+plan.entryFeeUsdt;next.totalExecutionCostsPaid=(next.totalExecutionCostsPaid??0)+plan.entryFeeUsdt;
     if(c.setup.asset==='BTC'){next.btc=next.balances.BTC;next.openPosition=pos;}
