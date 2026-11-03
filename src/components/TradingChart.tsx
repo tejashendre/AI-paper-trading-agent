@@ -1,5 +1,6 @@
 "use client";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import type { ISeriesApi } from "lightweight-charts";
 import { createChart, ColorType, IChartApi, Time, TickMarkType } from "lightweight-charts";
 import { formatChartTime } from '@/lib/ui/chartHistory';
 import { Candle } from "@/lib/types";
@@ -17,10 +18,33 @@ interface Props {
   } | null;
   timezone?: 'EU' | 'UK' | 'IST' | 'US';
   theme?: 'light' | 'dark';
+  /** Live last-traded price; the forming candle follows it tick by tick. */
+  livePrice?: number | null;
+  /** Candle length in seconds (60 for 1m ... 14400 for 4h). */
+  intervalSeconds?: number;
 }
 
-export function TradingChart({ candles, trades, indicators, activePosition, assetName, timezone = 'EU', theme = 'dark' }: Props) {
+type LiveBar = { time: number; open: number; high: number; low: number; close: number };
+/** Folds a live price into the forming candle, opening a new one when the period rolls over. Pure for testing. */
+export function foldLiveCandle(last: LiveBar | null, price: number, nowMs: number, intervalSeconds: number): LiveBar | null {
+  if (!last || !Number.isFinite(price) || price <= 0 || !(intervalSeconds > 0)) return null;
+  const bucket = Math.floor(nowMs / 1000 / intervalSeconds) * intervalSeconds;
+  if (bucket < last.time) return null;
+  if (bucket === last.time) return { ...last, high: Math.max(last.high, price), low: Math.min(last.low, price), close: price };
+  return { time: bucket, open: last.close, high: Math.max(last.close, price), low: Math.min(last.close, price), close: price };
+}
+export function formatCountdown(nowMs: number, intervalSeconds: number): string {
+  const left = Math.max(0, intervalSeconds - Math.floor(nowMs / 1000) % intervalSeconds);
+  const h = Math.floor(left / 3600), m = Math.floor(left % 3600 / 60), sec = left % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+
+export function TradingChart({ candles, trades, indicators, activePosition, assetName, timezone = 'EU', theme = 'dark', livePrice, intervalSeconds }: Props) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const liveBarRef = useRef<LiveBar | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const chartRef = useRef<IChartApi | null>(null);
   const viewportRef = useRef<{ from: Time; to: Time } | null>(null);
 
@@ -110,6 +134,8 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       .sort((a, b) => (a.time as number) - (b.time as number));
 
     candlestickSeries.setData(cdata);
+    seriesRef.current = candlestickSeries;
+    liveBarRef.current = cdata.length ? { ...cdata[cdata.length - 1], time: cdata[cdata.length - 1].time as number } : null;
     const saved = viewportRef.current;
     if (saved && cdata.length && Number(saved.from) >= Number(cdata[0].time) && Number(saved.to) <= Number(cdata.at(-1)!.time)) {
       chart.timeScale().setVisibleRange(saved);
@@ -217,8 +243,36 @@ export function TradingChart({ candles, trades, indicators, activePosition, asse
       viewportRef.current = chart.timeScale().getVisibleRange();
       chart.remove();
       chartRef.current = null;
+      seriesRef.current = null;
     };
   }, [candles, trades, indicators, activePosition, timezone, theme, assetName]);
 
-  return <div ref={chartContainerRef} className="w-full h-[400px]" />;
+  // Forming candle follows every live tick.
+  useEffect(() => {
+    if (typeof livePrice !== 'number' || !intervalSeconds || !seriesRef.current) return;
+    const next = foldLiveCandle(liveBarRef.current, livePrice, Date.now(), intervalSeconds);
+    if (!next) return;
+    liveBarRef.current = next;
+    seriesRef.current.update({ ...next, time: next.time as Time });
+  }, [livePrice, intervalSeconds]);
+
+  // Candle-close countdown ticks once a second.
+  useEffect(() => {
+    if (!intervalSeconds) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [intervalSeconds]);
+
+  const label = intervalSeconds ? (intervalSeconds >= 3600 ? `${intervalSeconds / 3600}H` : `${intervalSeconds / 60}M`) : '';
+  return (
+    <div className="relative w-full h-[400px]">
+      <div ref={chartContainerRef} className="w-full h-[400px]" />
+      {intervalSeconds && (
+        <div className={`pointer-events-none absolute right-16 top-2 z-10 rounded border px-2 py-1 font-mono text-[10px] ${theme === 'dark' ? 'border-[#1f2438] bg-[#0b0d14]/90 text-slate-300' : 'border-slate-200 bg-white/90 text-slate-700'}`}>
+          {typeof livePrice === 'number' && <span className="mr-2 font-bold text-green-500">● {livePrice.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span>}
+          {label} candle closes in <span className="font-bold">{formatCountdown(nowMs, intervalSeconds)}</span>
+        </div>
+      )}
+    </div>
+  );
 }
