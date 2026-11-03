@@ -414,6 +414,7 @@ function buildCloseTrade(
     brainExitObservation:pos.brainExitObservation,brainExitSource:pos.brainExitSource,
     brainFundingIntervalMinutes:pos.brainFundingIntervalMinutes,brainFundingObservations:pos.brainFundingObservations,
     brainStressedEntry:pos.brainStressedEntry,brainStressedExit:pos.brainStressedExit,
+    signalFeatures: pos.signalFeatures, learningRiskMultiplier: pos.learningRiskMultiplier,
     dataQuality: pos.dataQuality,
     triggerScore: pos.triggerScore,
     marketStructureScore: pos.marketStructureScore,

@@ -254,6 +254,8 @@ test('open paper gate turns a fresh SHADOW setup into one fenced paper fill with
     assert.equal(result.assets[0].mode,'SHADOW');assert.equal(result.assets[0].decision.status,'ENTRY');assert.equal(result.mode,'PAPER_ACTIVE');
     const first=await h.redis.get<any>('brain:v6:run:test-run:portfolio');
     assert.ok(first.usd<10000);assert.ok(first.openPositions.BTC.initialRiskUsdt<=25);
+    const features=first.openPositions.BTC.signalFeatures;
+    assert.ok(features&&features.breakoutAtr>0&&features.stopAtr>=2&&features.hourUtc===12&&features.minutesAfterBarClose===0&&features.fundingRate===.0001);
     assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,1);
     h.setNow(NOW+60000);mock.timers.setTime(NOW+60000);await runReplacementScan(h.deps);
     assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,first.usd);
@@ -274,4 +276,17 @@ test('open paper gate turns streak latches into a 48h cooldown instead of a perm
     assert.deepEqual(await cooled.redis.get('brain:v6:run:test-run:breakers'),[]);
     assert.equal(await cooled.redis.get('brain:v6:run:test-run:breakerResetAtMs'),NOW-49*3600000);
   }finally{mock.timers.reset();process.env.V6_PAPER_GATE='strict';}
+});
+
+test('a scan that cannot get the busy portfolio lease keeps the last published status',async()=>{
+  const prior=process.env.BRAIN_LEASE_ATTEMPTS;process.env.BRAIN_LEASE_ATTEMPTS='2';
+  try{
+    const h=harness();await seed(h);await runReplacementScan(h.deps);
+    const published=await h.redis.get<any>('swing:lastScan:ai');assert.ok(published.scanId>0);
+    await h.redis.set('portfolio:write-lock:ai','protection-owner',{ex:60});
+    h.setNow(NOW+60000);
+    const busy=await runReplacementScan(h.deps);
+    assert.deepEqual(busy.haltReasons,['PORTFOLIO_BUSY']);
+    assert.deepEqual(await h.redis.get('swing:lastScan:ai'),published);
+  }finally{if(prior===undefined)delete process.env.BRAIN_LEASE_ATTEMPTS;else process.env.BRAIN_LEASE_ATTEMPTS=prior;}
 });
