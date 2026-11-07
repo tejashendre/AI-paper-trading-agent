@@ -4,7 +4,18 @@
 
 An explainable, autonomous paper-trading system for observing markets, evaluating multi-timeframe setups, simulating execution, managing exits, and learning from outcomes. It is designed as a free-tier research and demonstration project, not as a real-money trading service.
 
-**Demo video:** _coming shortly_ | **Repository:** you are here | **Author:** [Tejas Hendre](https://www.tejashendre.com/)
+**Demo video:** below | **Repository:** you are here | **Author:** [Tejas Hendre](https://www.tejashendre.com/)
+
+https://github.com/user-attachments/assets/be156e6b-31d0-4174-99f6-d610850b90f1
+
+<details>
+<summary><b>On a phone?</b> Watch the vertical cut</summary>
+
+https://github.com/user-attachments/assets/375bd351-b326-4059-bd95-7b7d154d9b24
+
+</details>
+
+<sub>Paper trading only; the film is an illustrative animation. Download: [16:9](media/ai-paper-trading-agent-16x9.mp4) · [9:16](media/ai-paper-trading-agent-9x16.mp4)</sub>
 
 ---
 
