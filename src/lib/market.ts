@@ -53,6 +53,9 @@ const REST_QUOTE_CACHE_MS = 5_000;
 const DEPTH_CACHE_MS = 15_000;
 const SENSOR_MAX_AGE_MS = 60_000;
 
+/** A configured instrument has no usable quote from either Bybit transport. */
+export class MarketQuoteUnavailableError extends Error {}
+
 export interface MarketPriceSnapshot {
   /** Last traded price. */
   price: number;
@@ -465,7 +468,10 @@ export class MarketService {
       await deps.cache.set(restKey, snapshot, { ex: 10 }).catch(() => undefined);
       return snapshot;
     } catch (error) {
-      throw new Error(`Bybit ${instrument.symbol} quote unavailable for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new MarketQuoteUnavailableError(
+        `Bybit ${instrument.symbol} quote unavailable for ${assetKey}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
     }
   }
 

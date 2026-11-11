@@ -100,25 +100,46 @@ const DAY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.ndjson(\.gz)?$/;
  */
 function dayFiles(directory: string): string[] {
   if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory)
-    .filter((file) => DAY_FILE_PATTERN.test(file))
-    .sort((a, b) => {
-      const dayA = a.slice(0, 10);
-      const dayB = b.slice(0, 10);
-      return dayA === dayB ? a.localeCompare(b) : dayA.localeCompare(dayB);
-    });
+  const files = fs.readdirSync(directory).filter((file) => DAY_FILE_PATTERN.test(file)).sort();
+  // Compression publishes the gzip before removing the plain copy. There is
+  // still just one logical segment during that overlap.
+  return [...new Map(files.map((file) => [file.slice(0, 10), file])).values()];
 }
 
-/** Read a day file, transparently decompressing an archived one. */
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function withArchivedFallback<T>(filename: string, read: (file: string) => T): T {
+  try {
+    return read(filename);
+  } catch (error) {
+    if (!isMissing(error) || filename.endsWith(".gz")) throw error;
+    return read(filename + ".gz");
+  }
+}
+
+/** Read the same segment even if it was compressed after the directory scan. */
 function readDayFile(directory: string, file: string): string {
-  const full = path.join(directory, file);
-  return file.endsWith(".gz")
-    ? zlib.gunzipSync(fs.readFileSync(full)).toString("utf8")
-    : fs.readFileSync(full, "utf8");
+  return withArchivedFallback(path.join(directory, file), (filename) => {
+    const contents = fs.readFileSync(filename);
+    if (!filename.endsWith(".gz")) return contents.toString("utf8");
+    const raw = zlib.gunzipSync(contents);
+    const plain = filename.slice(0, -3);
+    if (fs.existsSync(plain)) {
+      try {
+        if (!fs.readFileSync(plain).equals(raw)) throw new Error(`Ledger day copies differ: ${file}`);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+    }
+    return raw.toString("utf8");
+  });
 }
 
 function dayFileBytes(directory: string): number {
-  return dayFiles(directory).reduce((sum, file) => sum + fs.statSync(path.join(directory, file)).size, 0);
+  return dayFiles(directory).reduce((sum, file) =>
+    sum + withArchivedFallback(path.join(directory, file), (filename) => fs.statSync(filename).size), 0);
 }
 
 /**
@@ -132,12 +153,12 @@ function dayFileBytes(directory: string): number {
  *
  * Today's file is never touched, because it is still being appended to.
  */
-export function archiveLedgerDays(options: { keepDays?: number; directory?: string } = {}): {
+export async function archiveLedgerDays(options: { keepDays?: number; directory?: string } = {}): Promise<{
   archived: string[];
   bytesBefore: number;
   bytesAfter: number;
   skipped: string[];
-} {
+}> {
   const directory = options.directory ?? ledgerDirectory();
   const keepDays = Math.max(1, options.keepDays ?? 7);
   const bytesBefore = dayFileBytes(directory);
@@ -155,23 +176,24 @@ export function archiveLedgerDays(options: { keepDays?: number; directory?: stri
 
     const source = path.join(directory, file);
     const target = `${source}.gz`;
-    if (fs.existsSync(target)) { skipped.push(`${file} (archive already exists)`); continue; }
-
     try {
-      const raw = fs.readFileSync(source);
-      const temporary = `${target}.${process.pid}.tmp`;
-      fs.writeFileSync(temporary, zlib.gzipSync(raw, { level: 9 }));
-      // Prove the archive reads back byte-identical before removing the
-      // original. A truncated archive would silently destroy audit evidence.
-      const check = zlib.gunzipSync(fs.readFileSync(temporary));
-      if (!check.equals(raw)) {
-        fs.unlinkSync(temporary);
-        skipped.push(`${file} (archive did not round-trip)`);
-        continue;
-      }
-      fs.renameSync(temporary, target);
-      fs.unlinkSync(source);
-      archived.push(file);
+      // An idle ledger can still receive a delayed event in its latest plain
+      // segment. Hold the same lock as the append while replacing that file.
+      await withAppendLock(directory, () => {
+        if (fs.existsSync(target)) return;
+        const raw = fs.readFileSync(source);
+        const temporary = `${target}.${process.pid}.tmp`;
+        fs.writeFileSync(temporary, zlib.gzipSync(raw, { level: 9 }));
+        const check = zlib.gunzipSync(fs.readFileSync(temporary));
+        if (!check.equals(raw)) {
+          fs.unlinkSync(temporary);
+          skipped.push(`${file} (archive did not round-trip)`);
+          return;
+        }
+        fs.renameSync(temporary, target);
+        fs.unlinkSync(source);
+        archived.push(file);
+      });
     } catch (error) {
       skipped.push(`${file} (${error instanceof Error ? error.message : String(error)})`);
     }

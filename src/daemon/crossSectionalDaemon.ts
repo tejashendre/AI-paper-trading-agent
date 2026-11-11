@@ -507,8 +507,10 @@ async function main() {
   // download never delays a mark or a rebalance.
   const backfill = () => void refreshAllBackfill({ archiveDirectory: path.join(process.cwd(), "data", "research"), nowMs: Date.now(),
     maxBytes: Number(process.env.RESEARCH_ARCHIVE_MAX_BYTES || DEFAULT_RESEARCH_ARCHIVE_BYTES) })
-    .then((result) => Logger.info(`[XSEC] research backfill refreshed, ${result.failed} failure(s)`))
-    .catch(() => undefined);
+    .then((result) => result.failed
+      ? Logger.warn(`[XSEC] research backfill: ${result.failed} failure(s)`, result.lines)
+      : Logger.info(`[XSEC] research backfill refreshed for ${result.lines.length} symbols`))
+    .catch((error) => Logger.error(`[XSEC] research backfill failed: ${String(error)}`));
   setTimeout(backfill, 5 * 60_000);
   setInterval(backfill, 24 * 3_600_000);
 }

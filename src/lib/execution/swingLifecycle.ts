@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { entryInstrumentFor, MarketService } from "@/lib/market";
+import { entryInstrumentFor, MarketQuoteUnavailableError, MarketService } from "@/lib/market";
 import { validateExitQuote } from "@/lib/trading/entryEligibility";
 import { PortfolioManager } from "@/lib/portfolio";
 import { Logger } from "@/lib/logger";
@@ -1372,8 +1372,12 @@ export async function sweepSwingExits(
       await manageProfitableWinner(portfolio, portfolioType, source, asset, pos, currentLivePrice, result);
     } catch (error) {
       result.errors++;
+      if (pos.brainPolicy && portfolioType === "ai" && error instanceof MarketQuoteUnavailableError) {
+        await Logger.warn(`[${source}] Protection deferred for ${asset}: ${error.message}`);
+        continue;
+      }
       await Logger.error(`[${source}] Sweep error on ${asset}: ${error instanceof Error ? error.message : String(error)}`);
-      if(pos.brainPolicy&&portfolioType==='ai')throw error;
+      if (pos.brainPolicy && portfolioType === "ai") throw error;
     }
   }
 

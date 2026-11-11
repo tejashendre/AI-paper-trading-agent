@@ -1,3 +1,8 @@
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
+import { WebSocketServer } from "ws";
+import { Logger } from "@/lib/logger";
+import { WebsocketDataMesh } from "../src/daemon/websocketDataMesh";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BybitTickerBook, BybitTickerState, mergeBybitTicker } from "@/lib/data/bybitPublic";
@@ -161,4 +166,27 @@ test("ticker_snapshot_delta_reconnect_and_quiet_price", async (t) => {
       restoreDeps();
     }
   });
+});
+
+test("a closed feed reconnects and backs off when handshakes produce no quotes", { timeout: 9000 }, async (t) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address() as AddressInfo;
+  const mesh = new WebsocketDataMesh("ws://127.0.0.1:" + address.port);
+  t.after(() => { mesh.stop(); server.close(); });
+  t.mock.method(Logger, "info", async () => {});
+  const warnings: string[] = [];
+  t.mock.method(Logger, "warn", async (message: string) => { warnings.push(message); });
+  const firstConnection = once(server, "connection");
+  await mesh.start();
+  const [first] = await firstConnection;
+  const nextConnection = once(server, "connection");
+  first.close(1012, "venue restart");
+  const [next] = await nextConnection;
+  next.close(1013, "try again later");
+  for (let i = 0; warnings.length < 2 && i < 50; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.match(warnings[0] ?? "", /1012.*venue restart.*retry in (?:5\.\d|6\.0)s/i);
+  assert.match(warnings[1] ?? "", /1013.*try again later.*retry in (?:10\.\d|11\.0)s/i);
 });

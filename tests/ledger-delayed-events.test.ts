@@ -29,7 +29,7 @@ test('delayed financial and reset events preserve timestamps and append after th
   assert.equal(ExecutionLedger.hasEvent(delayed.id, delayed.timestamp), true);
   assert.equal(ExecutionLedger.verify().valid, true);
   assert.equal((await ExecutionLedger.recordOnce(delayed)).hash, exit.hash);
-  archiveLedgerDays({ directory, keepDays: 1 });
+  await archiveLedgerDays({ directory, keepDays: 1 });
   const reset = await ExecutionLedger.recordOnce({ id: 'reset-ack', timestamp: '2020-01-01T12:00:00.000Z', type: 'AI_RUN_STARTED', source: 'test', payload: {} });
   assert.equal(reset.previousHash, exit.hash);
   assert.equal(ExecutionLedger.verify().valid, true, ExecutionLedger.verify().errors.join('; '));

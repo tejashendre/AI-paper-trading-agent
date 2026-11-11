@@ -45,7 +45,7 @@ async function main() {
     return;
   }
 
-  const result = archiveLedgerDays({ keepDays });
+  const result = await archiveLedgerDays({ keepDays });
   console.log(`Archived ${result.archived.length} day(s): ${result.archived.join(", ") || "none"}`);
   if (result.skipped.length > 0) {
     console.log(`Skipped ${result.skipped.length}: ${result.skipped.join(", ")}`);

@@ -23,11 +23,27 @@ export function readResearchEvidence(directory:string):ResearchEvidence[] {
       return envelope.record as ResearchEvidence;
     }));
 }
-function archiveBytes(directory: string): number {
-  return fs.readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
-    const filename = path.join(directory, entry.name);
-    return total + (entry.isFile() ? fs.statSync(filename).size : entry.isDirectory() ? archiveBytes(filename) : 0);
-  }, 0);
+/** V6 decision evidence has its own BRAIN_ARCHIVE_MAX_BYTES budget. */
+export function researchArchiveBytes(directory: string): number {
+  function count(dir: string): number {
+    try {
+      return fs.readdirSync(dir, { withFileTypes: true }).reduce((total, entry) => {
+        if (dir === directory && entry.name === "v6" && entry.isDirectory()) return total;
+        const filename = path.join(dir, entry.name);
+        try {
+          return total + (entry.isFile() ? fs.statSync(filename).size : entry.isDirectory() ? count(filename) : 0);
+        } catch (error) {
+          // Another recorder can rotate a day between listing and stat.
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          return total;
+        }
+      }, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return 0;
+    }
+  }
+  return count(directory);
 }
 export function appendResearchEvidence(input: { directory: string; record: ResearchEvidence; maxBytes?: number }) {
   const { record } = input, maxBytes = input.maxBytes ?? DEFAULT_RESEARCH_ARCHIVE_BYTES;
@@ -55,7 +71,7 @@ export function appendResearchEvidence(input: { directory: string; record: Resea
   const nextState = { ...state, [record.asset]: { recordHash, cursors, quoteBucket } };
   const stateBytes = Buffer.byteLength(JSON.stringify(nextState));
   const oldStateBytes = fs.existsSync(statePath) ? fs.statSync(statePath).size : 0;
-  const fits = () => archiveBytes(directory) + payload.length + stateBytes - oldStateBytes <= maxBytes;
+  const fits = () => researchArchiveBytes(directory) + payload.length + stateBytes - oldStateBytes <= maxBytes;
   // Over the cap, whole older days rotate out, oldest first; the day being
   // written is never touched. Only when that day alone fills the cap does
   // capture pause.
@@ -66,7 +82,7 @@ export function appendResearchEvidence(input: { directory: string; record: Resea
     fs.rmSync(path.join(directory, oldest), { force: true });
     rotatedOut.push(oldest);
   }
-  const bytes = archiveBytes(directory);
+  const bytes = researchArchiveBytes(directory);
   if (!fits()) return { status: "STORAGE_LIMIT", bytes, maxBytes, recordHash, rotatedOut };
   const filename = path.join(directory, date + ".ndjson.gz");
   fs.appendFileSync(filename, payload);

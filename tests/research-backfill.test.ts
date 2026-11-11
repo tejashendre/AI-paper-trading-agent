@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fetchBackfill, readBackfill, writeBackfill } from "@/lib/research/backfill";
+import { fetchBackfill, readBackfill, refreshAllBackfill, writeBackfill } from "@/lib/research/backfill";
 
 const H = 3_600_000, D = 86_400_000;
 const NOW = Date.parse("2026-10-03T12:30:00Z");
@@ -47,4 +47,15 @@ test("research backfill pages history, keeps closed bars and stays inside the ar
     assert.equal(writeBackfill(archive, series, 10_000_000).status, "WRITTEN");
     assert.deepEqual(readBackfill(archive, "BTCUSDT"), series);
   } finally { fs.rmSync(archive, { recursive: true, force: true }); }
+});
+
+test("XSEC backfill refreshes within its cap when the independently capped V6 archive is larger", async () => {
+  const archive = fs.mkdtempSync(path.join(os.tmpdir(), "backfill-v6-cap-"));
+  fs.mkdirSync(path.join(archive, "v6"));
+  fs.writeFileSync(path.join(archive, "v6", "decision-evidence"), Buffer.alloc(100_001));
+  const { fetchImpl } = fakeBybit();
+  const result = await refreshAllBackfill({ archiveDirectory: archive, maxBytes: 100_000, nowMs: NOW, options: { fetchImpl } });
+  assert.equal(result.failed, 0);
+  assert.equal(fs.readdirSync(path.join(archive, "backfill")).length, 9);
+  assert.equal(fs.statSync(path.join(archive, "v6", "decision-evidence")).size, 100_001);
 });
