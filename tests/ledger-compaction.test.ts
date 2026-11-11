@@ -98,7 +98,7 @@ describe("ledger compaction", () => {
 
   it("keeps archived days archived", async () => {
     const dir = await seededLedger();
-    const archived = archiveLedgerDays({ directory: dir, keepDays: 1 });
+    const archived = await archiveLedgerDays({ directory: dir, keepDays: 1 });
     assert.ok(archived.archived.length >= 3);
     compactLedger({ directory: dir, dropTypes: ["SCAN_COMPLETED"], minDropBytes: 0 });
     assert.ok(fs.readdirSync(dir).filter((f) => f.endsWith(".ndjson.gz")).length >= 3);

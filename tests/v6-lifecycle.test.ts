@@ -6,7 +6,7 @@ import path from 'node:path';
 import { MemoryRedis } from './helpers/memoryRedis';
 import { setRedisClient } from '../src/lib/redis';
 import { PortfolioManager } from '../src/lib/portfolio';
-import { MarketService } from '../src/lib/market';
+import { MarketService, setMarketServiceDeps } from '../src/lib/market';
 import { SwingEngine } from '../src/lib/swingEngine';
 import { sweepSwingExits } from '../src/lib/execution/swingLifecycle';
 import { getConfiguredInstrument, validateBybitMetadata } from '../src/lib/trading/instrumentRegistry';
@@ -16,6 +16,8 @@ import { freezeBrainCosts } from '../src/lib/strategy/v6/evidence';
 import { liveFundingDeps } from '../src/lib/data/bybitPublic';
 import { runReplacementWatchdog,runReplacementFunding } from '../src/daemon/replacementSwingDaemon';
 import type { OpenPosition,Portfolio } from '../src/lib/types';
+
+const originalQuote = MarketService.getCurrentPriceSnapshot;
 
 async function world(t:test.TestContext,price:number){
   const cwd=process.cwd(),dir=mkdtempSync(path.join(os.tmpdir(),'v6-exits-'));process.chdir(dir);
@@ -159,4 +161,24 @@ test('funding fetches outside the lease, commits once to fresh state and accepts
   assert.equal(saved.brainFundingObservations?.[f.pos.positionId]?.length,1);
   assert.equal((await f.redis.scanKeys('brain:v6:run:exit-run:outbox:*')).length,1);
   await runReplacementFunding();assert.equal(requests,1);assert.equal((await f.redis.get<Portfolio>('brain:v6:run:exit-run:portfolio'))?.usd,saved.usd);
+});
+
+test('a USDJPY REST 403 keeps that position open and leaves the next position protected', async t => {
+  const f = await world(t, 125);
+  const usdJpy = { ...f.pos, asset: 'USDJPY', instrument: getConfiguredInstrument('USDJPY') };
+  f.p.openPositions = { USDJPY: usdJpy, BTC: f.pos };
+  const btc = MarketService.getCurrentPriceSnapshot;
+  const restoreDeps = setMarketServiceDeps({
+    cache: f.redis,
+    bybitGet: async () => { throw new Error('Bybit HTTP 403'); },
+  });
+  t.after(restoreDeps);
+  t.mock.method(MarketService, 'getCurrentPriceSnapshot', (asset: string) => asset === 'USDJPY'
+    ? originalQuote.call(MarketService, asset) : btc.call(MarketService, asset));
+  const result = await sweepSwingExits(f.p, { portfolioType: 'ai', brainTransaction: await transaction(f) });
+  assert.equal(result.checked, 2);
+  assert.equal(result.errors, 1);
+  assert.equal(usdJpy.stopLoss, 90);
+  assert.equal(usdJpy.lastMarkAt, undefined);
+  assert.ok(f.pos.stopLoss > 90);
 });

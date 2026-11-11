@@ -1,3 +1,4 @@
+import { researchArchiveBytes } from "@/lib/research/researchArchive";
 import fs from "node:fs";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -49,14 +50,6 @@ export class LiquidationMinutes {
   }
 }
 
-function folderBytes(directory: string): number {
-  if (!fs.existsSync(directory)) return 0;
-  return fs.readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
-    const filename = path.join(directory, entry.name);
-    return total + (entry.isFile() ? fs.statSync(filename).size : entry.isDirectory() ? folderBytes(filename) : 0);
-  }, 0);
-}
-
 /**
  * Appends closed minutes under <archive>/liquidations/, one gzip member per
  * flush, so the research archive cap covers them. Over the cap, the oldest
@@ -76,12 +69,12 @@ export function appendLiquidationMinutes(input: { archiveDirectory: string; minu
   for (const [day, minutes] of byDay) {
     const payload = gzipSync(Buffer.from(minutes.map((minute) => JSON.stringify(minute)).join("\n") + "\n"));
     const older = fs.readdirSync(directory).filter((file) => FILE_PATTERN.test(file) && file.slice(0, 10) < day).sort();
-    while (folderBytes(input.archiveDirectory) + payload.length > input.maxBytes && older.length) {
+    while (researchArchiveBytes(input.archiveDirectory) + payload.length > input.maxBytes && older.length) {
       const oldest = older.shift()!;
       fs.rmSync(path.join(directory, oldest), { force: true });
       rotatedOut.push(oldest);
     }
-    if (folderBytes(input.archiveDirectory) + payload.length > input.maxBytes) return { status: "STORAGE_LIMIT" as const, written, rotatedOut };
+    if (researchArchiveBytes(input.archiveDirectory) + payload.length > input.maxBytes) return { status: "STORAGE_LIMIT" as const, written, rotatedOut };
     fs.appendFileSync(path.join(directory, `${day}.ndjson.gz`), payload);
     written += minutes.length;
   }

@@ -1,3 +1,4 @@
+import { researchArchiveBytes } from "@/lib/research/researchArchive";
 import fs from "node:fs";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -71,14 +72,6 @@ export async function fetchBackfill(symbol: string, fromMs: number, nowMs: numbe
   };
 }
 
-function folderBytes(directory: string): number {
-  if (!fs.existsSync(directory)) return 0;
-  return fs.readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
-    const filename = path.join(directory, entry.name);
-    return total + (entry.isFile() ? fs.statSync(filename).size : entry.isDirectory() ? folderBytes(filename) : 0);
-  }, 0);
-}
-
 /** Replaces the symbol's file only if the archive stays within its cap. */
 export function writeBackfill(archiveDirectory: string, series: BackfillSeries, maxBytes: number) {
   const directory = path.join(path.resolve(archiveDirectory), "backfill");
@@ -86,7 +79,7 @@ export function writeBackfill(archiveDirectory: string, series: BackfillSeries, 
   const filename = path.join(directory, `${series.symbol}.json.gz`);
   const payload = gzipSync(Buffer.from(JSON.stringify(series)));
   const existing = fs.existsSync(filename) ? fs.statSync(filename).size : 0;
-  if (folderBytes(archiveDirectory) - existing + payload.length > maxBytes) return { status: "STORAGE_LIMIT" as const, bytes: payload.length };
+  if (researchArchiveBytes(archiveDirectory) - existing + payload.length > maxBytes) return { status: "STORAGE_LIMIT" as const, bytes: payload.length };
   const temporary = filename + ".tmp";
   fs.writeFileSync(temporary, payload);
   fs.renameSync(temporary, filename);

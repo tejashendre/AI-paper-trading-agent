@@ -44,6 +44,8 @@ export class WebsocketDataMesh {
         Object.entries(SUPPORTED_ASSETS).map(([asset, config]) => [config.bybitLinearSymbol, asset])
     );
 
+    constructor(private readonly streamUrl = BYBIT_LINEAR_STREAM) {}
+
     public async start() {
         if (this.isRunning) return;
         this.isRunning = true;
@@ -117,8 +119,9 @@ export class WebsocketDataMesh {
         const reference = this.lastMarketDataAt || this.connectedAt;
         if (reference > 0 && Date.now() - reference > STALE_THRESHOLD_MS) {
             void Logger.warn(`Bybit WS stale (${Math.round((Date.now() - reference) / 1000)}s since last market update). Forcing reconnect.`);
-            this.ws.terminate();
+            const stale = this.ws;
             this.ws = null;
+            stale.terminate();
             this.scheduleReconnect();
             return;
         }
@@ -131,7 +134,7 @@ export class WebsocketDataMesh {
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
         try {
-            const ws = new WebSocket(BYBIT_LINEAR_STREAM);
+            const ws = new WebSocket(this.streamUrl);
             this.ws = ws;
             this.lastMarketDataAt = 0;
             this.connectedAt = Date.now();
@@ -140,11 +143,8 @@ export class WebsocketDataMesh {
             this.dirty.clear();
 
             ws.on("open", () => {
-                if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-                this.reconnectTimeout = null;
+                if (this.ws !== ws) return;
                 this.connectedAt = Date.now();
-                this.reconnectAttempts = 0;
-                void Logger.info("Connected to Bybit linear WebSocket").catch(() => undefined);
                 const topics = [...this.assetBySymbol.keys()].flatMap((symbol) => [`tickers.${symbol}`, `publicTrade.${symbol}`, `allLiquidation.${symbol}`]);
                 for (let index = 0; index < topics.length; index += SUBSCRIBE_BATCH) {
                     ws.send(JSON.stringify({ op: "subscribe", args: topics.slice(index, index + SUBSCRIBE_BATCH) }));
@@ -159,19 +159,30 @@ export class WebsocketDataMesh {
                 } catch {
                     return;
                 }
+                const message = parsed as { op?: unknown; success?: unknown; ret_msg?: unknown } | null;
+                if (message?.op === "subscribe" && message.success === false) {
+                    void Logger.warn(`Bybit WebSocket subscription rejected: ${String(message.ret_msg ?? "unknown reason")}`);
+                    return;
+                }
                 if (this.liquidations.add(parsed)) return;
-                const state = this.book.apply(parsed, Date.now());
+                const now = Date.now();
+                const state = this.book.apply(parsed, now);
                 if (!state) return;
-                this.lastMarketDataAt = Date.now();
+                if (this.lastMarketDataAt === 0) {
+                    void Logger.info("Bybit linear WebSocket receiving market data").catch(() => undefined);
+                }
+                if (now - this.connectedAt >= STALE_THRESHOLD_MS) this.reconnectAttempts = 0;
+                this.lastMarketDataAt = now;
                 this.dirty.set(state.symbol, state);
             });
 
-            ws.on("close", () => {
+            ws.on("close", (code, reason) => {
                 // A socket already replaced by a forced reconnect must not reschedule.
                 if (this.ws !== ws) return;
                 this.ws = null;
-                Logger.warn("Bybit WebSocket disconnected. Reconnecting...");
-                this.scheduleReconnect();
+                const delay = this.scheduleReconnect();
+                const cause = reason.toString("utf8").trim();
+                void Logger.warn(`Bybit WebSocket disconnected (code ${code}${cause ? `: ${cause}` : ""}); retry in ${(delay / 1000).toFixed(1)}s`);
             });
 
             ws.on("error", (error) => {
@@ -184,15 +195,15 @@ export class WebsocketDataMesh {
     }
 
     private scheduleReconnect() {
-        if (!this.isRunning) return;
         if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-        // 5s, 10s, 20s ... capped at 60s with jitter, so a venue outage or IP
-        // throttle is not hammered while a brief blip still recovers quickly.
-        const base = Math.min(MAX_RECONNECT_DELAY_MS, 5_000 * 2 ** Math.min(this.reconnectAttempts, 4));
+        // A handshake alone does not reset backoff. Wait for a stable feed.
+        const base = 5_000 * 2 ** Math.min(this.reconnectAttempts, 4);
+        const delay = Math.min(MAX_RECONNECT_DELAY_MS, base + Math.floor(Math.random() * 1_000));
         this.reconnectAttempts += 1;
         this.reconnectTimeout = setTimeout(() => {
             this.reconnectTimeout = null;
             this.connect();
-        }, base + Math.floor(Math.random() * 1_000));
+        }, delay);
+        return delay;
     }
 }

@@ -2276,7 +2276,7 @@ function auditWebsocketCoverage(): AuditResult[] {
  * This builds a real ledger on disk, archives it, and verifies the chain
  * survives. Anything less would be testing the intent rather than the code.
  */
-function auditLedgerArchival(): AuditResult[] {
+async function auditLedgerArchival(): Promise<AuditResult[]> {
   const out: AuditResult[] = [];
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-audit-"));
 
@@ -2312,7 +2312,7 @@ function auditLedgerArchival(): AuditResult[] {
       ? result("PASS", "ledger fixture chains correctly before archiving", `${before.events} events across ${before.files} files`)
       : result("FAIL", "ledger fixture chains correctly before archiving", `valid=${before.valid} events=${before.events}/${events}`));
 
-    const archived = archiveLedgerDays({ keepDays: 3, directory });
+    const archived = await archiveLedgerDays({ keepDays: 3, directory });
     out.push(archived.archived.length > 0
       ? result("PASS", "old days are archived", `${archived.archived.length} day(s) compressed, ${archived.skipped.length} skipped`)
       : result("FAIL", "old days are archived", `nothing was archived; skipped: ${archived.skipped.join(", ")}`));
@@ -2335,7 +2335,7 @@ function auditLedgerArchival(): AuditResult[] {
       : result("FAIL", "recent days stay uncompressed for appending", `only ${plain.length} plain file(s) left; the writer would append to a compressed file`));
 
     // Running twice must be safe.
-    const again = archiveLedgerDays({ keepDays: 3, directory });
+    const again = await archiveLedgerDays({ keepDays: 3, directory });
     const stillValid = ExecutionLedger.verify(directory);
     out.push(stillValid.valid && stillValid.events === events && again.archived.length === 0
       ? result("PASS", "archiving is idempotent", "a second run archives nothing and leaves the chain intact")
@@ -2676,7 +2676,7 @@ async function main() {
     ...auditFeedHealthScoring(),
     ...auditCommodityInstrumentRouting(),
     ...auditWebsocketCoverage(),
-    ...auditLedgerArchival(),
+    ...await auditLedgerArchival(),
   ];
 
   try {
