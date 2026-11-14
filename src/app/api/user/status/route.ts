@@ -321,9 +321,9 @@ export async function GET(request: Request) {
 
         const redis = getRedis();
 
-        const [userPortfolio, userTrades, storedAiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix, tradeReviewDigest, recentTradeReviews, tradeReviewSignals] = await Promise.all([
-            isSpectator ? Promise.resolve({ usd: NaN, openPositions: {}, initialCapital: undefined }) : PortfolioManager.getPortfolio("user"),
-            isSpectator ? Promise.resolve([]) : PortfolioManager.getTrades("user"),
+        const [storedUserPortfolio, userTrades, storedAiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix, tradeReviewDigest, recentTradeReviews, tradeReviewSignals] = await Promise.all([
+            isSpectator ? PortfolioManager.getPortfolio("user", { readOnly: true }) : PortfolioManager.getPortfolio("user"),
+            PortfolioManager.getTrades("user", isSpectator ? { readOnly: true } : undefined),
             isSpectator ? PortfolioManager.getPortfolio("ai", { readOnly: true }) : PortfolioManager.getPortfolio("ai"),
             PortfolioManager.getTrades("ai", isSpectator ? { readOnly: true } : undefined),
             isSpectator ? Promise.resolve([]) : Logger.getLogs(),
@@ -338,6 +338,7 @@ export async function GET(request: Request) {
             TradeReviewJournal.getAssetSignals(),
         ]);
 
+        const userPortfolio = storedUserPortfolio ?? { usd: NaN, openPositions: {}, initialCapital: undefined };
         const aiPortfolio = storedAiPortfolio ?? { usd: NaN, openPositions: {}, initialCapital: undefined };
         const [userSync, aiSync] = await Promise.all([
             calculateAccountValue(userPortfolio, asset => MarketService.getCurrentPrice(asset)),
@@ -489,15 +490,13 @@ export async function GET(request: Request) {
             },
             executionLedger,
             // User (Human) Data
-            ...(!isSpectator && {
-                portfolio: userPortfolioDisplay,
-                userPortfolio: userPortfolioDisplay,
-                userTrades,
-                userEquityTrades,
-                userTotalValue: userSync.totalValue,
-                userValuations: userSync.valuations,
-                userProfitByAsset,
-            }),
+            portfolio: userPortfolioDisplay,
+            userPortfolio: userPortfolioDisplay,
+            userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades,
+            userEquityTrades,
+            userTotalValue: userSync.totalValue,
+            userValuations: userSync.valuations,
+            userProfitByAsset,
 
             // AI Data
             aiPortfolio: aiPortfolioDisplay,
@@ -516,7 +515,9 @@ export async function GET(request: Request) {
 
             // Shared
             btcPrice,
-            ...(!isSpectator && { totalValue: userSync.totalValue, profitByAsset: userProfitByAsset, userClosedStats }),
+            totalValue: userSync.totalValue,
+            profitByAsset: userProfitByAsset,
+            userClosedStats,
             swingScan,
             lastExitSweep,
             opportunitySummary,

@@ -646,46 +646,6 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
     <div className={`min-h-screen ${bgMain} transition-colors duration-300 w-full pb-12 font-sans antialiased`}>
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         
-        {/* Premium Spectator Banner */}
-        {isSpectator && (
-          <div className={`border ${
-            isDark 
-              ? "bg-[#0b0f19]/70 border-blue-500/25 shadow-lg shadow-blue-950/20" 
-              : "bg-blue-500/5 border-blue-200 shadow-xs"
-          } rounded-xl p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3`}>
-            <div className="flex items-center gap-3">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-              </span>
-              <div className="flex flex-col">
-                <span className={`font-mono text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-blue-300" : "text-blue-700"}`}>
-                  👁️ Spectator Mode Active
-                </span>
-                <span className={`text-[9px] ${isDark ? "text-slate-400" : "text-slate-600"} font-mono mt-0.5`}>
-                  Read-only public view. Admin access is separate from the demo surface.
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase ${
-                isDark ? "border-blue-900/40 text-blue-300 bg-blue-950/20" : "border-blue-200 text-blue-700 bg-blue-50"
-              }`}>
-                Public Dashboard
-              </span>
-              <button
-                onClick={() => { window.location.href = "/?login=1"; }}
-                className={`px-3 py-1 rounded-lg border text-[9px] font-mono font-bold uppercase transition ${
-                  isDark ? "border-slate-800 text-slate-400 bg-[#07070a] hover:text-slate-200 hover:border-slate-600" : "border-slate-200 text-slate-600 bg-white hover:text-slate-900 hover:border-slate-300"
-                }`}
-                title="Open private admin login"
-              >
-                Admin Login
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Global Dashboard Header */}
         <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b ${borderCol} pb-6 gap-4`}>
           <div>
@@ -725,6 +685,11 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
             >
               {isDark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
+            {isSpectator && (
+              <a href="/owner" className={`px-3.5 py-2 border rounded-xl transition-colors font-mono text-[10px] font-bold ${bgSubCard} ${textPrimary}`}>
+                Admin Login
+              </a>
+            )}
             {onLogout && (
             <form action={onLogout}>
             <button type="submit" className={`px-3.5 py-2 border rounded-xl transition-all font-mono text-[10px] font-bold ${
@@ -740,27 +705,25 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
             >
               <RefreshCcw size={15} />
             </button>
-            <button 
-              onClick={handleTrade} 
-              disabled={running}
-              className={`${isSpectator ? "hidden" : "flex"} items-center gap-2 px-5 py-2 font-bold rounded-xl shadow-lg transition-all font-mono text-xs ${
-                isSpectator 
-                  ? "bg-indigo-800/40 text-indigo-400/50 border border-indigo-900/40 cursor-not-allowed" 
-                  : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-950/20"
-              }`}
-            >
-              <Play size={13} /> {isSpectator ? "🔒 Scan Locked" : running ? "Scanning Markets..." : "Run Portfolio Scan"}
-            </button>
+            {!isSpectator && (
+              <button
+                onClick={handleTrade}
+                disabled={running}
+                className="flex items-center gap-2 px-5 py-2 font-bold rounded-xl shadow-lg transition-all font-mono text-xs bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
+              >
+                <Play size={13} /> {running ? "Scanning Markets..." : "Run Portfolio Scan"}
+              </button>
+            )}
           </div>
         </div>
 
         {loading && <p role="status" className={`text-xs ${textMuted}`}>Loading market data…</p>}
 
         {/* Dynamic Leaderboard Comparison Display */}
-        <div className={`grid grid-cols-1 ${isSpectator ? "" : "md:grid-cols-3"} gap-6 rounded-2xl p-5 border relative overflow-hidden ${
+        <div className={`grid grid-cols-1 md:grid-cols-3 gap-6 rounded-2xl p-5 border relative overflow-hidden ${
           isDark ? "bg-[#0c0c10]/40 border-[#1c1c24] shadow-2xl" : "bg-white border-[#e2e8f0] shadow-xs"
         }`}>
-          {!isSpectator && <button
+          <button
             onClick={() => setViewMode("user")} 
             className={`text-left p-5 rounded-xl transition-all border ${
               viewMode === "user" 
@@ -781,8 +744,8 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
             <p className={`text-xs font-mono mt-1 ${textMuted}`}>
               Account value: {data?.userTotalValue === null ? 'Unavailable' : humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
             </p>
-          </button>}
-          {!isSpectator && <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
+          </button>
+          <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
             {legacyStatusVerified && humanGain.gain !== null && swingGain.gain !== null && (
@@ -801,7 +764,7 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
               </>
             )}
             {replacementActive && <p className={`mt-2 text-xs ${textSub}`}>Human lifetime and current AI run have different start dates.</p>}
-          </div>}
+          </div>
           <button 
             onClick={() => setViewMode("ai")} 
             className={`text-left p-5 rounded-xl transition-all border ${
@@ -1952,22 +1915,8 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
 
             {!isSpectator && (
             <>
-            {/* Manual Trade Input Module with absolute-positioned lock screen */}
+            {/* Manual Trade Input Module */}
             <div className={`border rounded-2xl p-5 space-y-4 relative overflow-hidden ${bgCard}`}>
-              {isSpectator && (
-                <div className={`absolute inset-0 backdrop-blur-xs flex flex-col justify-center items-center p-4 text-center z-10 ${
-                  isDark ? "bg-[#0d0d12]/92" : "bg-white/92"
-                }`}>
-                  <span className={`w-9 h-9 border rounded-full flex items-center justify-center mb-2 font-mono text-xs shadow-md ${bgSubCard}`}>
-                    🔒
-                  </span>
-                  <h3 className={`font-mono text-xs font-bold mb-0.5 ${textPrimary}`}>SPECTATOR SESSION</h3>
-                  <p className={`text-[9px] font-mono max-w-[200px] ${textMuted}`}>
-                    Admin credentials required to submit live market execution orders.
-                  </p>
-                </div>
-              )}
-              
               <h2 className={`text-[10px] font-bold font-mono border-b ${borderCol} pb-3 uppercase tracking-wider ${textSub}`}>
                 Manual Order Panel: <span className="text-indigo-500 font-bold">{activeAsset}</span>
               </h2>
@@ -2380,7 +2329,7 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
                               {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnl >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)
                             </span>
                           </div>
-                          {viewMode === "user" && !isScalp && (
+                          {!isSpectator && viewMode === "user" && !isScalp && (
                             <button
                               onClick={async () => {
                                 if (isSpectator) {
