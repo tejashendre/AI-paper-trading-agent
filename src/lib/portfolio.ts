@@ -56,10 +56,13 @@ export class PortfolioManager {
             backupPrefix: `ai_${active.runId}`, runId: active.runId };
     }
 
-    static async getPortfolio(type: "user" | "ai" = "user"): Promise<Portfolio> {
+    static getPortfolio(type?: "user" | "ai"): Promise<Portfolio>;
+    static getPortfolio(type: "user" | "ai", options: { readOnly: true }): Promise<Portfolio | null>;
+    static async getPortfolio(type: "user" | "ai" = "user", options?: { readOnly: true }): Promise<Portfolio | null> {
         const redis = getRedis();
         const keys = await this.storageKeys(type);
         let data = await redis.get<Portfolio>(keys.portfolio);
+        if (options?.readOnly && !isValidPortfolio(data)) return null;
         if (keys.runId && !isValidPortfolio(data)) throw new Error('Active AI run portfolio missing or invalid; recovery must be explicit');
         
         // If data is null or failed to parse into an object (e.g. malformed string), try to recover from backup
@@ -267,7 +270,7 @@ export class PortfolioManager {
         return true;
     }
 
-    static async getTrades(type: "user" | "ai" = "user"): Promise<Trade[]> {
+    static async getTrades(type: "user" | "ai" = "user", options?: { readOnly: true }): Promise<Trade[]> {
         const redis = getRedis();
         const keys = await this.storageKeys(type);
         const rawTrades = await redis.lrange(keys.trades, 0, 999);
@@ -281,7 +284,7 @@ export class PortfolioManager {
         // If data is empty or failed to parse into an object, try to recover from backup.
         // A valid empty backup is an intentional empty history (for example, after
         // an admin reset), not evidence of Redis corruption.
-        if (parsed.length === 0 && !keys.runId) {
+        if (parsed.length === 0 && !keys.runId && !options?.readOnly) {
             try {
                 const fs = require('fs');
                 const path = require('path');

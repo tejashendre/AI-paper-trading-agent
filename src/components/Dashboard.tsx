@@ -1,5 +1,4 @@
 "use client";
-import { AuthGate } from "./AuthGate";
 import { diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
 import CrossSectionalBook from "@/components/CrossSectionalBook";
 import Benchmarks from "@/components/Benchmarks";
@@ -289,21 +288,15 @@ function assetBookStateClass(state: string | undefined, isDark: boolean) {
   return isDark ? "text-slate-300 border-slate-700 bg-slate-900/40" : "text-slate-600 border-slate-300 bg-slate-100";
 }
 
-export function Dashboard() {
+export function Dashboard({ owner = false, onLogout }: { owner?: boolean; onLogout?: () => Promise<void> }) {
   return (
-    <AuthGate>
-      {(secret) => (
-        <DashboardErrorBoundary>
-          <DashboardContent secret={secret} />
-        </DashboardErrorBoundary>
-      )}
-    </AuthGate>
+    <DashboardErrorBoundary>
+      <DashboardContent isSpectator={!owner} onLogout={onLogout} />
+    </DashboardErrorBoundary>
   );
 }
 
-function DashboardContent({ secret }: { secret: string }) {
-  const isSpectator = secret === "SPECTATOR";
-
+function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onLogout?: () => Promise<void> }) {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [activeAsset, setActiveAsset] = useState("BTC");
   const [activeTab, setActiveTab] = useState<"Crypto" | "Forex" | "Commodities">("Crypto");
@@ -355,9 +348,9 @@ function DashboardContent({ secret }: { secret: string }) {
     return fetch(url, {
       ...init,
       cache: "no-store",
-      headers: { ...init?.headers, 'Authorization': `Bearer ${secret}` },
+      headers: { ...init?.headers, ...(isSpectator ? { Authorization: 'Bearer SPECTATOR' } : { 'X-Owner-Action': '1' }) },
     });
-  }, [secret]);
+  }, [isSpectator]);
 
   useEffect(() => {
     let cancelled = false;
@@ -630,7 +623,7 @@ function DashboardContent({ secret }: { secret: string }) {
   const runWorkerBacktest = async () => {
     setBacktesting(true);
     try {
-      const candlesRes = await fetcher(`/api/chart?interval=${chartInterval}&limit=720&asset=${activeAsset}`);
+      const candlesRes = await fetcher(`/api/chart?interval=${chartInterval}&limit=720&asset=${activeAsset}&portfolio=${viewMode}`);
       const candlesJson = await candlesRes.json();
       if (candlesJson && candlesJson.candles) {
         workerRef.current?.postMessage({
@@ -646,15 +639,6 @@ function DashboardContent({ secret }: { secret: string }) {
       setBacktesting(false);
     }
   };
-
-  if (loading) {
-    return (
-      <div className={`min-h-screen flex flex-col items-center justify-center ${isDark ? "bg-[#020204]" : "bg-[#f8fafc]"} transition-colors duration-300`}>
-        <Activity className="animate-spin text-indigo-500 mr-2 mb-4" size={32} />
-        <p className={`font-mono text-xs tracking-widest ${isDark ? "text-slate-400" : "text-[#475569]"}`}>ESTABLISHING INTEGRATED CO-OP PIPELINE...</p>
-      </div>
-    );
-  }
 
   const selectedAssetConfig = ASSETS.find(a => a.key === activeAsset) || ASSETS[0];
 
@@ -741,10 +725,12 @@ function DashboardContent({ secret }: { secret: string }) {
             >
               {isDark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
-            {!isSpectator && (
-            <button onClick={() => { localStorage.removeItem("dashboard_secret"); window.location.reload(); }} className={`px-3.5 py-2 border rounded-xl transition-all font-mono text-[10px] font-bold ${
+            {onLogout && (
+            <form action={onLogout}>
+            <button type="submit" className={`px-3.5 py-2 border rounded-xl transition-all font-mono text-[10px] font-bold ${
               isDark ? "bg-red-950/20 border-red-900/30 text-red-400 hover:bg-red-900/30" : "bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
             }`}>LOGOUT</button>
+            </form>
             )}
             <button 
               onClick={refresh} 
@@ -768,11 +754,13 @@ function DashboardContent({ secret }: { secret: string }) {
           </div>
         </div>
 
+        {loading && <p role="status" className={`text-xs ${textMuted}`}>Loading market data…</p>}
+
         {/* Dynamic Leaderboard Comparison Display */}
-        <div className={`grid grid-cols-1 md:grid-cols-3 gap-6 rounded-2xl p-5 border relative overflow-hidden ${
+        <div className={`grid grid-cols-1 ${isSpectator ? "" : "md:grid-cols-3"} gap-6 rounded-2xl p-5 border relative overflow-hidden ${
           isDark ? "bg-[#0c0c10]/40 border-[#1c1c24] shadow-2xl" : "bg-white border-[#e2e8f0] shadow-xs"
         }`}>
-          <button 
+          {!isSpectator && <button
             onClick={() => setViewMode("user")} 
             className={`text-left p-5 rounded-xl transition-all border ${
               viewMode === "user" 
@@ -793,8 +781,8 @@ function DashboardContent({ secret }: { secret: string }) {
             <p className={`text-xs font-mono mt-1 ${textMuted}`}>
               Account value: {data?.userTotalValue === null ? 'Unavailable' : humanGain.totalValue === null ? 'Loading...' : '$' + humanGain.totalValue.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
             </p>
-          </button>
-          <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
+          </button>}
+          {!isSpectator && <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
             <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
             {legacyStatusVerified && humanGain.gain !== null && swingGain.gain !== null && (
@@ -813,7 +801,7 @@ function DashboardContent({ secret }: { secret: string }) {
               </>
             )}
             {replacementActive && <p className={`mt-2 text-xs ${textSub}`}>Human lifetime and current AI run have different start dates.</p>}
-          </div>
+          </div>}
           <button 
             onClick={() => setViewMode("ai")} 
             className={`text-left p-5 rounded-xl transition-all border ${

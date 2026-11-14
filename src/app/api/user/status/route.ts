@@ -317,16 +317,16 @@ export async function GET(request: Request) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
         
-        const isSpectator = authResult.source === "spectator";
+        const isSpectator = authResult.source !== "dashboard";
 
         const redis = getRedis();
 
-        const [userPortfolio, userTrades, aiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix, tradeReviewDigest, recentTradeReviews, tradeReviewSignals] = await Promise.all([
-            PortfolioManager.getPortfolio("user"),
-            PortfolioManager.getTrades("user"),
-            PortfolioManager.getPortfolio("ai"),
-            PortfolioManager.getTrades("ai"),
-            Logger.getLogs(),
+        const [userPortfolio, userTrades, storedAiPortfolio, aiTrades, logs, swingScan, lastExitSweep, opportunitySummary, recentOpportunities, localLearningRules, feedHealthMatrix, tradeReviewDigest, recentTradeReviews, tradeReviewSignals] = await Promise.all([
+            isSpectator ? Promise.resolve({ usd: NaN, openPositions: {}, initialCapital: undefined }) : PortfolioManager.getPortfolio("user"),
+            isSpectator ? Promise.resolve([]) : PortfolioManager.getTrades("user"),
+            isSpectator ? PortfolioManager.getPortfolio("ai", { readOnly: true }) : PortfolioManager.getPortfolio("ai"),
+            PortfolioManager.getTrades("ai", isSpectator ? { readOnly: true } : undefined),
+            isSpectator ? Promise.resolve([]) : Logger.getLogs(),
             redis.get("swing:lastScan:ai"),
             redis.get("swing:lastExitSweep:ai"),
             OpportunityJournal.getSummary(),
@@ -338,6 +338,7 @@ export async function GET(request: Request) {
             TradeReviewJournal.getAssetSignals(),
         ]);
 
+        const aiPortfolio = storedAiPortfolio ?? { usd: NaN, openPositions: {}, initialCapital: undefined };
         const [userSync, aiSync] = await Promise.all([
             calculateAccountValue(userPortfolio, asset => MarketService.getCurrentPrice(asset)),
             calculateAccountValue(aiPortfolio, asset => MarketService.getCurrentPrice(asset))
@@ -488,13 +489,15 @@ export async function GET(request: Request) {
             },
             executionLedger,
             // User (Human) Data
-            portfolio: userPortfolioDisplay,
-            userPortfolio: userPortfolioDisplay,
-            userTrades: isSpectator ? userTrades.slice(0, 100) : userTrades, // Keep restored history visible while bounded
-            userEquityTrades,
-            userTotalValue: userSync.totalValue,
-            userValuations: userSync.valuations,
-            userProfitByAsset,
+            ...(!isSpectator && {
+                portfolio: userPortfolioDisplay,
+                userPortfolio: userPortfolioDisplay,
+                userTrades,
+                userEquityTrades,
+                userTotalValue: userSync.totalValue,
+                userValuations: userSync.valuations,
+                userProfitByAsset,
+            }),
 
             // AI Data
             aiPortfolio: aiPortfolioDisplay,
@@ -513,9 +516,7 @@ export async function GET(request: Request) {
 
             // Shared
             btcPrice,
-            totalValue: userSync.totalValue,
-            profitByAsset: userProfitByAsset,
-            userClosedStats,
+            ...(!isSpectator && { totalValue: userSync.totalValue, profitByAsset: userProfitByAsset, userClosedStats }),
             swingScan,
             lastExitSweep,
             opportunitySummary,
@@ -532,13 +533,13 @@ export async function GET(request: Request) {
             feedHealthMatrix,
             recentOpportunities: isSpectator ? recentOpportunities.slice(0, 8) : recentOpportunities,
             localLearningRules: isSpectator ? localLearningRules.slice(0, 8) : localLearningRules,
-            logs: isSpectator ? logs.slice(0, 20) : logs // Limit logs for spectators
+            logs
         }, {
             headers: {
                 "Cache-Control": "no-store, max-age=0",
             },
         });
     } catch (error) {
-        return NextResponse.json({ error: String(error) }, { status: 500 });
+        return NextResponse.json({ error: "Dashboard status unavailable" }, { status: 500 });
     }
 }

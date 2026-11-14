@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   const beforeText = url.searchParams.get('before');
   const beforeMs = beforeText === null ? undefined : Number(beforeText);
   const asset = url.searchParams.get("asset") || "BTC";
-  const portfolioValue = url.searchParams.get("portfolio") || "user";
+  const portfolioValue = url.searchParams.get("portfolio") || (auth.source === "dashboard" ? "user" : "ai");
   const allowedTimeframes = new Set<Timeframe>(["1m", "5m", "15m", "30m", "1h", "4h"]);
 
   if (!SUPPORTED_ASSETS[asset]) return NextResponse.json({ error: "Unsupported asset" }, { status: 400 });
@@ -32,6 +32,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unsupported portfolio" }, { status: 400 });
   }
 
+  if (portfolioValue === "user" && auth.source !== "dashboard") {
+    return NextResponse.json({ error: "Owner authorization required" }, { status: 403 });
+  }
+
   const interval = intervalValue as Timeframe;
   const limit = parsedLimit;
   const portfolioType = portfolioValue;
@@ -42,7 +46,7 @@ export async function GET(request: Request) {
     const seriesStatus = MarketService.getCandleSeriesStatus(asset, interval, candles);
     const indicators = computeAllIndicators(candles);
     
-    const trades = await PortfolioManager.getTrades(portfolioType).catch((error) => {
+    const trades = await PortfolioManager.getTrades(portfolioType, auth.source === "dashboard" ? undefined : { readOnly: true }).catch((error) => {
       console.warn(`[Chart] Trade overlays unavailable for ${portfolioType}:`, error);
       return [];
     });

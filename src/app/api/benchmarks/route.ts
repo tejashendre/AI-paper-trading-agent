@@ -49,17 +49,17 @@ export async function GET() {
     })();
 
     const [swing, book, prices, makerEntryShadow] = await Promise.all([
-      PortfolioManager.getPortfolio("ai"),
+      PortfolioManager.getPortfolio("ai", { readOnly: true }),
       loadBookPortfolio(),
       fetchTickers().catch(() => new Map()),
       loadMakerShadowSummary(),
     ]);
-    const swingEquity = markedEquity(swing);
+    const swingEquity = swing ? markedEquity(swing) : NaN;
     const bookEquity = bookEquityUsd(book, prices);
     return NextResponse.json({
       ...baselines,
       bot: {
-        swingReturnPercent: swing.initialCapital > 0 ? (swingEquity / swing.initialCapital - 1) * 100 : null,
+        swingReturnPercent: swing && swing.initialCapital > 0 ? (swingEquity / swing.initialCapital - 1) * 100 : null,
         crossSectionalReturnPercent: book.initialCapitalUsd > 0 ? (bookEquity / book.initialCapitalUsd - 1) * 100 : null,
       },
       makerEntryShadow,

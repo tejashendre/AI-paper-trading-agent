@@ -10,8 +10,8 @@ export const maxDuration = 15;
 export async function POST(request: Request) {
   const auth = verifyAuth(request);
   if (!auth.authorized) return NextResponse.json({ error: auth.error }, { status: 401 });
-  if (auth.source !== "dashboard" && auth.source !== "cron") {
-    return NextResponse.json({ error: "Admin or cron authorization is required." }, { status: 403 });
+  if (auth.source !== "dashboard") {
+    return NextResponse.json({ error: "Owner authorization is required." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);

@@ -1,101 +1,21 @@
-"use client"
-import React, { useState, useEffect } from "react";
 import { Lock } from "lucide-react";
 
-export function AuthGate({ children }: { children: (secret: string) => React.ReactNode }) {
-  const [secret, setSecret] = useState<string | null>(null);
-  const [input, setInput] = useState("");
-  const [showLogin, setShowLogin] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const adminRequested = params.has("login") || params.has("admin");
-    if (adminRequested) {
-      localStorage.removeItem("dashboard_secret");
-      setShowLogin(true);
-      return;
-    }
-
-    const saved = localStorage.getItem("dashboard_secret");
-    if (saved) {
-      setSecret(saved);
-      return;
-    }
-
-    localStorage.setItem("dashboard_secret", "SPECTATOR");
-    setSecret("SPECTATOR");
-  }, []);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (input.trim()) {
-      localStorage.setItem("dashboard_secret", input.trim());
-      setSecret(input.trim());
-    }
-  };
-
-  const handleSpectator = () => {
-    localStorage.setItem("dashboard_secret", "SPECTATOR");
-    setSecret("SPECTATOR");
-  };
-
-  if (secret) {
-    return <>{children(secret)}</>;
-  }
-
-  if (!showLogin) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#050505] p-4 text-white">
-        <div className="text-center font-mono text-xs text-neutral-500">
-          Opening read-only spectator view...
-        </div>
-      </div>
-    );
-  }
-
+export function AuthGate({ action, invalid }: { action: (form: FormData) => Promise<void>; invalid: boolean }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#050505] p-4">
-      <div className="bg-[#0f0f0f] border border-[#262626] rounded-xl p-8 max-w-md w-full shadow-2xl">
-        <div className="flex justify-center mb-6">
-          <div className="w-16 h-16 bg-neutral-900 rounded-full flex items-center justify-center border border-neutral-800 glow-orange">
-            <Lock className="text-orange-500" size={32} />
-          </div>
-        </div>
-        <h2 className="text-2xl font-bold text-center mb-2">Quant Dashboard</h2>
-        <p className="text-neutral-500 text-center mb-6">Enter your dashboard secret to access the trading terminal.</p>
-        
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <input
-              type="password"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Enter Dashboard Secret"
-              className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition"
-              autoFocus
-            />
-          </div>
-          <button
-            type="submit"
-            className="w-full bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg px-4 py-3 transition"
-          >
-            Access Terminal
+    <main className="min-h-screen flex items-center justify-center bg-[#050505] p-4 text-white">
+      <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-[#0f0f0f] p-8">
+        <Lock className="mx-auto mb-4 text-orange-500" aria-hidden />
+        <h1 className="mb-6 text-center text-2xl font-bold">Owner sign-in</h1>
+        <form action={action} className="space-y-4">
+          <label htmlFor="owner-secret" className="block text-sm">Dashboard secret</label>
+          <input id="owner-secret" name="secret" type="password" autoComplete="current-password" required
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 focus-visible:outline-orange-500" />
+          {invalid && <p role="alert" className="text-sm text-red-400">Incorrect dashboard secret.</p>}
+          <button type="submit" className="w-full rounded-lg bg-orange-700 px-4 py-3 font-medium hover:bg-orange-800">
+            Sign in
           </button>
         </form>
-
-        <div className="relative flex py-4 items-center">
-          <div className="flex-grow border-t border-[#262626]"></div>
-          <span className="flex-shrink mx-4 text-neutral-600 text-xs font-mono">OR</span>
-          <div className="flex-grow border-t border-[#262626]"></div>
-        </div>
-
-        <button
-          onClick={handleSpectator}
-          className="w-full bg-neutral-900 border border-[#262626] hover:bg-neutral-800 text-neutral-300 font-medium rounded-lg px-4 py-3 transition text-sm font-mono"
-        >
-          ENTER AS SPECTATOR (READ-ONLY)
-        </button>
       </div>
-    </div>
+    </main>
   );
 }

@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     const signal = await SignalEngine.analyze(asset);
     
     let risk = null;
-    if (signal.action === "BUY" || signal.action === "SHORT") {
+    if (auth.source === "dashboard" && (signal.action === "BUY" || signal.action === "SHORT")) {
       const currentPrice = await MarketService.getCurrentPrice(asset);
       const portfolio = await PortfolioManager.getPortfolio();
       
