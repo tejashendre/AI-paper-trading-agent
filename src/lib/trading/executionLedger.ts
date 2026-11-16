@@ -74,6 +74,18 @@ const RECENT_KEY = "execution:ledger:recent";
 const HEAD_KEY = "execution:ledger:head";
 let writeQueue: Promise<unknown> = Promise.resolve();
 
+interface VerifiedDay {
+  fingerprint: string;
+  previousHash: string | null;
+  headHash: string | null;
+  events: number;
+}
+
+// Protection re-submits completed positions on each sweep. Keep one cache for
+// the active ledger so idempotent retries do not rehash unchanged segments.
+let retryVerificationDirectory: string | undefined;
+const verifiedRetryDays = new Map<string, VerifiedDay>();
+
 function ledgerDirectory(): string {
   return process.env.EXECUTION_LEDGER_DIR || path.join(process.cwd(), "data", "execution-ledger");
 }
@@ -108,6 +120,24 @@ function dayFiles(directory: string): string[] {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function fileFingerprint(file: string): string | null {
+  try {
+    const stats = fs.statSync(file, { bigint: true });
+    return [stats.dev, stats.ino, stats.size, stats.mtimeNs, stats.ctimeNs].join(":");
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+}
+
+function dayFingerprint(directory: string, file: string): string | null {
+  const filename = path.join(directory, file);
+  const current = fileFingerprint(filename);
+  if (current === null || !file.endsWith(".gz")) return current;
+  // A published archive and its plain source must still match during rotation.
+  return current + "|" + (fileFingerprint(filename.slice(0, -3)) ?? "missing");
 }
 
 function withArchivedFallback<T>(filename: string, read: (file: string) => T): T {
@@ -567,9 +597,20 @@ export class ExecutionLedger {
   static recordOnce(input: ExecutionLedgerEventInput & { id: string }): Promise<ExecutionLedgerRecord> {
     const task = writeQueue.then(async () => {
       if (this.hasEvent(input.id, '1970-01-01')) {
-        if (!this.verify().valid) throw new Error('Existing decision proof ledger is invalid');
-        for (const file of dayFiles(ledgerDirectory())) {
-          for (const row of readDayFile(ledgerDirectory(), file).split(/\r?\n/).filter(Boolean)) {
+        const directory = ledgerDirectory();
+        if (retryVerificationDirectory !== directory) {
+          retryVerificationDirectory = directory;
+          verifiedRetryDays.clear();
+        }
+        if (!this.verifyDays(directory, undefined, verifiedRetryDays).valid) {
+          throw new Error('Existing decision proof ledger is invalid');
+        }
+        const needle = `"id":${JSON.stringify(input.id)}`;
+        for (const file of dayFiles(directory)) {
+          const contents = readDayFile(directory, file);
+          if (!contents.includes(needle)) continue;
+          for (const row of contents.split(/\r?\n/)) {
+            if (!row.includes(needle)) continue;
             const record = JSON.parse(row) as ExecutionLedgerRecord;
             if (record.id === input.id) return record;
           }
@@ -611,6 +652,14 @@ export class ExecutionLedger {
   }
 
   static verify(directory = ledgerDirectory(), throughHash?: string): ExecutionLedgerVerification {
+    return this.verifyDays(directory, throughHash);
+  }
+
+  private static verifyDays(
+    directory: string,
+    throughHash?: string,
+    verifiedDays?: Map<string, VerifiedDay>
+  ): ExecutionLedgerVerification {
     if (!fs.existsSync(directory)) {
       return { valid: true, files: 0, events: 0, headHash: null, errors: [] };
     }
@@ -621,6 +670,15 @@ export class ExecutionLedger {
     let events = 0;
 
     for (const file of files) {
+      const fingerprint = verifiedDays ? dayFingerprint(directory, file) : null;
+      const cached = verifiedDays?.get(file);
+      if (cached && cached.fingerprint === fingerprint && cached.previousHash === previousHash) {
+        previousHash = cached.headHash;
+        events += cached.events;
+        continue;
+      }
+      const previousDayHash = previousHash;
+      const priorErrorCount = errors.length;
       const rows = readDayFile(directory, file).split(/\r?\n/).filter(Boolean);
       for (let index = 0; index < rows.length; index++) {
         events++;
@@ -644,8 +702,18 @@ export class ExecutionLedger {
           errors.push(`${file}:${index + 1} invalid JSON (${error instanceof Error ? error.message : String(error)})`);
         }
       }
+      if (fingerprint !== null && verifiedDays && errors.length === priorErrorCount &&
+          fingerprint === dayFingerprint(directory, file)) {
+        verifiedDays.set(file, { fingerprint, previousHash: previousDayHash, headHash: previousHash, events: rows.length });
+      }
     }
 
+    if (verifiedDays) {
+      const currentFiles = new Set(files);
+      for (const file of verifiedDays.keys()) {
+        if (!currentFiles.has(file)) verifiedDays.delete(file);
+      }
+    }
     if (throughHash) errors.push("Requested ledger head was not found");
     return {
       valid: errors.length === 0,
