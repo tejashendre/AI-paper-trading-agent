@@ -29,3 +29,22 @@ test('shrinkage keeps a few trades from swinging allocation, and old or legacy r
   const legacy = buildLearningBook(samplesFromTrades(Array.from({ length: 6 }, () => exit('BTC', -25, 25, 1)), 'LEGACY'), NOW);
   assert.ok(!learnedRisk(legacy, 'BTC', 'LONG').paused);
 });
+
+test('learning counts a complete position once after all exit fills reconcile', () => {
+  const positionId = 'usdjpy-long';
+  const entry = { ...exit('USDJPY', 0, 25, 5), action: 'BUY', amount: 12, positionId } as Trade;
+  const partials = Array.from({ length: 11 }, (_, i) => ({
+    ...exit('USDJPY', 1, 25, 1), id: `exit-${i}`, amount: 1, positionId, isPartialExit: true,
+  }));
+  const final = { ...exit('USDJPY', 2, 25, 0), amount: 1, positionId };
+  assert.deepEqual(samplesFromTrades([entry, ...partials], 'V6'), []);
+  assert.deepEqual(samplesFromTrades([entry, ...partials.slice(1), final], 'V6'), []);
+  assert.deepEqual(samplesFromTrades([...partials, final], 'V6'), []);
+  for (const source of ['V6', 'LEGACY'] as const) {
+    const samples = samplesFromTrades([final, ...partials, partials[0], entry], source);
+    assert.equal(samples.length, 1);
+    assert.equal(samples[0].r, 13 / 25);
+    assert.equal(samples[0].closedAtMs, NOW);
+    assert.equal(samples[0].weight, source === 'V6' ? 1 : 0.5);
+  }
+});
