@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Trade } from '@/lib/types';
+import { buildPositionOutcomes } from '@/lib/trading/positionOutcomes';
 
 /**
  * Self-learning risk allocation, with no LLM.
@@ -32,18 +33,40 @@ export const PAUSE_MEAN_R = -0.3;
 const MIN_MULT = 0.5, MAX_MULT = 1.5, R_FLOOR = -3, R_CAP = 6;
 
 const exitAction = (a: Trade['action']) => a === 'SELL' || a === 'COVER' || a === 'SCALP_SELL' || a === 'SCALP_COVER';
+const riskBasis = (t: Trade) => [t.initialRiskUsdt, t.riskAmountUsd, t.maxLossUsd]
+  .find(v => typeof v === 'number' && Number.isFinite(v) && v > 0);
 
-/** Converts closed exit legs into R samples. Legs lacking a usable risk basis are ignored, never guessed. */
+/** One R sample per reconciled position, with a fallback for standalone historical exits. */
 export function samplesFromTrades(trades: readonly Trade[], source: LearningSample['source']): LearningSample[] {
+  const weight = source === 'LEGACY' ? LEGACY_WEIGHT : 1;
+  const byId = new Map<string, Trade>();
+  for (const trade of trades) {
+    if (trade && !byId.has(trade.id)) byId.set(trade.id, trade);
+  }
+  const linked: Trade[] = [];
   const out: LearningSample[] = [];
-  for (const t of trades) {
-    if (!t || !exitAction(t.action) || !Number.isFinite(t.pnl)) continue;
-    const risk = [t.initialRiskUsdt, t.riskAmountUsd, t.maxLossUsd].find(v => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  const add = (asset: string, direction: LearningSample['direction'], pnl: number, risk: number | undefined, closedAtMs: number) => {
+    if (!risk || !Number.isFinite(pnl) || !Number.isFinite(closedAtMs)) return;
+    const r = Math.max(R_FLOOR, Math.min(R_CAP, pnl / risk));
+    out.push({ asset, direction, r, closedAtMs, weight, source });
+  };
+
+  for (const t of byId.values()) {
+    if (t.positionId || t.entryTime) {
+      linked.push(t);
+      continue;
+    }
+    if (t.brainRunId || t.isPartialExit || !exitAction(t.action) || !Number.isFinite(t.pnl)) continue;
     const closedAtMs = Date.parse(t.timestamp);
-    if (!risk || !Number.isFinite(closedAtMs)) continue;
     const direction = t.direction ?? (t.action === 'COVER' || t.action === 'SCALP_COVER' ? 'SHORT' : 'LONG');
-    const r = Math.max(R_FLOOR, Math.min(R_CAP, t.pnl! / risk));
-    out.push({ asset: t.asset, direction, r, closedAtMs, weight: source === 'LEGACY' ? LEGACY_WEIGHT : 1, source });
+    add(t.asset, direction, t.pnl!, riskBasis(t), closedAtMs);
+  }
+  const { completed } = buildPositionOutcomes({ trades: linked, openPositions: [] });
+  for (const result of completed) {
+    const legs = result.legIds.map(id => byId.get(id)!);
+    if (source === 'V6' && legs.every(t => exitAction(t.action))) continue;
+    const risk = result.initialRiskUsdt ?? legs.map(riskBasis).find(v => v !== undefined);
+    add(result.asset, result.direction, result.netPnlUsdt, risk, result.closedAtMs);
   }
   return out;
 }
