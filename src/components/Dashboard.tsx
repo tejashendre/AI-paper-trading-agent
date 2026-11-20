@@ -620,6 +620,36 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
     }
   };
 
+  const [resettingHuman, setResettingHuman] = useState(false);
+  const handleHumanReset = async () => {
+    if (isSpectator || resettingHuman) return;
+    const openCount = Object.keys(data?.userPortfolio?.openPositions || {}).length;
+    const warning = openCount > 0 ? `\n\n${openCount} open Human position(s) will be discarded.` : "";
+    if (!confirm(`Reset the HUMAN portfolio only?\nAll Human trade history is wiped. The AI swing account and book are not touched.${warning}`)) return;
+    const capitalStr = window.prompt("Starting capital in USD (100 – 1,000,000):", "10000");
+    if (capitalStr === null) return;
+    const capital = Number(capitalStr.replace(/[,\s$]/g, ""));
+    if (!Number.isFinite(capital) || capital < 100 || capital > 1_000_000) {
+      alert("Capital must be between $100 and $1,000,000. Nothing was reset.");
+      return;
+    }
+    setResettingHuman(true);
+    try {
+      const res = await fetcher("/api/user/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "human", capital }),
+      });
+      const json = await res.json().catch(() => ({}));
+      alert(json.success ? json.message : `Reset failed: ${json.error || res.status}`);
+      if (json.success) await refresh();
+    } catch (e) {
+      alert(`Reset failed: ${e}`);
+    } finally {
+      setResettingHuman(false);
+    }
+  };
+
   const runWorkerBacktest = async () => {
     setBacktesting(true);
     try {
@@ -686,7 +716,7 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
               {isDark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
             {isSpectator && (
-              <a href="/owner" className={`px-3.5 py-2 border rounded-xl transition-colors font-mono text-[10px] font-bold ${bgSubCard} ${textPrimary}`}>
+              <a href="/owner?signin=1" className={`px-3.5 py-2 border rounded-xl transition-colors font-mono text-[10px] font-bold ${bgSubCard} ${textPrimary}`}>
                 Admin Login
               </a>
             )}
@@ -2535,10 +2565,20 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
         {/* Subtle Secure Admin Controls Footer */}
         <div className={`mt-12 pt-6 border-t border-dashed ${borderCol} flex flex-col sm:flex-row justify-between items-center text-[10px] font-mono gap-4`}>
           {!isSpectator && (
-          <div>
-            <button 
-              onClick={handleReset} 
-              className={`px-3 py-1.5 border rounded-lg transition-all font-bold tracking-wider hover:bg-red-950/20 hover:border-red-900/40 hover:text-red-400 ${
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <button
+              onClick={handleHumanReset}
+              disabled={resettingHuman}
+              className={`min-h-[44px] sm:min-h-0 px-3 py-1.5 border rounded-lg transition-all font-bold tracking-wider disabled:opacity-50 ${
+                isDark ? "bg-red-950/20 border-red-900/40 text-red-400 hover:bg-red-900/30" : "bg-red-50 border-red-200 text-red-700 hover:bg-red-100"
+              }`}
+              title="Wipe and restart the Human portfolio only; AI swing account and book are untouched"
+            >
+              {resettingHuman ? "RESETTING HUMAN..." : "RESET HUMAN PORTFOLIO"}
+            </button>
+            <button
+              onClick={handleReset}
+              className={`min-h-[44px] sm:min-h-0 px-3 py-1.5 border rounded-lg transition-all font-bold tracking-wider hover:bg-red-950/20 hover:border-red-900/40 hover:text-red-400 ${
                 isDark ? "bg-[#1f2937]/40 border-slate-800 text-slate-500 hover:text-red-400" : "bg-neutral-100 border-neutral-200 text-neutral-500 hover:text-red-700"
               }`}
               title="Read-only AI reset readiness preview; human state is preserved"

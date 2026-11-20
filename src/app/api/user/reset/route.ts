@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PortfolioManager } from "@/lib/portfolio";
 import { verifyAuth } from "@/lib/auth";
 import { DEFAULT_RESET_CAPITAL, resetArena } from "@/lib/admin/resetArena";
+import { resetHumanPortfolio } from "@/lib/admin/resetHuman";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,34 @@ export async function POST(request: Request) {
         );
     }
 
+    let body: { capital?: unknown; scope?: unknown } = {};
+    try {
+        body = (await request.json()) ?? {};
+    } catch {
+        // Ignore parse errors and reset with the defaults.
+    }
+
+    // scope "human" resets only the Human portfolio. It never touches the AI
+    // run, so it still works while a V6 AI epoch is active.
+    if (body.scope === "human") {
+        const release = await PortfolioManager.acquireWriteLock("user");
+        if (!release) {
+            return NextResponse.json({ success: false, error: "Human portfolio is busy; retry in a moment." }, { status: 409 });
+        }
+        try {
+            const result = await resetHumanPortfolio({ capital: body.capital, source: "ADMIN_DASHBOARD" });
+            return NextResponse.json({
+                success: true,
+                message: `Human portfolio reset to $${result.capital.toLocaleString()} USD. AI and book unchanged.`,
+                ...result,
+            });
+        } catch (error) {
+            return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
+        } finally {
+            await release();
+        }
+    }
+
     let aiRelease: (() => Promise<void>) | null = null;
     let userRelease: (() => Promise<void>) | null = null;
     try {
@@ -28,13 +57,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: false, error: "User portfolio is busy; retry after the active update completes." }, { status: 409 });
         }
 
-        let capital = DEFAULT_RESET_CAPITAL;
-        try {
-            const body = await request.json();
-            if (body && typeof body.capital === "number") capital = body.capital;
-        } catch {
-            // Ignore parse errors and reset with the default capital.
-        }
+        const capital = typeof body.capital === "number" ? body.capital : DEFAULT_RESET_CAPITAL;
 
         const result = await resetArena({ capital, source: "ADMIN_DASHBOARD" });
 

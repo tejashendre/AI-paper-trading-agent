@@ -6,7 +6,7 @@ import { createOwnerSession, matchesOwnerSecret, OWNER_COOKIE, OWNER_SESSION_SEC
 
 export async function signIn(form: FormData) {
   const secret = form.get("secret");
-  if (typeof secret !== "string" || !matchesOwnerSecret(secret.trim())) redirect("/owner?invalid=1");
+  if (typeof secret !== "string" || !matchesOwnerSecret(secret.trim())) redirect("/owner?signin=1&invalid=1");
   (await cookies()).set(OWNER_COOKIE, createOwnerSession(), {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
