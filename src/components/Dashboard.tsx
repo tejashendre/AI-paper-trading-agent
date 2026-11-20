@@ -716,7 +716,7 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
               {isDark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
             {isSpectator && (
-              <a href="/owner" className={`px-3.5 py-2 border rounded-xl transition-colors font-mono text-[10px] font-bold ${bgSubCard} ${textPrimary}`}>
+              <a href="/owner?signin=1" className={`px-3.5 py-2 border rounded-xl transition-colors font-mono text-[10px] font-bold ${bgSubCard} ${textPrimary}`}>
                 Admin Login
               </a>
             )}
