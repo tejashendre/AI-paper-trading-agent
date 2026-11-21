@@ -251,6 +251,7 @@ export function recordShadowDailyReturn(input: { state: BrainShadowState; marks:
   const values: DailyValues<number> = {};
   const identities: DailyValues<string> = {};
   for (const [asset, registration] of input.registrations) {
+    if (Math.max(registration.registeredAtMs, registration.releasedAtMs) > boundary) continue;
     const identityHash = brainEvidenceIdentity(brainDefinition(asset), registration);
     const position = snapshot.positions[asset];
     if (position && position.identityHash !== identityHash) continue;
