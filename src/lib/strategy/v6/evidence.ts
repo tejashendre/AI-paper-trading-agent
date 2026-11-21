@@ -53,7 +53,7 @@ export interface BrainEvidenceInput {
   definition: BrainDefinition; registration: BrainRegistration; outcomes: BrainOutcome[];
   dailyReturns: BrainDailyReturn[]; trials: BrainTrial[]; portfolio: BrainPortfolioEvidence;
   nowMs: number; expiresAtMs: number; previousReview?: BrainEvidenceReview; halt?: BrainHalt;
-  activatedAtMs?: number; escalation?: boolean; forwardOnlyFromFirstMark?: true;
+  activatedAtMs?: number; escalation?: boolean; forwardOnlyFromFirstMark?: true; forwardAnchorMs?: number;
 }
 export interface BrainBootstrap { low: number; high: number; mean: number; blockMs: number; blocks: number; positions: number; iterations: number; }
 export interface BrainDailyStats { days: number; effectiveDays: number; sharpePerDay: number; skew: number;
@@ -217,17 +217,17 @@ export function evaluateBrainEvidence(input: BrainEvidenceInput): BrainEvidenceR
   const firstDay = days[0]?.dayStartMs ?? Infinity;
   const markedThrough = (days.at(-1)?.dayStartMs ?? -Infinity) + DAY;
   const firstExpectedDay = Math.ceil(Math.max(r.registeredAtMs, r.releasedAtMs) / DAY) * DAY;
-  // An earlier result cannot disappear by dropping leading daily rows.
-  // Only the fixed partial launch day precedes the forward window. Outcomes
-  // closing after the latest mark are scored at the next boundary.
+  const pinnedStart = input.forwardAnchorMs ?? firstExpectedDay;
+  // Include positions crossing the fixed launch boundary. Trades closing
+  // after the latest mark enter economic scoring at the next boundary.
   const markedOutcomes = forwardOnly ? input.outcomes.filter(x =>
-    x.origin === "SHADOW" && x.openedAtMs >= firstExpectedDay && x.closedAtMs <= markedThrough) : input.outcomes;
+    x.origin === "SHADOW" && x.closedAtMs > firstExpectedDay && x.closedAtMs <= markedThrough) : input.outcomes;
   const latestClosedBoundary = Math.floor((nowMs - 60_000) / DAY) * DAY;
-  const daysOK = days.length > 0 && (!forwardOnly || (firstDay >= firstExpectedDay &&
+  const daysOK = days.length > 0 && (!forwardOnly || (pinnedStart >= firstExpectedDay && firstDay === pinnedStart &&
     markedThrough >= latestClosedBoundary)) && days.every((x, i) => exact(x) && hashValid(x.sourceHash) && x.baseRiskFraction === 0.0025 &&
     finite(x.netReturn, x.dayStartMs, x.availableAtMs) && x.netReturn > -1 && x.dayStartMs % DAY === 0 && x.availableAtMs >= x.dayStartMs + DAY && x.availableAtMs <= nowMs &&
     (i === 0 || x.dayStartMs === days[i - 1].dayStartMs + DAY)) && markedOutcomes.every(x =>
-    x.openedAtMs >= firstDay && x.closedAtMs <= days[days.length - 1].dayStartMs + DAY);
+    (x.openedAtMs >= firstDay || forwardOnly && firstDay === firstExpectedDay) && x.closedAtMs <= markedThrough);
   if (!daysOK) reasons.push("INCOMPLETE_UTC_DAILY_MARKED_RETURNS");
   const historical = deoverlap(input.outcomes.filter(x => x.origin === "HISTORICAL"));
   const forward = deoverlap(markedOutcomes.filter(x => x.origin === "SHADOW"));

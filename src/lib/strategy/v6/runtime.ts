@@ -322,6 +322,7 @@ async function review(deps:RuntimeDeps,r:BrainRegistration,asset:ConfiguredAsset
   if (previous && evidenceDay(previous.createdAtMs) === evidenceDay(now) && now - previous.createdAtMs < 3600000 && now < previous.expiresAtMs && !halt &&
       (!integrityBlocked || previous.mode === 'REDUCE_ONLY' || previous.mode === 'RETIRED')) return previous;
   const reviewed=evaluateBrainEvidence({definition:d,registration:r,nowMs:now,expiresAtMs:now+2*3600000,previousReview:previous??undefined, forwardOnlyFromFirstMark:true,
+    forwardAnchorMs:shadow.forwardAnchors?.[identity],
     outcomes, dailyReturns:shadow.dailyReturns.filter(x=>x.identityHash===identity),
     trials:await deps.redis.get<BrainTrial[]>(prefix(r.runId)+'trials')??[],
     halt:halt?{kind:halt.kind,atMs:halt.atMs,sourceHash:r.sourceHash}:undefined,

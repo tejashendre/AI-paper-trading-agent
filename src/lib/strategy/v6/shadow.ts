@@ -64,6 +64,7 @@ export interface BrainShadowState {version:'v6-shadow-1';runId:string;cash:numbe
   equity:{atMs:number;equityUsdt:number}[];dailyReturns:BrainDailyReturn[];
   dailyAnchor:{dayStartMs:number;values:DailyValues<number>;identities?:DailyValues<string>}|null;
   dailySnapshot?: DailySnapshot;
+  forwardAnchors?: Record<string, number>;
   gaps:string[];
   lastMissingBoundaryByGap?: Record<string, number>;
   legacyGapAnchorMs?: number | null;
@@ -256,6 +257,8 @@ export function recordShadowDailyReturn(input: { state: BrainShadowState; marks:
     const value = 10000 + (realized[asset] ?? 0) + (unrealized[asset] ?? 0);
     values[asset] = value;
     identities[asset] = identityHash;
+    s.forwardAnchors ??= {};
+    s.forwardAnchors[identityHash] ??= boundary;
     const previousValue = s.dailyAnchor?.values[asset];
     if (s.dailyAnchor && boundary === s.dailyAnchor.dayStartMs + DAY && previousValue !== undefined &&
         s.dailyAnchor.identities?.[asset] === identityHash) {

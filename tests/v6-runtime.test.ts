@@ -462,6 +462,7 @@ test('daily anchors use the active rotated registration and cannot inherit a pre
     await runReplacementDailyMarkSweep(h.deps);
     const first = await h.redis.get<any>(key);
     assert.equal(first.dailyAnchor.identities.BTC, identity);
+    assert.equal(first.forwardAnchors[identity], boundary);
     assert.equal(first.dailyReturns.length, 0);
 
     h.setNow(boundary + DAY + 5000);
@@ -469,6 +470,7 @@ test('daily anchors use the active rotated registration and cannot inherit a pre
     const second = await h.redis.get<any>(key);
     assert.equal(second.dailyReturns.length, 1);
     assert.equal(second.dailyReturns[0].identityHash, identity);
+    assert.equal(second.forwardAnchors[identity], boundary);
   } finally {
     process.env.V6_PAPER_GATE = 'strict';
   }

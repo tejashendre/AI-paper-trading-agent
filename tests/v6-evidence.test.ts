@@ -339,6 +339,23 @@ test('the fixed UTC launch cutoff retains losses and flags despite missing leadi
   assert.ok(evaluateBrainEvidence(missingFirstDay).reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
   assert.equal(evaluateBrainEvidence(missingFirstDay).forwardCount, 40);
 
+  const noEarlyTrades = { ...input, outcomes: input.outcomes.slice(2), forwardAnchorMs: START + DAY };
+  const laterMarks = { ...noEarlyTrades, dailyReturns: input.dailyReturns.slice(2) };
+  assert.ok(evaluateBrainEvidence(laterMarks).reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
+  laterMarks.forwardAnchorMs = laterMarks.dailyReturns[0].dayStartMs;
+  assert.equal(evaluateBrainEvidence(laterMarks).route, 'FORWARD_ONLY');
+
+  const boundary = START + DAY;
+  const spanning = { ...early, openedAtMs: boundary - 60_000, closedAtMs: boundary + 60_000,
+    availableAtMs: boundary + 60_000, funding: [{ atMs: boundary, availableAtMs: boundary, sourceHash: SOURCE,
+      actualRate: .0001, mark: 100, intervalMinutes: 480 }],
+    executions: [boundary - 60_000, boundary + 60_000].map(atMs => ({
+      ...early.executions[0], atMs, availableAtMs: atMs,
+    })) };
+  const acrossBoundary = { ...input, outcomes: [spanning, ...input.outcomes.slice(2)] };
+  assert.equal(evaluateBrainEvidence(acrossBoundary).forwardCount, 40);
+  assert.equal(evaluateBrainEvidence(acrossBoundary).route, 'FORWARD_ONLY');
+
   input.nowMs += 2 * DAY;
   input.expiresAtMs = input.nowMs + DAY;
   assert.ok(evaluateBrainEvidence(input).reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
