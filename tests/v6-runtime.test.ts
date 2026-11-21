@@ -5,7 +5,7 @@ import { evidenceInstrument } from './helpers/fakeBybitMarket';
 import { getConfiguredInstrument, validateBybitMetadata } from '../src/lib/trading/instrumentRegistry';
 import { brainEvidenceIdentity, evaluateBrainEvidence, evidenceHash, saveBrainReview, type BrainRegistration, type BrainEvidenceInput } from '../src/lib/strategy/v6/evidence';
 import { brainDefinition } from '../src/lib/strategy/v6/engine';
-import { emptyBrainShadow } from '../src/lib/strategy/v6/shadow';
+import { emptyBrainShadow, shadowIntegrityRestored } from '../src/lib/strategy/v6/shadow';
 import { collectBrainPaperOutcomes, runReplacementDailyMarkSweep, runReplacementScan, runReplacementShadowSweep, type RuntimeDeps, type RuntimeFrame } from '../src/lib/strategy/v6/runtime';
 import type { Portfolio, Trade } from '../src/lib/types';
 
@@ -355,6 +355,11 @@ test('UTC shadow valuation records a current native mark without executable dept
   const afterGap = await h.redis.get<any>(key);
   assert.equal(afterGap.dailyReturns.length, 1);
   assert.deepEqual(afterGap.gaps, ['MISSED_DAILY_MARK:' + boundary]);
+  assert.equal(shadowIntegrityRestored(afterGap, held.registration), false);
+  const overlapsGap = { ...held.registration, registeredAtMs: boundary + DAY / 2 };
+  const afterMissedBoundary = { ...held.registration, registeredAtMs: boundary + DAY + 1 };
+  assert.equal(shadowIntegrityRestored(afterGap, overlapsGap), false);
+  assert.equal(shadowIntegrityRestored(afterGap, afterMissedBoundary), true);
   assert.equal(afterGap.dailyAnchor.dayStartMs, boundary + 2 * DAY);
 });
 
@@ -467,4 +472,23 @@ test('daily anchors use the active rotated registration and cannot inherit a pre
   } finally {
     process.env.V6_PAPER_GATE = 'strict';
   }
+});
+
+test('a retained gap predating registration stays archived while a new identity starts collecting evidence', async () => {
+  const h = harness();
+  await seed(h);
+  const key = 'brain:v6:run:test-run:shadow';
+  const shadow = emptyBrainShadow('test-run');
+  const anchor = Math.floor(NOW / DAY) * DAY - DAY;
+  const historicalGap = 'MISSED_DAILY_MARK:' + (anchor - 3 * DAY);
+  shadow.gaps.push(historicalGap);
+  shadow.dailyAnchor = { dayStartMs: anchor, values: { BTC: 10000 } };
+  await h.redis.set(key, shadow);
+
+  const scan = await runReplacementScan(h.deps);
+  assert.equal(scan.assets[0].mode, 'SHADOW');
+  assert.equal(scan.shadowResearch?.missedDailyMarks, 1);
+  assert.ok(scan.assets[0].evidence.reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
+  assert.ok(!scan.assets[0].evidence.reasons.includes('UNRESOLVED_INTEGRITY_OR_ACCOUNT_BREAKER'));
+  assert.deepEqual((await h.redis.get<any>(key)).gaps, [historicalGap]);
 });

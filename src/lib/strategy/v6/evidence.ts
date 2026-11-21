@@ -53,7 +53,7 @@ export interface BrainEvidenceInput {
   definition: BrainDefinition; registration: BrainRegistration; outcomes: BrainOutcome[];
   dailyReturns: BrainDailyReturn[]; trials: BrainTrial[]; portfolio: BrainPortfolioEvidence;
   nowMs: number; expiresAtMs: number; previousReview?: BrainEvidenceReview; halt?: BrainHalt;
-  activatedAtMs?: number; escalation?: boolean;
+  activatedAtMs?: number; escalation?: boolean; forwardOnlyFromFirstMark?: true;
 }
 export interface BrainBootstrap { low: number; high: number; mean: number; blockMs: number; blocks: number; positions: number; iterations: number; }
 export interface BrainDailyStats { days: number; effectiveDays: number; sharpePerDay: number; skew: number;
@@ -213,18 +213,29 @@ export function evaluateBrainEvidence(input: BrainEvidenceInput): BrainEvidenceR
     exact(x) && coverage(x, nowMs) && (x.origin === "HISTORICAL" || x.openedAtMs >= Math.max(r.registeredAtMs, r.releasedAtMs)));
   if (!rowsOK) reasons.push("OUTCOME_IDENTITY_CLOCK_OR_COST_COVERAGE");
   const days = [...input.dailyReturns].sort((a, b) => a.dayStartMs - b.dayStartMs);
-  const daysOK = days.length > 0 && days.every((x, i) => exact(x) && hashValid(x.sourceHash) && x.baseRiskFraction === 0.0025 &&
+  const forwardOnly = input.forwardOnlyFromFirstMark === true && r.folds.length === 0;
+  const firstDay = days[0]?.dayStartMs ?? Infinity;
+  const markedThrough = (days.at(-1)?.dayStartMs ?? -Infinity) + DAY;
+  const firstExpectedDay = Math.ceil(Math.max(r.registeredAtMs, r.releasedAtMs) / DAY) * DAY;
+  // An earlier result cannot disappear by dropping leading daily rows.
+  // Only the fixed partial launch day precedes the forward window. Outcomes
+  // closing after the latest mark are scored at the next boundary.
+  const markedOutcomes = forwardOnly ? input.outcomes.filter(x =>
+    x.origin === "SHADOW" && x.openedAtMs >= firstExpectedDay && x.closedAtMs <= markedThrough) : input.outcomes;
+  const latestClosedBoundary = Math.floor((nowMs - 60_000) / DAY) * DAY;
+  const daysOK = days.length > 0 && (!forwardOnly || (firstDay >= firstExpectedDay &&
+    markedThrough >= latestClosedBoundary)) && days.every((x, i) => exact(x) && hashValid(x.sourceHash) && x.baseRiskFraction === 0.0025 &&
     finite(x.netReturn, x.dayStartMs, x.availableAtMs) && x.netReturn > -1 && x.dayStartMs % DAY === 0 && x.availableAtMs >= x.dayStartMs + DAY && x.availableAtMs <= nowMs &&
-    (i === 0 || x.dayStartMs === days[i - 1].dayStartMs + DAY)) && input.outcomes.every(x =>
-    x.openedAtMs >= days[0].dayStartMs && x.closedAtMs <= days[days.length - 1].dayStartMs + DAY);
+    (i === 0 || x.dayStartMs === days[i - 1].dayStartMs + DAY)) && markedOutcomes.every(x =>
+    x.openedAtMs >= firstDay && x.closedAtMs <= days[days.length - 1].dayStartMs + DAY);
   if (!daysOK) reasons.push("INCOMPLETE_UTC_DAILY_MARKED_RETURNS");
   const historical = deoverlap(input.outcomes.filter(x => x.origin === "HISTORICAL"));
-  const forward = deoverlap(input.outcomes.filter(x => x.origin === "SHADOW"));
+  const forward = deoverlap(markedOutcomes.filter(x => x.origin === "SHADOW"));
   const paper = deoverlap(input.outcomes.filter(x => x.origin === "PAPER"));
   const historicalStats = rowsOK ? brainNetRBootstrap(historical, maxHold) : null;
   const forwardStats = rowsOK ? brainNetRBootstrap(forward, maxHold) : null;
   const paperStats = rowsOK ? brainNetRBootstrap(paper, maxHold) : null;
-  const dailyStats = daysOK && trialsOK && historical.length + forward.length + paper.length >= 15 ? dailyStatistics(days, maxHold, input.trials.length) : null;
+  const dailyStats = daysOK && trialsOK && historical.length + forward.length + (forwardOnly ? 0 : paper.length) >= 15 ? dailyStatistics(days, maxHold, input.trials.length) : null;
   const portfolioOK = p.identityHash === identityHash && p.runId === r.runId && hashValid(p.sourceHash) && p.alignedBlockMs >= maxHold &&
     p.factorClusters.includes(d.riskBucket) && p.riskFraction === (input.escalation ? 0.005 : 0.0025) && p.equity.length >= 2 &&
     p.equity.every((x, i) => finite(x.atMs, x.equityUsdt) && x.atMs >= 0 && x.atMs <= nowMs && x.equityUsdt >= 0 && (i === 0 || x.atMs > p.equity[i - 1].atMs));

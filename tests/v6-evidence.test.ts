@@ -310,3 +310,36 @@ test("thirty tightly spaced completions do not replace thirty days of forward ob
   assert.equal(review.forwardCount, 30);
   assert.equal(review.mode, "SHADOW");
 });
+
+test('the fixed UTC launch cutoff retains losses and flags despite missing leading returns', () => {
+  const input = fixture();
+  input.forwardOnlyFromFirstMark = true;
+  input.registration.registeredAtMs = START + DAY / 2;
+  input.registration.releasedAtMs = input.registration.registeredAtMs;
+  const identityHash = brainEvidenceIdentity(input.definition, input.registration);
+  input.portfolio.identityHash = identityHash;
+  input.dailyReturns = input.dailyReturns.slice(1).map(row => ({ ...row, identityHash }));
+  input.outcomes = input.outcomes.map(row => ({ ...row, identityHash }));
+  const openedAtMs = START + DAY * .75, closedAtMs = openedAtMs + 60_000;
+  const early = { ...input.outcomes[0], positionId: 'launch-warmup', openedAtMs, closedAtMs,
+    availableAtMs: closedAtMs, funding: [], executions: [openedAtMs, closedAtMs].map(atMs => ({
+      ...input.outcomes[0].executions[0], atMs, availableAtMs: atMs,
+    })) };
+  input.outcomes.unshift(early);
+  input.nowMs = input.dailyReturns.at(-1)!.availableAtMs + 30_000;
+  input.expiresAtMs = input.nowMs + DAY;
+  input.portfolio.equity.at(-1)!.atMs = input.nowMs;
+  assert.equal(evaluateBrainEvidence(input).route, 'FORWARD_ONLY');
+  assert.equal(evaluateBrainEvidence(input).forwardCount, 40);
+
+  early.criticalViolation = true;
+  assert.equal(evaluateBrainEvidence(input).mode, 'REDUCE_ONLY');
+  early.criticalViolation = false;
+  const missingFirstDay = { ...input, dailyReturns: input.dailyReturns.slice(1) };
+  assert.ok(evaluateBrainEvidence(missingFirstDay).reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
+  assert.equal(evaluateBrainEvidence(missingFirstDay).forwardCount, 40);
+
+  input.nowMs += 2 * DAY;
+  input.expiresAtMs = input.nowMs + DAY;
+  assert.ok(evaluateBrainEvidence(input).reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
+});
