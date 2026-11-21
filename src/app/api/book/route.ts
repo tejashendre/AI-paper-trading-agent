@@ -7,6 +7,7 @@ import {
   LAST_REBALANCE_KEY,
   loadBookPortfolio,
   rebalanceStatus,
+  replacementEpochRetiresXsec,
   SHADOW_BOOK_PORTFOLIO_KEY,
 } from "@/lib/execution/bookRebalancer";
 import { describeBookRisk, describeShadowEvidence } from "@/lib/trading/coverageStatus";
@@ -44,12 +45,13 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   try {
-    const [portfolio, prices, trades, lastRebalance, equitySnapshot] = await Promise.all([
+    const [portfolio, prices, trades, lastRebalance, equitySnapshot, historicalOnly] = await Promise.all([
       loadBookPortfolio(),
       fetchTickers().catch(() => new Map()),
       getBookTrades(40).catch(() => []),
       getRedis().get<any>("xsec:lastRebalance").catch(() => null),
       getRedis().get<any>("xsec:equity").catch(() => null),
+      replacementEpochRetiresXsec(),
     ]);
     const [costVerdict, edgeVerdict] = await Promise.all([
       getRedis().get<CostVerdict>(RECONCILIATION_VERDICT_KEY).catch(() => null),
@@ -107,6 +109,7 @@ export async function GET() {
     } : null;
 
     return NextResponse.json({
+      mode: historicalOnly ? "HISTORICAL_ONLY" : "SCHEDULED",
       risk,
       shadow,
       carryShadow,
@@ -153,8 +156,7 @@ export async function GET() {
       releaseEvidence,
       recentTrades: trades,
       lastRebalance,
-      // Whether the 12h rebalance loop is keeping time, independent of state.
-      rebalanceSchedule: rebalanceStatus(Number(lastRebalanceAtMs) || null, Date.now(), DEFAULT_STRATEGY.holdHours),
+      rebalanceSchedule: rebalanceStatus(Number(lastRebalanceAtMs) || null, Date.now(), DEFAULT_STRATEGY.holdHours, historicalOnly),
       liveSnapshot: equitySnapshot,
       // Whether the cost model that every backtest number rests on is telling
       // the truth. Null until enough fills have been measured.

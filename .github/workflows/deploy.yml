@@ -96,6 +96,10 @@ jobs:
             DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             BACKUP_STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
             cd /home/ubuntu/version-6
+            if test -n "$(git clean -nd)"; then
+              echo "Untracked release files found. Inspect before deploying."
+              exit 1
+            fi
 
             echo "Creating a state-preserving pre-deploy snapshot..."
             BACKUP_DIR="data/deploy-backups/${BACKUP_STAMP}-${DEPLOY_COMMIT}"
@@ -115,7 +119,6 @@ jobs:
             echo "Materializing the exact GitHub commit..."
             git fetch --prune origin main
             git reset --hard "$DEPLOY_COMMIT"
-            git clean -fd
             test "$(git rev-parse HEAD)" = "$DEPLOY_COMMIT"
 
             echo "Rebuilding and starting application containers..."
@@ -123,20 +126,14 @@ jobs:
             export APP_DEPLOYED_AT="$DEPLOYED_AT"
             docker compose build --pull quant-dashboard
 
-            # Owner-approved storage option 1: re-seal the ledger without old
-            # per-minute scan records while no daemon is appending. It skips
-            # itself when under 50 MB would be reclaimed. Stop every writer
-            # and fail the release if compaction or verification refuses.
-            echo "Compacting the execution ledger with the writers stopped..."
-            if ! sh scripts/release-ledger-maintenance.sh "$BACKUP_DIR"; then
-              # The previous containers still exist; bring them back so exits
-              # keep running (new entries stay frozen), then fail the release.
-              echo "Ledger maintenance refused; restarting the previous release and failing this deploy."
+            echo "Verifying the execution ledger with the writers stopped..."
+            if ! sh scripts/release-ledger-maintenance.sh "$BACKUP_DIR" --verify-only; then
+              echo "Ledger verification refused; restarting the previous release..."
               docker compose start quant-dashboard swing-daemon xsec-daemon || true
               exit 1
             fi
 
-            docker compose up -d --no-build --remove-orphans
+            docker compose up -d --no-build
 
             echo "Cross-sectional daemon status (reported, not gated):"
             docker compose ps xsec-daemon || true
@@ -151,7 +148,7 @@ jobs:
             echo "Lifting the new-entry freeze after health and scan verification..."
             docker exec quant-redis redis-cli DEL swing:entryFreeze
 
-            echo "Compressing historical ledger and reclaiming unused build artifacts..."
-            PRUNE_UNTIL=all sh scripts/vps-maintenance.sh --apply
+            echo "Reclaiming unused Docker build cache older than 24 hours..."
+            docker builder prune -af --filter "until=24h"
 
             echo "Deployment completed successfully at $DEPLOY_COMMIT"

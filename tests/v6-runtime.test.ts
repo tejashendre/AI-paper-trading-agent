@@ -6,7 +6,7 @@ import { getConfiguredInstrument, validateBybitMetadata } from '../src/lib/tradi
 import { brainEvidenceIdentity, evaluateBrainEvidence, evidenceHash, saveBrainReview, type BrainRegistration, type BrainEvidenceInput } from '../src/lib/strategy/v6/evidence';
 import { brainDefinition } from '../src/lib/strategy/v6/engine';
 import { emptyBrainShadow } from '../src/lib/strategy/v6/shadow';
-import { collectBrainPaperOutcomes, runReplacementScan, runReplacementShadowSweep, type RuntimeDeps, type RuntimeFrame } from '../src/lib/strategy/v6/runtime';
+import { collectBrainPaperOutcomes, runReplacementDailyMarkSweep, runReplacementScan, runReplacementShadowSweep, type RuntimeDeps, type RuntimeFrame } from '../src/lib/strategy/v6/runtime';
 import type { Portfolio, Trade } from '../src/lib/types';
 
 // These cases pin the original evidence-only permission; the open paper gate has its own test below.
@@ -196,7 +196,9 @@ test('an ambiguous financial commit preserves its outbox and recovers without an
   h.redis.commitBrainEntry=async input=>{const receipt=await original(input);if(!crashed){crashed=true;throw new Error('fixture crash after atomic commit');}return receipt;};
   // The refused/ambiguous batch no longer aborts the scan heartbeat; it is reported per asset.
   const crashedScan=await runReplacementScan(h.deps);
-  assert.match(crashedScan.assets[0].evidence.reasons.join(' '),/ENTRY_COMMIT_REFUSED: fixture crash/);
+  assert.equal(crashedScan.assets[0].decision.code, 'ENTRY_COMMIT_REFUSED');
+  assert.match(crashedScan.assets[0].decision.reason ?? '', /fixture crash/);
+  assert.doesNotMatch(crashedScan.assets[0].evidence.reasons.join(' '), /ENTRY_COMMIT_REFUSED/);
   assert.equal((await h.redis.scanKeys('brain:v6:run:test-run:outbox:*')).length,1);
   const cash=(await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd;
   await runReplacementScan(h.deps);
@@ -208,7 +210,8 @@ test('an expired financial lease refuses the entire batch without a trade or cas
   const h=await qualified(),original=h.redis.commitBrainEntry.bind(h.redis);
   h.redis.commitBrainEntry=async input=>{await h.redis.del('portfolio:write-lock:ai');return original(input);};
   const refused=await runReplacementScan(h.deps);
-  assert.match(refused.assets[0].evidence.reasons.join(' '),/ENTRY_COMMIT_REFUSED: Stale entry lease/);
+  assert.equal(refused.assets[0].decision.code, 'ENTRY_COMMIT_REFUSED');
+  assert.match(refused.assets[0].decision.reason ?? '', /Stale entry lease/);
   assert.equal((await h.redis.get<any>('brain:v6:run:test-run:portfolio')).usd,10000);
   assert.equal((await h.redis.lrange('brain:v6:run:test-run:trades',0,-1)).length,0);
 });
@@ -290,4 +293,178 @@ test('a scan that cannot get the busy portfolio lease keeps the last published s
     assert.deepEqual(busy.haltReasons,['PORTFOLIO_BUSY']);
     assert.deepEqual(await h.redis.get('swing:lastScan:ai'),published);
   }finally{if(prior===undefined)delete process.env.BRAIN_LEASE_ATTEMPTS;else process.env.BRAIN_LEASE_ATTEMPTS=prior;}
+});
+
+test('UTC shadow valuation records a current native mark without executable depth and retains real gaps', async () => {
+  const h = harness();
+  await seed(h);
+  await runReplacementScan(h.deps);
+  const key = 'brain:v6:run:test-run:shadow';
+  const boundary = Math.floor(NOW / DAY) * DAY + DAY;
+  const state = await h.redis.get<any>(key);
+  const held = state.open.BTC;
+  state.dailyAnchor = { dayStartMs: boundary - DAY, values: { BTC: 10000 },
+    identities: { BTC: brainEvidenceIdentity(brainDefinition('BTC'), held.registration) } };
+  await h.redis.set(key, state);
+  h.deps.funding = async (_asset, from, to) => Array.from({ length: 4 }, (_, i) => boundary + (i - 3) * DAY / 3)
+    .filter(atMs => atMs > from && atMs <= to && atMs !== boundary)
+    .map(atMs => ({ atMs, actualRate: 0, mark: held.lastPrice, intervalMinutes: 480, availableAtMs: atMs, sourceHash: evidenceHash(atMs) }));
+
+  h.setNow(boundary + 5000);
+  const stale = frame(boundary + 5000, held.lastPrice + 25);
+  stale.quote!.quoteTimes.markMs = boundary - 10000;
+  stale.liquidity = null;
+  h.setFrame(stale);
+  await runReplacementShadowSweep(h.deps);
+  await runReplacementDailyMarkSweep(h.deps);
+  assert.equal((await h.redis.get<any>(key)).dailyReturns.length, 0);
+
+  h.setNow(boundary + 10000);
+  const markOnly = frame(boundary + 10000, held.lastPrice + 25);
+  markOnly.quote!.transport = 'REST';
+  markOnly.quote!.provider = 'BYBIT_LINEAR_HTTP';
+  markOnly.quote!.source = 'HTTP';
+  // A REST request starts before the exchange generates its timestamp.
+  markOnly.quote!.receivedAtMs = boundary + 9900;
+  let executionRequests = 0;
+  h.deps.executionCapture = async () => {
+    executionRequests++;
+    throw new Error('Depth unavailable');
+  };
+  const dailySweep = { ...h.deps, dailyMarkCapture: async () => {
+    h.setNow(boundary + 18000);
+    return markOnly;
+  } };
+  await runReplacementDailyMarkSweep(dailySweep);
+  assert.equal(executionRequests, 0);
+  const marked = await h.redis.get<any>(key);
+  assert.equal(marked.dailyReturns.length, 1);
+  assert.equal(marked.dailyReturns[0].dayStartMs, boundary - DAY);
+  assert.equal(marked.dailyReturns[0].availableAtMs, boundary + 18000);
+  assert.equal(marked.open.BTC.lastObservedAtMs, held.lastObservedAtMs);
+  assert.equal(marked.outcomes.length, 0);
+
+  await runReplacementDailyMarkSweep(dailySweep);
+  assert.equal((await h.redis.get<any>(key)).dailyReturns.length, 1);
+
+  marked.cash += held.plan.marginUsdt;
+  marked.open = {};
+  await h.redis.set(key, marked);
+  h.setNow(boundary + 2 * DAY + 5000);
+  await runReplacementDailyMarkSweep(h.deps);
+  const afterGap = await h.redis.get<any>(key);
+  assert.equal(afterGap.dailyReturns.length, 1);
+  assert.deepEqual(afterGap.gaps, ['MISSED_DAILY_MARK:' + boundary]);
+  assert.equal(afterGap.dailyAnchor.dayStartMs, boundary + 2 * DAY);
+});
+
+test('reports the open paper gate separately from a reduce-only evidence review', async () => {
+  process.env.V6_PAPER_GATE = 'open';
+  try {
+    const h = harness();
+    await seed(h);
+    const shadow = emptyBrainShadow('test-run');
+    shadow.gaps.push('MISSED_DAILY_MARK:' + (NOW - DAY));
+    await h.redis.set('brain:v6:run:test-run:shadow', shadow);
+    h.setNow(NOW + 61 * 60000);
+    const scan = await runReplacementScan(h.deps);
+    assert.equal(scan.assets[0].mode, 'REDUCE_ONLY');
+    assert.equal(scan.assets[0].decision.code, 'STALE_SETUP');
+    assert.deepEqual(scan.assets[0].entryPermission, { allowed: true, reason: 'PAPER_GATE_OPEN' });
+    assert.equal(scan.shadowResearch?.missedDailyMarks, 1);
+  } finally {
+    process.env.V6_PAPER_GATE = 'strict';
+  }
+});
+
+test('a boundary mark arriving after a virtual exit values the position held at midnight', async () => {
+  const h = harness();
+  await seed(h);
+  await runReplacementScan(h.deps);
+  const key = 'brain:v6:run:test-run:shadow';
+  const boundary = Math.floor(NOW / DAY) * DAY + DAY;
+  const state = await h.redis.get<any>(key);
+  const held = state.open.BTC;
+  held.openedAtMs = boundary - 30000;
+  held.lastObservedAtMs = boundary - 3000;
+  state.dailyAnchor = { dayStartMs: boundary - DAY, values: { BTC: 10000 },
+    identities: { BTC: brainEvidenceIdentity(brainDefinition('BTC'), held.registration) } };
+  await h.redis.set(key, state);
+  h.deps.funding = async () => [{
+    atMs: boundary, actualRate: .001, mark: held.lastPrice, intervalMinutes: 480,
+    availableAtMs: boundary + 2000, sourceHash: evidenceHash('midnight funding'),
+  }];
+  h.setNow(boundary + 3000);
+  const exit = frame(boundary + 3000, held.stopLoss - 20);
+  exit.quote!.quoteTimes.markMs = boundary - 1000;
+  h.setFrame(exit);
+  let releaseMark!: (mark: RuntimeFrame) => void;
+  const markResponse = new Promise<RuntimeFrame>(resolve => { releaseMark = resolve; });
+  let markStarted!: () => void;
+  const captureStarted = new Promise<void>(resolve => { markStarted = resolve; });
+  const daily = runReplacementDailyMarkSweep({ ...h.deps, dailyMarkCapture: () => {
+    markStarted();
+    return markResponse;
+  } });
+  await captureStarted;
+  await runReplacementShadowSweep(h.deps);
+  const closed = await h.redis.get<any>(key);
+  assert.equal(closed.outcomes.length, 1);
+  assert.equal(closed.dailyReturns.length, 0);
+
+  h.setNow(boundary + 8000);
+  releaseMark(frame(boundary + 8000, held.plan.entryPrice + 20));
+  await daily;
+  const marked = await h.redis.get<any>(key);
+  const expected = (20 * held.plan.quantity - held.plan.entryFeeUsdt) / 10000;
+  assert.ok(Math.abs(marked.dailyReturns[0].netReturn - expected) < 1e-10);
+  assert.equal(marked.outcomes.length, 1);
+});
+
+test('daily anchors use the active rotated registration and cannot inherit a previous identity', async () => {
+  process.env.V6_PAPER_GATE = 'open';
+  try {
+    const h = harness();
+    await seed(h);
+    await runReplacementScan(h.deps);
+    const key = 'brain:v6:run:test-run:shadow';
+    const registrationKey = 'brain:v6:run:test-run:runtimeRegistration:BTC';
+    const oldRegistration = (await h.redis.get<BrainRegistration>(registrationKey))!;
+    const oldIdentity = brainEvidenceIdentity(brainDefinition('BTC'), oldRegistration);
+    const boundary = Math.floor(NOW / DAY) * DAY + DAY;
+    await h.redis.set(key, { ...emptyBrainShadow('test-run'), dailyAnchor: {
+      dayStartMs: boundary - DAY, values: { BTC: 10000 }, identities: { BTC: oldIdentity },
+    } });
+    await h.redis.set('swing:entryFreeze', true);
+    h.deps.sourceHash = () => evidenceHash('rotated-source');
+    h.setNow(boundary - 120000);
+    await runReplacementScan(h.deps);
+
+    const registrations = await h.redis.scanKeys(registrationKey + ':*');
+    assert.equal(registrations.length, 1);
+    const current = (await h.redis.get<BrainRegistration>(registrations[0]))!;
+    const identity = brainEvidenceIdentity(brainDefinition('BTC'), current);
+    assert.notEqual(identity, oldIdentity);
+    await h.redis.set(key, { ...emptyBrainShadow('test-run'), dailyAnchor: {
+      dayStartMs: boundary - DAY, values: { BTC: 10000 }, identities: { BTC: oldIdentity },
+    } });
+    h.setNow(boundary + 5000);
+    const quiet = frame(boundary + 5000);
+    quiet.bars.h4.at(-1)!.close = quiet.bars.h4.at(-2)!.close;
+    h.setFrame(quiet);
+    await runReplacementScan(h.deps);
+    assert.equal((await h.redis.get<any>(key)).dailyAnchor.dayStartMs, boundary - DAY);
+    await runReplacementDailyMarkSweep(h.deps);
+    const first = await h.redis.get<any>(key);
+    assert.equal(first.dailyAnchor.identities.BTC, identity);
+    assert.equal(first.dailyReturns.length, 0);
+
+    h.setNow(boundary + DAY + 5000);
+    await runReplacementDailyMarkSweep(h.deps);
+    const second = await h.redis.get<any>(key);
+    assert.equal(second.dailyReturns.length, 1);
+    assert.equal(second.dailyReturns[0].identityHash, identity);
+  } finally {
+    process.env.V6_PAPER_GATE = 'strict';
+  }
 });

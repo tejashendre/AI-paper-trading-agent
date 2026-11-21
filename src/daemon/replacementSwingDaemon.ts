@@ -6,7 +6,7 @@ import { liveFundingDeps } from '../lib/data/bybitPublic';
 import { WebsocketDataMesh } from './websocketDataMesh';
 import { consumeSwingScanRequest } from '../lib/trading/scanControl';
 import { persistBrainPortfolioMutation, settleAndPersistFunding, settleOpenPositionFunding, sweepSwingExits } from '../lib/execution/swingLifecycle';
-import { pruneBrainDecisionReferences, BRAIN_SCAN_INTERVAL_MS, BRAIN_WATCHDOG_INTERVAL_MS, refreshBrainProtectiveBreakers, runReplacementScan, runReplacementShadowSweep } from '../lib/strategy/v6/runtime';
+import { pruneBrainDecisionReferences, BRAIN_SCAN_INTERVAL_MS, BRAIN_WATCHDOG_INTERVAL_MS, refreshBrainProtectiveBreakers, runReplacementDailyMarkSweep, runReplacementScan, runReplacementShadowSweep } from '../lib/strategy/v6/runtime';
 import type { BrainBreakerLatch } from '../lib/strategy/v6/risk';
 import { expectedFundingTimes,quantityHeldAt,type FundingDeps } from '../lib/trading/executionCostModel';
 import type { Portfolio } from '../lib/types';
@@ -83,10 +83,18 @@ async function scan(){
   try{await runReplacementScan();}catch(error){await Logger.error(`[V6 scan] ${error instanceof Error?error.message:String(error)}`);}
   finally{scanning=false;}
 }
+let markingShadow = false;
 async function observe(){
   if(observing)return;observing=true;
   try{await runReplacementShadowSweep();}catch(error){await Logger.warn(`[V6 shadow] ${error instanceof Error?error.message:String(error)}`);}
   finally{observing=false;}
+}
+async function markShadow() {
+  if (markingShadow) return;
+  markingShadow = true;
+  try { await runReplacementDailyMarkSweep(); }
+  catch (error) { await Logger.warn(`[V6 daily mark] ${error instanceof Error ? error.message : String(error)}`); }
+  finally { markingShadow = false; }
 }
 export function startReplacementSwingDaemon(){
   const mesh=new WebsocketDataMesh();mesh.start();
@@ -95,7 +103,7 @@ export function startReplacementSwingDaemon(){
   const prune=()=>pruneBrainDecisionReferences().then(n=>{if(n)console.log(`[V6] pruned ${n} expired decision references`);}).catch(error=>Logger.warn(`[V6 prune] ${String(error)}`));
   void prune();
   const timers=[setInterval(()=>void scan(),BRAIN_SCAN_INTERVAL_MS),setInterval(()=>void runReplacementWatchdog(),BRAIN_WATCHDOG_INTERVAL_MS),
-    setInterval(()=>void observe(),BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void runReplacementFunding(),60000),setInterval(()=>{
+    setInterval(() => { void observe(); void markShadow(); }, BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void runReplacementFunding(),60000),setInterval(()=>{
       if(scanning)return;void consumeSwingScanRequest().then(request=>request?scan():undefined).catch(error=>Logger.warn(`[V6 scan control] ${String(error)}`));
     },BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void prune(),6*3600000)];
   const shutdown=()=>{for(const timer of timers)clearInterval(timer);mesh.stop();};

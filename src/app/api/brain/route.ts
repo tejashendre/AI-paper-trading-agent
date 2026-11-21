@@ -36,6 +36,9 @@ export async function GET(_request: Request) {
     const age = Date.now() - (number(runtime.generatedAtMs) ?? 0);
     const fresh = Boolean(validRun && runtime.version === 'v6' && runtime.runId === validRun.runId && age >= 0 && age <= 180000);
     const portfolioAvailable = rawPortfolio !== null && number(portfolio.usd) !== null;
+    const research = record(runtime.shadowResearch);
+    const lastDailyReturn = count(research.lastDailyReturnDayMs);
+    const date = lastDailyReturn === null ? null : new Date(lastDailyReturn);
     const rows = fresh && Array.isArray(runtime.assets) ? runtime.assets : [];
     const mode = !validRun ? 'RESET_REQUIRED' : !portfolioAvailable || !fresh ? 'UNAVAILABLE' :
       runtimeModes.includes(runtime.mode) ? runtime.mode : 'UNAVAILABLE';
@@ -54,10 +57,16 @@ export async function GET(_request: Request) {
       risk: { sharedCapitalUsdt: 10000, initialRiskFraction: 0.0025, escalatedRiskFraction: 0.005,
         escalationRequiresEvidence: true, drawdownStopFraction: 0.1, aggregateOpenRiskFraction: 0.02, factorRiskFraction: 0.01,
         haltReasons: fresh ? reasons(runtime.haltReasons) : [!validRun ? 'RESET_REQUIRED' : !portfolioAvailable ? 'RUN_PORTFOLIO_UNAVAILABLE' : 'RUNTIME_TELEMETRY_UNAVAILABLE'] },
+      shadowResearch: fresh && count(research.completed) !== null ? {
+        completed: count(research.completed), flagged: count(research.flagged), open: count(research.open),
+        pendingFunding: count(research.pendingFunding), missedDailyMarks: count(research.missedDailyMarks),
+        lastDailyReturnDay: date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null,
+      } : null,
       assets: CONFIGURED_ASSETS.map(asset => {
         const definition = brainDefinition(asset);
         const matches = rows.filter((row: any) => row?.asset === asset);
         const row = record(matches.length === 1 ? matches[0] : null), evidence = record(row.evidence), decision = record(row.decision);
+        const permission = record(row.entryPermission), permissionReason = text(permission.reason);
         // Reject mismatched definitions instead of attributing older evidence to today's brain.
         const identityMatches = row.strategyId === definition.strategyId && row.configHash === definition.configHash;
         const available = fresh && matches.length === 1 && identityMatches && portfolioAvailable;
@@ -69,6 +78,8 @@ export async function GET(_request: Request) {
           evidence: { historicalCount: available ? count(evidence.historicalCount) : null, forwardCount: available ? count(evidence.forwardCount) : null,
             paperCount: available ? count(evidence.paperCount) : null, nextEligibleAtMs: available ? number(evidence.nextEligibleAtMs) : null,
             reasons: available ? reasons(evidence.reasons) : [!validRun ? 'RESET_REQUIRED' : 'ASSET_TELEMETRY_UNAVAILABLE'] },
+          entryPermission: available && typeof permission.allowed === 'boolean' && permissionReason
+            ? { allowed: permission.allowed, reason: permissionReason } : null,
           decision: available ? { status: text(decision.status), code: text(decision.code), reason: text(decision.reason) } : null };
       }),
       // What the bot has learned from its own closed trades, per asset and direction.

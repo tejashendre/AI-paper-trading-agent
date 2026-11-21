@@ -63,6 +63,7 @@ interface BookResponse {
   exposure: { openPositions: number; longs: number; shorts: number; grossExposure: number; netExposure: number };
   positions: BookPosition[];
   lastRebalance: { at?: string; turnover?: number; executed?: number; reason?: string; universeSize?: number } | null;
+  mode?: "HISTORICAL_ONLY" | "SCHEDULED";
   rebalanceSchedule?: { lastAtMs: number | null; nextDueAtMs: number | null; overdue: boolean };
   costModel: CostVerdict | null;
   edgeCheck: EdgeCheck | null;
@@ -165,6 +166,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
     if (v >= 1e3) return `$${(v / 1e3).toFixed(0)}k`;
     return `$${v.toFixed(0)}`;
   };
+  const historicalOnly = data.mode === "HISTORICAL_ONLY";
   const longs = positions.filter((p) => p.side === "LONG");
   const shorts = positions.filter((p) => p.side === "SHORT");
   const shown = expanded ? positions : positions.slice(0, 6);
@@ -174,7 +176,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className={`text-[9px] font-bold font-mono ${textMuted} uppercase tracking-wider`}>Cross-Sectional Book</div>
-          {plainLanguage ? (
+          {historicalOnly ? <p className={`text-xs mt-1 ${textPrimary}`}>Scheduled rebalances have ended. Any retained positions are valued at current prices.</p> : plainLanguage ? (
             <>
               <p className={`text-xs font-mono mt-1 ${textPrimary}`}>
                 Every {strategy.holdHours} hours the bot scores up to {strategy.universeCap} crypto markets on how
@@ -202,11 +204,11 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
             ? isDark ? "border-amber-900/50 text-amber-300 bg-amber-950/25" : "border-amber-200 text-amber-700 bg-amber-50"
             : isDark ? "border-emerald-900/40 text-emerald-300 bg-emerald-950/20" : "border-emerald-200 text-emerald-700 bg-emerald-50"
         }`}>
-          {data.risk && data.risk.state !== "ACTIVE" ? data.risk.state.replace("_", " ") : exposure.openPositions > 0 ? "ACTIVE" : "FLAT"}
+          {historicalOnly ? "HISTORICAL ONLY" : data.risk && data.risk.state !== "ACTIVE" ? data.risk.state.replace("_", " ") : exposure.openPositions > 0 ? "ACTIVE" : "FLAT"}
         </span>
       </div>
 
-      {data.risk && data.risk.state !== "ACTIVE" && (
+      {!historicalOnly && data.risk && data.risk.state !== "ACTIVE" && (
         <div className={`mt-3 p-2.5 rounded-lg border ${isDark ? "border-amber-900/50 bg-amber-950/20" : "border-amber-200 bg-amber-50"}`}>
           <div className={`text-[10px] font-bold font-mono ${textPrimary}`}>{RISK_STATE_TEXT[data.risk.state]}</div>
           <div className={`grid grid-cols-2 sm:grid-cols-4 gap-1 mt-1.5 text-[8px] font-mono ${textMuted}`}>
@@ -223,7 +225,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
-      {data.shadow && (
+      {!historicalOnly && data.shadow && (
         <div className={`mt-2 p-2.5 rounded-lg border border-dashed ${bgSub}`}>
           <div className={`text-[9px] font-bold font-mono uppercase ${textMuted}`}>Shadow book (no capital)</div>
           <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>{data.shadow.explanation}</p>
@@ -236,7 +238,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
-      {data.carryShadow && (
+      {!historicalOnly && data.carryShadow && (
         <div className={`mt-2 p-2.5 rounded-lg border border-dashed ${bgSub}`}>
           <div className={`text-[9px] font-bold font-mono uppercase ${textMuted}`}>Research variant: carry with momentum (no capital)</div>
           <p className={`text-[9px] leading-relaxed mt-1 ${textMuted}`}>
@@ -320,7 +322,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
-      {data.risk?.state === 'SHADOW' && data.releaseEvidence && (
+      {!historicalOnly && data.risk?.state === 'SHADOW' && data.releaseEvidence && (
         <div className={`mt-2 p-2 rounded-lg border ${bgSub}`}>
           <div className={`text-[9px] font-mono ${textPrimary}`}>Shadow release progress</div>
           <p className={`text-[10px] mt-1 ${textMuted}`}>
@@ -333,7 +335,7 @@ export default function CrossSectionalBook({ isDark, plainLanguage = false }: { 
         </div>
       )}
 
-      {data.edgeCheck && (
+      {!historicalOnly && data.edgeCheck && (
         <div className={`mt-2 p-2 rounded-lg border ${
           data.edgeCheck.verdict === "EDGE_GONE"
             ? (isDark ? "border-rose-900/50 bg-rose-950/20" : "border-rose-200 bg-rose-50")
