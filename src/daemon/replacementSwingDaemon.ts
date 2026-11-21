@@ -96,23 +96,72 @@ async function markShadow() {
   catch (error) { await Logger.warn(`[V6 daily mark] ${error instanceof Error ? error.message : String(error)}`); }
   finally { markingShadow = false; }
 }
-export function startReplacementSwingDaemon(){
-  const mesh=new WebsocketDataMesh();mesh.start();
+export function createSwingDrain() {
+  const pending = new Set<Promise<void>>();
+  let stopping = false;
+  return {
+    run(work: () => Promise<unknown>) {
+      if (stopping) return;
+      const task = Promise.resolve().then(work).then(() => {}, error => {
+        console.error('[V6 daemon job]', error instanceof Error ? error.message : String(error));
+      });
+      pending.add(task);
+      void task.then(() => pending.delete(task));
+    },
+    async stop() {
+      stopping = true;
+      await Promise.all(pending);
+    },
+  };
+}
+
+export function startReplacementSwingDaemon() {
+  const mesh = new WebsocketDataMesh();
+  const drain = createSwingDrain();
+  mesh.start();
   console.log('Starting replacement v6 swing daemon: 60-second scans and 5-second protection.');
-  void runReplacementWatchdog();void scan();void runReplacementFunding();
-  const prune=()=>pruneBrainDecisionReferences().then(n=>{if(n)console.log(`[V6] pruned ${n} expired decision references`);}).catch(error=>Logger.warn(`[V6 prune] ${String(error)}`));
-  void prune();
-  const timers=[setInterval(()=>void scan(),BRAIN_SCAN_INTERVAL_MS),setInterval(()=>void runReplacementWatchdog(),BRAIN_WATCHDOG_INTERVAL_MS),
-    setInterval(() => { void observe(); void markShadow(); }, BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void runReplacementFunding(),60000),setInterval(()=>{
-      if(scanning)return;void consumeSwingScanRequest().then(request=>request?scan():undefined).catch(error=>Logger.warn(`[V6 scan control] ${String(error)}`));
-    },BRAIN_WATCHDOG_INTERVAL_MS),setInterval(()=>void prune(),6*3600000)];
-  const shutdown=()=>{for(const timer of timers)clearInterval(timer);mesh.stop();};
-  process.once('SIGINT',shutdown);process.once('SIGTERM',shutdown);return shutdown;
+
+  const prune = () => pruneBrainDecisionReferences().then(n => {
+    if (n) console.log(`[V6] pruned ${n} expired decision references`);
+  });
+  const scanOnRequest = async () => {
+    if (!scanning && await consumeSwingScanRequest()) await scan();
+  };
+  for (const work of [runReplacementWatchdog, scan, runReplacementFunding, markShadow, prune]) drain.run(work);
+  const timers = [
+    setInterval(() => drain.run(scan), BRAIN_SCAN_INTERVAL_MS),
+    setInterval(() => drain.run(runReplacementWatchdog), BRAIN_WATCHDOG_INTERVAL_MS),
+    setInterval(() => { drain.run(observe); drain.run(markShadow); }, BRAIN_WATCHDOG_INTERVAL_MS),
+    setInterval(() => drain.run(runReplacementFunding), 60000),
+    setInterval(() => drain.run(scanOnRequest), BRAIN_WATCHDOG_INTERVAL_MS),
+    setInterval(() => drain.run(prune), 6 * 3600000),
+  ];
+  let shutdown: Promise<void> | undefined;
+  return () => shutdown ??= (async () => {
+    for (const timer of timers) clearInterval(timer);
+    await drain.stop();
+    mesh.stop();
+  })();
 }
 if(require.main===module){
   // A transient Redis or network rejection must not kill the 24/7 daemon;
   // every loop already guards itself, so log and keep running.
   process.on('unhandledRejection',reason=>console.error('[V6 daemon] unhandled rejection:',reason instanceof Error?reason.message:reason));
   process.on('uncaughtException',error=>console.error('[V6 daemon] uncaught exception:',error.message));
-  startReplacementSwingDaemon();
+  const stop = startReplacementSwingDaemon();
+  let terminating = false;
+  const shutdown = () => {
+    if (terminating) return;
+    terminating = true;
+    console.log('[V6] Draining active jobs before shutdown.');
+    void stop().then(() => {
+      console.log('[V6] Active jobs drained.');
+      process.exit(0);
+    }, error => {
+      console.error('[V6] Shutdown failed:', error);
+      process.exit(1);
+    });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

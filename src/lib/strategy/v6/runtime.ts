@@ -19,7 +19,7 @@ import { brainEvidenceIdentity, brainPermission, evaluateBrainEvidence, evidence
 import { allocateBrainRisk, brainVolatilityScale, evaluateBrainBreakers, sizeBrainOrder, type BrainBreakerLatch, type BrainOrderPlan, type BrainRiskOutcome } from './risk';
 import { paperGateOpen, paperGatePermission } from './paperMode';
 import { buildLearningBook, learnedRisk, readLegacyTradeBackup, samplesFromTrades, type LearningBook } from './learning';
-import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, recordShadowDailyReturn, shadowDailyBoundary, shadowEquity, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame, type ShadowMarkFrame } from './shadow';
+import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, recordShadowDailyReturn, shadowDailyBoundary, shadowEquity, shadowIntegrityRestored, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame, type ShadowMarkFrame } from './shadow';
 
 export const BRAIN_SCAN_INTERVAL_MS=60000,BRAIN_WATCHDOG_INTERVAL_MS=5000;
 /** Decision references only point at on-disk tapes; nothing reads them back, so they expire. */
@@ -314,14 +314,20 @@ const ACCOUNT_ENTRY_BLOCK = 'ACCOUNT_NOT_READY_MARKS_FREEZE_OUTBOX_OR_FUNDING';
 
 async function review(deps:RuntimeDeps,r:BrainRegistration,asset:ConfiguredAsset,shadow:BrainShadowState,latches:BrainBreakerLatch[],paper:BrainOutcome[],now:number,leaseToken:string):Promise<BrainEvidenceReview|null>{
   const d=brainDefinition(asset),previous=await readBrainReview(deps.redis,d,r);
-  if(previous&&now-previous.createdAtMs<3600000&&now<previous.expiresAtMs&&!relevantLatch(asset,latches))return previous;
-  const identity=brainEvidenceIdentity(d,r),halt=relevantLatch(asset,latches);
-  const reviewed=evaluateBrainEvidence({definition:d,registration:r,nowMs:now,expiresAtMs:now+2*3600000,previousReview:previous??undefined,
-    outcomes:[...shadow.outcomes,...paper].filter(x=>x.identityHash===identity),dailyReturns:shadow.dailyReturns.filter(x=>x.identityHash===identity),
+  const identity = brainEvidenceIdentity(d, r), halt = relevantLatch(asset, latches);
+  const outcomes = [...shadow.outcomes, ...paper].filter(row => row.identityHash === identity);
+  const integrityRestored = shadowIntegrityRestored(shadow, r);
+  const integrityBlocked = !integrityRestored || outcomes.some(row => row.criticalViolation || row.netR < -1.5);
+  const evidenceDay = (clock: number) => Math.floor((clock - 60_000) / 86_400_000);
+  if (previous && evidenceDay(previous.createdAtMs) === evidenceDay(now) && now - previous.createdAtMs < 3600000 && now < previous.expiresAtMs && !halt &&
+      (!integrityBlocked || previous.mode === 'REDUCE_ONLY' || previous.mode === 'RETIRED')) return previous;
+  const reviewed=evaluateBrainEvidence({definition:d,registration:r,nowMs:now,expiresAtMs:now+2*3600000,previousReview:previous??undefined, forwardOnlyFromFirstMark:true,
+    forwardAnchorMs:shadow.forwardAnchors?.[identity],
+    outcomes, dailyReturns:shadow.dailyReturns.filter(x=>x.identityHash===identity),
     trials:await deps.redis.get<BrainTrial[]>(prefix(r.runId)+'trials')??[],
     halt:halt?{kind:halt.kind,atMs:halt.atMs,sourceHash:r.sourceHash}:undefined,
     portfolio:{identityHash:identity,runId:r.runId,sourceHash:evidenceHash(shadow),riskFraction:.0025,alignedBlockMs:d.parameters.maxHoldMs,
-      factorClusters:['crypto','fx','metals','oil'],equity:shadow.equity,unresolvedBreaker:!!halt&&halt.kind!=='STREAK',integrityRestored:shadow.pending.length===0&&shadow.gaps.length===0}});
+      factorClusters:['crypto','fx','metals','oil'],equity:shadow.equity,unresolvedBreaker:!!halt&&halt.kind!=='STREAK',integrityRestored}});
   // Prepare the existing proof writer against captured bytes, then publish its
   // immutable proof and latest pointer together under the financial lease.
   const expected=await deps.redis.readRaw([ACTIVE]),writes:Record<string,string>={};

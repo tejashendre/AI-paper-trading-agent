@@ -59,7 +59,9 @@ services:
         APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
         APP_DEPLOYED_AT: ${APP_DEPLOYED_AT:-unknown}
     container_name: quant-swing-daemon
-    command: npm run daemon:swing
+    command: ["node", "--import", "/usr/local/lib/node_modules/tsx/dist/loader.mjs", "src/daemon/replacementSwingDaemon.ts"]
+    init: true
+    stop_grace_period: 90s
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379

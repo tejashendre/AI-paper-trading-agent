@@ -64,10 +64,24 @@ export interface BrainShadowState {version:'v6-shadow-1';runId:string;cash:numbe
   equity:{atMs:number;equityUsdt:number}[];dailyReturns:BrainDailyReturn[];
   dailyAnchor:{dayStartMs:number;values:DailyValues<number>;identities?:DailyValues<string>}|null;
   dailySnapshot?: DailySnapshot;
-  gaps:string[]}
+  forwardAnchors?: Record<string, number>;
+  gaps:string[];
+  lastMissingBoundaryByGap?: Record<string, number>;
+  legacyGapAnchorMs?: number | null;
+}
 export function emptyBrainShadow(runId:string):BrainShadowState {
   return {version:'v6-shadow-1',runId,cash:10000,peak:10000,open:{},seen:[],pending:[],outcomes:[],realizedByAsset:{},equity:[],dailyReturns:[],dailyAnchor:null,gaps:[]};
 }
+export function shadowIntegrityRestored(state: BrainShadowState, registration: BrainRegistration): boolean {
+  // Old gap records were written only when a valid anchor resumed. Preserve
+  // that anchor as the upper bound when the old records lack an end timestamp.
+  const historicalAnchor = state.legacyGapAnchorMs === undefined ? state.dailyAnchor?.dayStartMs : state.legacyGapAnchorMs;
+  return state.pending.length === 0 && state.gaps.every(gap => {
+    const lastMissing = state.lastMissingBoundaryByGap?.[gap] ?? historicalAnchor;
+    return typeof lastMissing === 'number' && Number.isFinite(lastMissing) && lastMissing < registration.registeredAtMs;
+  });
+}
+
 export function shadowExecution(frame:ShadowFrame,atMs:number,direction:'LONG'|'SHORT',quantity:number,price:number,stop:number):BrainExecutionObservation|null {
   const q=frame.quote,l=frame.liquidity;
   if(!q||!l||![q.bid,q.ask,l.observedAtMs,frame.availableAtMs,q.receivedAtMs].every(Number.isFinite)||
@@ -237,12 +251,15 @@ export function recordShadowDailyReturn(input: { state: BrainShadowState; marks:
   const values: DailyValues<number> = {};
   const identities: DailyValues<string> = {};
   for (const [asset, registration] of input.registrations) {
+    if (Math.max(registration.registeredAtMs, registration.releasedAtMs) > boundary) continue;
     const identityHash = brainEvidenceIdentity(brainDefinition(asset), registration);
     const position = snapshot.positions[asset];
     if (position && position.identityHash !== identityHash) continue;
     const value = 10000 + (realized[asset] ?? 0) + (unrealized[asset] ?? 0);
     values[asset] = value;
     identities[asset] = identityHash;
+    s.forwardAnchors ??= {};
+    s.forwardAnchors[identityHash] ??= boundary;
     const previousValue = s.dailyAnchor?.values[asset];
     if (s.dailyAnchor && boundary === s.dailyAnchor.dayStartMs + DAY && previousValue !== undefined &&
         s.dailyAnchor.identities?.[asset] === identityHash) {
@@ -253,8 +270,14 @@ export function recordShadowDailyReturn(input: { state: BrainShadowState; marks:
       });
     }
   }
+  if (s.legacyGapAnchorMs === undefined && s.gaps.some(gap => !Object.hasOwn(s.lastMissingBoundaryByGap ?? {}, gap))) {
+    s.legacyGapAnchorMs = s.dailyAnchor?.dayStartMs ?? null;
+  }
   if (s.dailyAnchor && boundary > s.dailyAnchor.dayStartMs + DAY) {
-    s.gaps.push(`MISSED_DAILY_MARK:${s.dailyAnchor.dayStartMs}`);
+    const gap = `MISSED_DAILY_MARK:${s.dailyAnchor.dayStartMs}`;
+    s.gaps.push(gap);
+    s.lastMissingBoundaryByGap ??= {};
+    s.lastMissingBoundaryByGap[gap] = boundary - DAY;
   }
   s.dailyAnchor = { dayStartMs: boundary, values, identities };
   delete s.dailySnapshot;

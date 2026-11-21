@@ -5,7 +5,7 @@ import { evidenceInstrument } from './helpers/fakeBybitMarket';
 import { getConfiguredInstrument, validateBybitMetadata } from '../src/lib/trading/instrumentRegistry';
 import { brainEvidenceIdentity, evaluateBrainEvidence, evidenceHash, saveBrainReview, type BrainRegistration, type BrainEvidenceInput } from '../src/lib/strategy/v6/evidence';
 import { brainDefinition } from '../src/lib/strategy/v6/engine';
-import { emptyBrainShadow } from '../src/lib/strategy/v6/shadow';
+import { emptyBrainShadow, recordShadowDailyReturn, shadowIntegrityRestored } from '../src/lib/strategy/v6/shadow';
 import { collectBrainPaperOutcomes, runReplacementDailyMarkSweep, runReplacementScan, runReplacementShadowSweep, type RuntimeDeps, type RuntimeFrame } from '../src/lib/strategy/v6/runtime';
 import type { Portfolio, Trade } from '../src/lib/types';
 
@@ -355,6 +355,11 @@ test('UTC shadow valuation records a current native mark without executable dept
   const afterGap = await h.redis.get<any>(key);
   assert.equal(afterGap.dailyReturns.length, 1);
   assert.deepEqual(afterGap.gaps, ['MISSED_DAILY_MARK:' + boundary]);
+  assert.equal(shadowIntegrityRestored(afterGap, held.registration), false);
+  const overlapsGap = { ...held.registration, registeredAtMs: boundary + DAY / 2 };
+  const afterMissedBoundary = { ...held.registration, registeredAtMs: boundary + DAY + 1 };
+  assert.equal(shadowIntegrityRestored(afterGap, overlapsGap), false);
+  assert.equal(shadowIntegrityRestored(afterGap, afterMissedBoundary), true);
   assert.equal(afterGap.dailyAnchor.dayStartMs, boundary + 2 * DAY);
 });
 
@@ -457,6 +462,7 @@ test('daily anchors use the active rotated registration and cannot inherit a pre
     await runReplacementDailyMarkSweep(h.deps);
     const first = await h.redis.get<any>(key);
     assert.equal(first.dailyAnchor.identities.BTC, identity);
+    assert.equal(first.forwardAnchors[identity], boundary);
     assert.equal(first.dailyReturns.length, 0);
 
     h.setNow(boundary + DAY + 5000);
@@ -464,7 +470,43 @@ test('daily anchors use the active rotated registration and cannot inherit a pre
     const second = await h.redis.get<any>(key);
     assert.equal(second.dailyReturns.length, 1);
     assert.equal(second.dailyReturns[0].identityHash, identity);
+    assert.equal(second.forwardAnchors[identity], boundary);
   } finally {
     process.env.V6_PAPER_GATE = 'strict';
   }
+});
+
+test('a retained gap predating registration stays archived while a new identity starts collecting evidence', async () => {
+  const h = harness();
+  await seed(h);
+  const key = 'brain:v6:run:test-run:shadow';
+  const shadow = emptyBrainShadow('test-run');
+  const anchor = Math.floor(NOW / DAY) * DAY - DAY;
+  const historicalGap = 'MISSED_DAILY_MARK:' + (anchor - 3 * DAY);
+  shadow.gaps.push(historicalGap);
+  shadow.dailyAnchor = { dayStartMs: anchor, values: { BTC: 10000 } };
+  await h.redis.set(key, shadow);
+
+  const scan = await runReplacementScan(h.deps);
+  assert.equal(scan.assets[0].mode, 'SHADOW');
+  assert.equal(scan.shadowResearch?.missedDailyMarks, 1);
+  assert.ok(scan.assets[0].evidence.reasons.includes('INCOMPLETE_UTC_DAILY_MARKED_RETURNS'));
+  assert.ok(!scan.assets[0].evidence.reasons.includes('UNRESOLVED_INTEGRITY_OR_ACCOUNT_BREAKER'));
+  assert.deepEqual((await h.redis.get<any>(key)).gaps, [historicalGap]);
+});
+
+test('a strategy registered after midnight waits for its first complete UTC boundary', async () => {
+  const h = harness();
+  await seed(h);
+  await runReplacementScan(h.deps);
+  const existing = (await h.redis.get<BrainRegistration>('brain:v6:run:test-run:runtimeRegistration:BTC'))!;
+  const boundary = Math.floor(NOW / DAY) * DAY + DAY;
+  const registration = { ...existing, registeredAtMs: boundary + 1000, releasedAtMs: boundary + 1000,
+    firstEvaluationAtMs: boundary + 1000 };
+  const registrations = new Map([['BTC', registration]] as const);
+  const identity = brainEvidenceIdentity(brainDefinition('BTC'), registration);
+  const first = recordShadowDailyReturn({ state: emptyBrainShadow('test-run'), marks: [], registrations, nowMs: boundary + 2000 });
+  assert.equal(first.forwardAnchors?.[identity], undefined);
+  const next = recordShadowDailyReturn({ state: first, marks: [], registrations, nowMs: boundary + DAY + 2000 });
+  assert.equal(next.forwardAnchors?.[identity], boundary + DAY);
 });
