@@ -39,3 +39,14 @@ test('stale, missing, future and invalid quotes keep the last synchronized gain 
     assert.equal(result.gain!.toFixed(2), '65.91'); assert.equal(result.live, false);
   }
 });
+
+test('strategy competition names the leader from the displayed portfolio gains', () => {
+  const resetHuman = live.livePortfolioGain(10000, 10000, [], {}).gain;
+  const currentAi = live.livePortfolioGain(10137.18, 10000, [], {}).gain;
+  assert.equal(live.strategyCompetitionLabel(resetHuman, currentAi), 'AI is leading');
+  assert.equal(live.strategyCompetitionLabel(150, 137.18), 'Human is leading');
+  assert.equal(live.strategyCompetitionLabel(-20, -25), 'Human is leading');
+  assert.equal(live.strategyCompetitionLabel(0, 0), 'Perfectly tied');
+  assert.equal(live.strategyCompetitionLabel(null, 137.18), 'Awaiting portfolio values');
+  assert.equal(live.strategyCompetitionLabel(0, null), 'Awaiting portfolio values');
+});

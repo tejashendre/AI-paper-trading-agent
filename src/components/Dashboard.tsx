@@ -7,7 +7,7 @@ import dynamic from "next/dynamic";
 import { RefreshCcw, Activity, Play, Sun, Moon, Info } from "lucide-react";
 import { createBrowserQuoteStream } from '@/lib/data/browserQuoteStream';
 import { describeResearchCapture, promotionProgress } from '@/lib/research/researchDisplay';
-import { livePortfolioGain, formatSignedGain, portfolioEquityMetrics } from '@/lib/ui/livePortfolioGain';
+import { livePortfolioGain, formatSignedGain, portfolioEquityMetrics, strategyCompetitionLabel } from '@/lib/ui/livePortfolioGain';
 import { useChartHistory } from '@/lib/ui/useChartHistory';
 import { entryRiskUsage } from '@/lib/ui/dashboardLabels';
 import { radarSummary, researchCandidateLabel, swingWinRateTile } from "@/lib/ui/dashboardLabels";
@@ -777,23 +777,9 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
           </button>
           <div className="flex flex-col justify-center items-center text-center p-2 font-mono">
             <div className={`text-[9px] uppercase font-bold mb-1 ${textMuted}`}>Strategy Competition</div>
-            <div className={`text-lg font-black tracking-widest ${isDark ? "text-neutral-800" : "text-neutral-300"}`}>VS</div>
-            {legacyStatusVerified && humanGain.gain !== null && swingGain.gain !== null && (
-              <>
-                <div className={`mt-2 text-[8px] font-bold uppercase px-3 py-1 border rounded-full ${
-                  isDark ? "bg-[#0e0e14]/80 border-[#1c1c24] text-neutral-300" : "bg-[#f8fafc] border-[#e2e8f0] text-[#586069]"
-                }`}>
-                  {humanGain.gain! > swingGain.gain! ? "🏆 HUMAN IS LEADING" : swingGain.gain! > humanGain.gain! ? "🏆 AI IS LEADING" : "🤝 PERFECTLY TIED"}
-                </div>
-                {/* The verdict compares the human against the swing account
-                    only. Without this line a reader seeing a live 24-position
-                    book would reasonably assume it was counted. */}
-                <div className={`text-[8px] font-mono mt-1 text-center ${textMuted}`}>
-                  {replacementActive ? 'Current AI run compared with human lifetime results; start dates differ.' : 'Historical AI and human results; no current v6 run is verified.'}
-                </div>
-              </>
-            )}
-            {replacementActive && <p className={`mt-2 text-xs ${textSub}`}>Human lifetime and current AI run have different start dates.</p>}
+            <div className={`text-xs font-bold uppercase ${textPrimary}`}>
+              {strategyCompetitionLabel(humanGain.gain, swingGain.gain)}
+            </div>
           </div>
           <button 
             onClick={() => setViewMode("ai")} 

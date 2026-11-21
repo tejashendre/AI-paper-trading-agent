@@ -36,6 +36,12 @@ export function livePortfolioGain(totalAtSync: number | null | undefined, initia
   return { totalValue: totalAtSync + delta, gain: totalAtSync + delta - initialCapital, live: true };
 }
 
+export function strategyCompetitionLabel(humanGain: number | null, aiGain: number | null): string {
+  if (humanGain === null || aiGain === null) return 'Awaiting portfolio values';
+  if (humanGain === aiGain) return 'Perfectly tied';
+  return humanGain > aiGain ? 'Human is leading' : 'AI is leading';
+}
+
 export function formatSignedGain(gain: number | null): string {
   if (gain === null || !Number.isFinite(gain)) return 'Loading...';
   const rounded = Math.round(Math.abs(gain) * 100) / 100;
