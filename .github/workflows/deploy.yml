@@ -126,6 +126,13 @@ jobs:
             export APP_DEPLOYED_AT="$DEPLOYED_AT"
             docker compose build --pull quant-dashboard
 
+            echo "Verifying the execution ledger with the writers stopped..."
+            if ! sh scripts/release-ledger-maintenance.sh "$BACKUP_DIR" --verify-only; then
+              echo "Ledger verification refused; restarting the previous release..."
+              docker compose start quant-dashboard swing-daemon xsec-daemon || true
+              exit 1
+            fi
+
             docker compose up -d --no-build
 
             echo "Cross-sectional daemon status (reported, not gated):"

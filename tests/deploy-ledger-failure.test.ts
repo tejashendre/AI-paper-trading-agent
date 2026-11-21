@@ -34,3 +34,14 @@ test("the release keeps a verified ledger copy before any compaction deletes his
   const workflow = fs.readFileSync(".github/workflows/deploy.yml", "utf8");
   assert.match(workflow, /sh scripts\/release-ledger-maintenance\.sh "\$BACKUP_DIR"/, "the deploy does not pass its backup directory");
 });
+
+test("a cache-only deploy verifies the ledger without compacting scan history", () => {
+  const workflow = fs.readFileSync(".github/workflows/deploy.yml", "utf8");
+  const script = fs.readFileSync("scripts/release-ledger-maintenance.sh", "utf8");
+  assert.ok(workflow.includes('scripts/release-ledger-maintenance.sh "$BACKUP_DIR" --verify-only'));
+  const start = script.indexOf('if [ "${2:-}" = "--verify-only" ]');
+  const dryRun = script.indexOf('PLAN=');
+  assert.ok(start >= 0 && start < dryRun);
+  assert.match(script.slice(start, dryRun), /verify-execution-ledger\.ts[\s\S]*exit 0/);
+  assert.doesNotMatch(workflow, /vps-maintenance\.sh --apply|git clean -fd/);
+});

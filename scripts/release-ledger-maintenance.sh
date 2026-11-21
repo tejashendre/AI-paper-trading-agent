@@ -1,11 +1,16 @@
 #!/bin/sh
 set -eu
-# Usage: sh scripts/release-ledger-maintenance.sh <deploy backup directory>
+# Usage: sh scripts/release-ledger-maintenance.sh <deploy backup directory> [--verify-only]
 BACKUP_DIR="${1:?usage: release-ledger-maintenance.sh <backup directory>}"
 
 # Every application service can append financial events, including manual
 # orders through the dashboard. A failed stop must prevent destructive work.
 docker compose stop quant-dashboard swing-daemon xsec-daemon
+
+if [ "${2:-}" = "--verify-only" ]; then
+  docker compose run --rm --no-deps -T swing-daemon tsx scripts/verify-execution-ledger.ts
+  exit 0
+fi
 
 # Dry run first: compaction only acts when enough old scan telemetry exists.
 PLAN="$(docker compose run --rm --no-deps -T swing-daemon tsx scripts/ledger-compact.ts)"
