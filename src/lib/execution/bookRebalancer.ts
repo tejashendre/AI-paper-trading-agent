@@ -517,14 +517,19 @@ export const REBALANCE_GRACE_MS = 60 * 60 * 1000;
  * Whether the rebalance loop is keeping time. A missing record counts as
  * overdue: a running daemon writes one within a minute of starting.
  */
-export function rebalanceStatus(lastAtMs: number | null, nowMs: number, holdHours = 12) {
+export async function replacementEpochRetiresXsec(): Promise<boolean> {
+  const redis = getRedis();
+  return await redis.get("brain:v6:activeRun") !== null || await redis.get("brain:v6:xsecMode") === "HISTORICAL_ONLY";
+}
+
+export function rebalanceStatus(lastAtMs: number | null, nowMs: number, holdHours = 12, historicalOnly = false) {
   const periodMs = holdHours * 60 * 60 * 1000;
   const last = Number.isFinite(lastAtMs) && (lastAtMs as number) > 0 ? (lastAtMs as number) : null;
-  const nextDueAtMs = last === null ? null : last + periodMs;
+  const nextDueAtMs = historicalOnly || last === null ? null : last + periodMs;
   return {
     lastAtMs: last,
     nextDueAtMs,
-    overdue: nextDueAtMs === null || nowMs > nextDueAtMs + REBALANCE_GRACE_MS,
+    overdue: !historicalOnly && (nextDueAtMs === null || nowMs > nextDueAtMs + REBALANCE_GRACE_MS),
   };
 }
 

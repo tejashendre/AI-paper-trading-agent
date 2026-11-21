@@ -10,8 +10,28 @@ import { getConfiguredInstrument, type BybitInstrumentMetadata, type ConfiguredA
 import { validateExitQuote } from '@/lib/trading/entryEligibility';
 
 const DAY=86400000;
+
+export function shadowDailyBoundary(nowMs: number): number | null {
+  const boundary = Math.floor(nowMs / DAY) * DAY;
+  return nowMs - boundary <= 60000 ? boundary : null;
+}
+
+function shadowDailyMark(frame: ShadowMarkFrame | undefined, boundary: number, now: number) {
+  const quote = frame?.quote;
+  const markTime = quote?.quoteTimes.markMs;
+  const price = quote?.markPrice;
+  if (!frame || !quote || markTime == null || price == null ||
+      ![markTime, quote.receivedAtMs, frame.availableAtMs].every(Number.isFinite) ||
+      markTime < boundary || frame.availableAtMs - markTime > 5000 || markTime > (quote.transport === 'REST' ? frame.availableAtMs : quote.receivedAtMs) ||
+      quote.receivedAtMs > frame.availableAtMs || frame.availableAtMs > Math.min(now, boundary + 60000) ||
+      !/^[a-f0-9]{64}$/.test(frame.sourceHash)) return null;
+  const valuationQuote = { ...quote, price, quoteTimes: { ...quote.quoteTimes, lastPriceMs: markTime } };
+  return validateExitQuote({ instrument: getConfiguredInstrument(frame.asset), quote: valuationQuote, nowMs: frame.availableAtMs }).valid
+    ? { price, markTime, availableAtMs: frame.availableAtMs, sourceHash: frame.sourceHash } : null;
+}
 // These inputs are frozen into the registration source hash and shared with sizing/exits.
 export const BRAIN_EXECUTION_CONTEXT={assetMode:'SLOW_SWING',dataQuality:100,isPeakLiquidity:true,liquidityState:'NEUTRAL',reason:'ENTRY'} as const;
+export type ShadowMarkFrame = Pick<ShadowFrame, 'asset' | 'quote' | 'availableAtMs' | 'sourceHash'>;
 export interface ShadowFrame {asset:ConfiguredAsset;quote:MarketPriceSnapshot|null;liquidity:LiquiditySnapshot|null;metadata:BybitInstrumentMetadata;
   bars?:{d1:readonly Candle[]};
   fundingRate:number;fundingObservedAtMs:number;availableAtMs:number;sourceHash:string}
@@ -20,11 +40,31 @@ export interface ShadowPosition {id:string;setup:SwingSetup;plan:BrainOrderPlan;
   funding:BrainFundingObservation[];fundingIntervalMinutes:number;fundingCashflow:number;stressedEntryPrice:number;stressedEntryFee:number;criticalViolation:boolean}
 interface PendingShadow extends ShadowPosition {closedAtMs:number;exitObservation:BrainExecutionObservation;exitPrice:number;exitFee:number;
   stressedExitPrice:number;stressedExitFee:number;missingFundingTimes:number[];exitReason:string}
+type DailyValues<T> = Partial<Record<ConfiguredAsset, T>>;
+interface DailyPosition {
+  id: string;
+  identityHash: string;
+  openedAtMs: number;
+  intervalMinutes: number;
+  side: 1 | -1;
+  quantity: number;
+  entryPrice: number;
+  entryFeeUsdt: number;
+}
+interface DailySnapshot {
+  boundary: number;
+  positions: DailyValues<DailyPosition>;
+  realized: DailyValues<number>;
+  pending: { id: string; asset: ConfiguredAsset }[];
+}
+
 export interface BrainShadowState {version:'v6-shadow-1';runId:string;cash:number;peak:number;open:Partial<Record<ConfiguredAsset,ShadowPosition>>;
   peakAtMs?:number;drawdownLatched?:boolean;
   seen:string[];pending:PendingShadow[];outcomes:BrainOutcome[];realizedByAsset:Partial<Record<ConfiguredAsset,number>>;
   equity:{atMs:number;equityUsdt:number}[];dailyReturns:BrainDailyReturn[];
-  dailyAnchor:{dayStartMs:number;values:Partial<Record<ConfiguredAsset,number>>}|null;gaps:string[]}
+  dailyAnchor:{dayStartMs:number;values:DailyValues<number>;identities?:DailyValues<string>}|null;
+  dailySnapshot?: DailySnapshot;
+  gaps:string[]}
 export function emptyBrainShadow(runId:string):BrainShadowState {
   return {version:'v6-shadow-1',runId,cash:10000,peak:10000,open:{},seen:[],pending:[],outcomes:[],realizedByAsset:{},equity:[],dailyReturns:[],dailyAnchor:null,gaps:[]};
 }
@@ -55,6 +95,7 @@ export function brainStressedEntry(setup:SwingSetup,plan:BrainOrderPlan,r:BrainR
 export async function advanceBrainShadow(input:{state:BrainShadowState;frames:ShadowFrame[];setups:SwingSetup[];registrations:Map<ConfiguredAsset,BrainRegistration>;
   nowMs:number;funding:(asset:ConfiguredAsset,fromMs:number,toMs:number)=>Promise<BrainFundingObservation[]>}):Promise<BrainShadowState>{
   const s=structuredClone(input.state),now=input.nowMs,frames=new Map(input.frames.map(f=>[f.asset,f]));
+  pinDailySnapshot(s, shadowDailyBoundary(now));
   const settle=async(p:ShadowPosition,toMs:number)=>{
     const interval=p.entryObservation&&p.registration?getInterval(p):0;
     const expected=expectedFundingTimes(p.openedAtMs,toMs,interval),known=new Set(p.funding.map(f=>f.atMs));
@@ -69,7 +110,9 @@ export async function advanceBrainShadow(input:{state:BrainShadowState;frames:Sh
     return expected.filter(at=>!known.has(at));
   };
   for(const p of Object.values(s.open)){
-    if(!p)continue;await settle(p,now);const f=frames.get(p.setup.asset),q=f?.quote;
+    if(!p)continue;
+    await settle(p, now);
+    const f=frames.get(p.setup.asset),q=f?.quote;
     if(!f||!q)continue;
     const observed=shadowExecution(f,now,p.setup.direction==='LONG'?'SHORT':'LONG',p.plan.quantity,q.price,p.stopLoss);
     if(!observed)continue;
@@ -131,19 +174,90 @@ export async function advanceBrainShadow(input:{state:BrainShadowState;frames:Sh
     if(s.peakAtMs&&s.peakAtMs<now&&!s.equity.some(x=>x.atMs===s.peakAtMs))s.equity.push({atMs:s.peakAtMs,equityUsdt:s.peak});
     s.equity.push({atMs:now,equityUsdt:endEquity});s.drawdownLatched=true;s.equity.sort((a,b)=>a.atMs-b.atMs);
   }else if(!s.equity.length||now-s.equity.at(-1)!.atMs>=30*60000)s.equity.push({atMs:now,equityUsdt:endEquity});
-  const boundary=Math.floor(now/DAY)*DAY;
-  const allMarked=Object.values(s.open).every(p=>p&&p.lastObservedAtMs===now)&&s.pending.length===0;
-  if(allMarked&&now-boundary<=60000){
-    const values:Partial<Record<ConfiguredAsset,number>>={};
-    for(const [asset,r] of input.registrations){const p=s.open[asset];values[asset]=10000+(s.realizedByAsset[asset]??0)+(p?(p.setup.direction==='LONG'?1:-1)*p.plan.quantity*(p.lastPrice-p.plan.entryPrice)-p.plan.entryFeeUsdt+p.fundingCashflow:0);
-      if(s.dailyAnchor&&boundary===s.dailyAnchor.dayStartMs+DAY&&s.dailyAnchor.values[asset]!==undefined){
-        s.dailyReturns.push({identityHash:brainEvidenceIdentity(brainDefinition(asset),r),runId:s.runId,costHash:r.costHash,dayStartMs:s.dailyAnchor.dayStartMs,
-          baseRiskFraction:.0025,netReturn:values[asset]!/s.dailyAnchor.values[asset]!-1,availableAtMs:now,sourceHash:evidenceHash({asset,boundary,value:values[asset],previous:s.dailyAnchor})});
-      }
+  return s;
+}
+
+function pinDailySnapshot(s: BrainShadowState, boundary: number | null) {
+  if (boundary !== null && boundary > (s.dailyAnchor?.dayStartMs ?? -1) && s.dailySnapshot?.boundary !== boundary) {
+    const positions: DailyValues<DailyPosition> = {};
+    for (const p of Object.values(s.open)) {
+      positions[p.setup.asset] = {
+        id: p.id, identityHash: brainEvidenceIdentity(brainDefinition(p.setup.asset), p.registration),
+        openedAtMs: p.openedAtMs, intervalMinutes: p.fundingIntervalMinutes,
+        side: p.setup.direction === 'LONG' ? 1 : -1, quantity: p.plan.quantity,
+        entryPrice: p.plan.entryPrice, entryFeeUsdt: p.plan.entryFeeUsdt,
+      };
     }
-    if(s.dailyAnchor&&boundary>s.dailyAnchor.dayStartMs+DAY)s.gaps.push(`MISSED_DAILY_MARK:${s.dailyAnchor.dayStartMs}`);
-    if(!s.dailyAnchor||boundary>s.dailyAnchor.dayStartMs)s.dailyAnchor={dayStartMs:boundary,values};
+    s.dailySnapshot = { boundary, positions, realized: { ...s.realizedByAsset },
+      pending: s.pending.map(p => ({ id: p.id, asset: p.setup.asset })) };
   }
+}
+
+export function recordShadowDailyReturn(input: { state: BrainShadowState; marks: ShadowMarkFrame[];
+  registrations: Map<ConfiguredAsset, BrainRegistration>; nowMs: number }): BrainShadowState {
+  const now = input.nowMs;
+  const boundary = shadowDailyBoundary(now);
+  if (boundary === null || boundary <= (input.state.dailyAnchor?.dayStartMs ?? -1)) return input.state;
+  const s = structuredClone(input.state);
+  pinDailySnapshot(s, boundary);
+  const snapshot = s.dailySnapshot;
+  if (boundary === null || snapshot?.boundary !== boundary || !input.registrations.size) return s;
+
+  // Use the positions and realized equity held before processing the boundary
+  // sweep. A late mark still represents that cohort, even if an exit or entry
+  // was processed while waiting for the mark.
+  const outcomes = new Map(s.outcomes.map(row => [row.positionId, row]));
+  const realized = { ...snapshot.realized };
+  for (const pending of snapshot.pending) {
+    const outcome = outcomes.get(pending.id);
+    if (!outcome) return s;
+    realized[pending.asset] = (realized[pending.asset] ?? 0) + outcome.netR * outcome.initialRiskUsdt;
+  }
+  const boundaryFrames = new Map(input.marks.map(frame => [frame.asset, frame]));
+  const marks: DailyValues<NonNullable<ReturnType<typeof shadowDailyMark>>> = {};
+  const unrealized: DailyValues<number> = {};
+  for (const [key, position] of Object.entries(snapshot.positions)) {
+    const asset = key as ConfiguredAsset;
+    const registration = input.registrations.get(asset);
+    if (!registration || position.identityHash !== brainEvidenceIdentity(brainDefinition(asset), registration)) continue;
+    const mark = shadowDailyMark(boundaryFrames.get(asset), boundary, now);
+    if (!mark) return s;
+    const open = s.open[asset];
+    const funding = (open?.id === position.id ? open.funding
+      : s.pending.find(p => p.id === position.id)?.funding ?? outcomes.get(position.id)?.funding) ?? [];
+    const settled = new Set(funding.map(row => row.atMs));
+    const dueBeforeBoundary = expectedFundingTimes(position.openedAtMs, boundary - 1, position.intervalMinutes);
+    if (dueBeforeBoundary.some(at => !settled.has(at))) return s;
+    const cashflow = funding.reduce((cash, row) => row.atMs < boundary
+      ? cash - position.side * position.quantity * row.mark * row.actualRate : cash, 0);
+    unrealized[asset] = position.side * position.quantity * (mark.price - position.entryPrice) -
+      position.entryFeeUsdt + cashflow;
+    marks[asset] = mark;
+  }
+  const values: DailyValues<number> = {};
+  const identities: DailyValues<string> = {};
+  for (const [asset, registration] of input.registrations) {
+    const identityHash = brainEvidenceIdentity(brainDefinition(asset), registration);
+    const position = snapshot.positions[asset];
+    if (position && position.identityHash !== identityHash) continue;
+    const value = 10000 + (realized[asset] ?? 0) + (unrealized[asset] ?? 0);
+    values[asset] = value;
+    identities[asset] = identityHash;
+    const previousValue = s.dailyAnchor?.values[asset];
+    if (s.dailyAnchor && boundary === s.dailyAnchor.dayStartMs + DAY && previousValue !== undefined &&
+        s.dailyAnchor.identities?.[asset] === identityHash) {
+      s.dailyReturns.push({
+        identityHash, runId: s.runId, costHash: registration.costHash, dayStartMs: s.dailyAnchor.dayStartMs,
+        baseRiskFraction: .0025, netReturn: value / previousValue - 1, availableAtMs: now,
+        sourceHash: evidenceHash({ asset, boundary, value, mark: marks[asset], previous: s.dailyAnchor }),
+      });
+    }
+  }
+  if (s.dailyAnchor && boundary > s.dailyAnchor.dayStartMs + DAY) {
+    s.gaps.push(`MISSED_DAILY_MARK:${s.dailyAnchor.dayStartMs}`);
+  }
+  s.dailyAnchor = { dayStartMs: boundary, values, identities };
+  delete s.dailySnapshot;
   return s;
 }
 function getInterval(p:ShadowPosition):number{return p.fundingIntervalMinutes;}

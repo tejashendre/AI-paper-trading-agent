@@ -19,7 +19,7 @@ import { brainEvidenceIdentity, brainPermission, evaluateBrainEvidence, evidence
 import { allocateBrainRisk, brainVolatilityScale, evaluateBrainBreakers, sizeBrainOrder, type BrainBreakerLatch, type BrainOrderPlan, type BrainRiskOutcome } from './risk';
 import { paperGateOpen, paperGatePermission } from './paperMode';
 import { buildLearningBook, learnedRisk, readLegacyTradeBackup, samplesFromTrades, type LearningBook } from './learning';
-import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, shadowEquity, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame } from './shadow';
+import { advanceBrainShadow, brainStressedEntry, emptyBrainShadow, recordShadowDailyReturn, shadowDailyBoundary, shadowEquity, shadowExecution, BRAIN_EXECUTION_CONTEXT, type BrainShadowState, type ShadowFrame, type ShadowMarkFrame } from './shadow';
 
 export const BRAIN_SCAN_INTERVAL_MS=60000,BRAIN_WATCHDOG_INTERVAL_MS=5000;
 /** Decision references only point at on-disk tapes; nothing reads them back, so they expire. */
@@ -45,15 +45,20 @@ export interface RuntimeFrame extends ShadowFrame {bars:Awaited<ReturnType<typeo
 export interface RuntimeDeps {redis:RedisClient;clock:()=>number;assets:readonly ConfiguredAsset[];sourceHash:()=>string;
   capture:(asset:ConfiguredAsset,startedAtMs:number)=>Promise<RuntimeFrame>;calendar:()=>Promise<CalendarManifest|null>;
   executionCapture?:(asset:ConfiguredAsset)=>Promise<ShadowFrame>;
+  dailyMarkCapture?:(asset:ConfiguredAsset)=>Promise<ShadowMarkFrame>;
   funding:(asset:ConfiguredAsset,fromMs:number,toMs:number)=>Promise<BrainFundingObservation[]>;
   ledger:(event:ExecutionLedgerEventInput&{id:string})=>Promise<unknown>;
   archive?:(runId:string,id:string,tape:unknown)=>Promise<unknown>}
+type EntryPermission = { allowed: boolean; reason: string };
 export interface BrainRuntimeAsset {asset:ConfiguredAsset;strategyId:string;configHash:string;mode:string;riskTier:'BASE'|'ESCALATED';
   evidence:{historicalCount:number;forwardCount:number;paperCount:number;nextEligibleAtMs:number|null;reasons:string[]};
+  entryPermission?: EntryPermission;
   decision:{status:string;code?:string;reason?:string;setupId?:string}}
 export interface BrainRuntimeStatus {version:'v6';runId:string|null;mode:'RESET_REQUIRED'|'SHADOW'|'PAPER_ACTIVE'|'REDUCE_ONLY'|'ERROR';
   generatedAt:string;generatedAtMs:number;commit:string|null;scanId:number;scanIntervalMs:number;watchdogIntervalMs:number;capitalUsdt:10000;
-  equityUsdt:number|null;haltReasons:string[];assets:BrainRuntimeAsset[];virtualShadow:{equityUsdt:number;openPositions:number;capitalAllocatedUsdt:0}}
+  equityUsdt:number|null;haltReasons:string[];assets:BrainRuntimeAsset[];virtualShadow:{equityUsdt:number;openPositions:number;capitalAllocatedUsdt:0};
+  shadowResearch?: { completed: number; flagged: number; open: number; pendingFunding: number;
+    missedDailyMarks: number; lastDailyReturnDayMs: number | null }}
 function sourceHash():string {
   const files=['src/lib/strategy/v6/engine.ts','src/lib/strategy/v6/risk.ts','src/lib/strategy/v6/evidence.ts','src/lib/strategy/v6/runtime.ts',
     'src/lib/strategy/v6/shadow.ts','src/lib/strategy/v6/calendar.ts','src/lib/strategy/v6/calendarSource.ts','src/lib/strategy/v6/data.ts','src/lib/strategy/v6/archive.ts',
@@ -71,6 +76,12 @@ async function captureExecution(asset:ConfiguredAsset):Promise<ShadowFrame>{
     fundingObservedAtMs:sensors.observedAtMs??NaN,availableAtMs};
   return {...body,sourceHash:evidenceHash(body)};
 }
+async function captureDailyMark(asset: ConfiguredAsset): Promise<ShadowMarkFrame> {
+  const quote = await MarketService.getCurrentPriceSnapshot(asset, { transport: 'REST' });
+  const mark = { asset, quote, availableAtMs: Date.now() };
+  return { ...mark, sourceHash: evidenceHash(mark) };
+}
+
 /** Retain the actual settlement rate, boundary mark and response receipt clocks. */
 export async function captureBrainFunding(asset:ConfiguredAsset,fromMs:number,toMs:number):Promise<BrainFundingObservation[]>{
   const symbol=getConfiguredInstrument(asset).symbol;
@@ -95,6 +106,7 @@ async function archive(runId:string,id:string,tape:unknown){
 }
 function dependencies(overrides:Partial<RuntimeDeps>):RuntimeDeps{return {redis:overrides.redis??getRedis(),clock:Date.now,assets:CONFIGURED_ASSETS,sourceHash,capture,
   executionCapture:overrides.capture?(asset=>overrides.capture!(asset,(overrides.clock??Date.now)())):captureExecution,
+  dailyMarkCapture: overrides.capture ? asset => overrides.capture!(asset, (overrides.clock ?? Date.now)()) : captureDailyMark,
   calendar:()=>process.env.BRAIN_CALENDAR_MANIFEST?readCalendarManifest(path.resolve(process.env.BRAIN_CALENDAR_MANIFEST)):Promise.resolve(null),
   funding:captureBrainFunding,ledger:e=>ExecutionLedger.recordOnce(e),archive,...overrides};}
 function parse<T>(raw:unknown):T|null {if(raw==null)return null;try{return (typeof raw==='string'?JSON.parse(raw):raw) as T;}catch{return null;}}
@@ -125,8 +137,8 @@ function registrationCurrent(r:BrainRegistration,asset:ConfiguredAsset,d:ReturnT
   return r.sourceHash===source&&r.costHash===evidenceHash(freezeBrainCosts(asset))&&r.riskPolicyHash===evidenceHash(RISK_POLICY)&&
     r.exitPolicyHash===evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT});
 }
-async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,now:number,source:string):Promise<BrainRegistration>{
-  const p=prefix(runId),d=brainDefinition(asset),baseKey=p+'runtimeRegistration:'+asset;
+async function readRuntimeRegistration(deps: RuntimeDeps, runId: string, asset: ConfiguredAsset, source: string) {
+  const d = brainDefinition(asset), baseKey = prefix(runId) + 'runtimeRegistration:' + asset;
   let key=baseKey,existing=await deps.redis.get<BrainRegistration>(key);
   // Under the open paper gate a deploy must not silence the brain: a changed
   // source, cost or policy fingerprint rotates to a fresh registration keyed
@@ -135,6 +147,14 @@ async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,
     key=baseKey+':'+evidenceHash({source,costs:evidenceHash(freezeBrainCosts(asset)),risk:evidenceHash(RISK_POLICY),exit:evidenceHash({policy:d.parameters,executionContext:BRAIN_EXECUTION_CONTEXT})}).slice(0,24);
     existing=await deps.redis.get<BrainRegistration>(key);
   }
+  return { key, existing };
+}
+
+async function registration(deps:RuntimeDeps,runId:string,asset:ConfiguredAsset,now:number,source:string):Promise<BrainRegistration>{
+  const p = prefix(runId), d = brainDefinition(asset);
+  const stored = await readRuntimeRegistration(deps, runId, asset, source);
+  const { key } = stored;
+  let { existing } = stored;
   if(!existing){
     let trials=await deps.redis.get<BrainTrial[]>(p+'trials');
     if(!trials){
@@ -271,6 +291,27 @@ export async function collectBrainPaperOutcomes(deps:RuntimeDeps,runId:string,po
 }
 function relevantLatch(asset:ConfiguredAsset,latches:BrainBreakerLatch[]){const bucket=brainDefinition(asset).riskBucket;
   return latches.find(l=>l.kind==='DRAWDOWN')??latches.find(l=>l.scope==='account'||l.scope===asset||l.scope===bucket);}
+function reviewEntryPermission(runId: string, asset: ConfiguredAsset, registration: BrainRegistration, proof: BrainEvidenceReview,
+  latches: BrainBreakerLatch[], now: number): EntryPermission {
+  const halt = relevantLatch(asset, latches);
+  if (halt && (halt.kind !== 'STREAK' || !proof.rearmed)) return { allowed: false, reason: 'HALT_' + halt.kind };
+  const context = { runId, sourceHash: registration.sourceHash, costHash: registration.costHash,
+    riskPolicyHash: registration.riskPolicyHash, exitPolicyHash: registration.exitPolicyHash };
+  return paperGateOpen() ? paperGatePermission(proof, now, context)
+    : brainPermission(brainDefinition(asset), proof, now, { ...context, riskTier: proof.riskTier });
+}
+
+async function paperAccountReady(deps: RuntimeDeps, runId: string, portfolio: Portfolio, now: number) {
+  return riskMarksReady(portfolio, now) && await deps.redis.get('swing:entryFreeze') === null &&
+    await deps.redis.get('brain:v6:migration-freeze') === null &&
+    (await deps.redis.scanKeys(prefix(runId) + 'outbox:*')).length === 0 &&
+    (portfolio.pendingLedgerEvents?.length ?? 0) === 0 &&
+    !(portfolio.fundingTail ?? []).some(t => t.pendingTimes.length > 0) &&
+    !Object.values(portfolio.openPositions ?? {}).some(pos => (pos.fundingPendingTimes?.length ?? 0) > 0);
+}
+
+const ACCOUNT_ENTRY_BLOCK = 'ACCOUNT_NOT_READY_MARKS_FREEZE_OUTBOX_OR_FUNDING';
+
 async function review(deps:RuntimeDeps,r:BrainRegistration,asset:ConfiguredAsset,shadow:BrainShadowState,latches:BrainBreakerLatch[],paper:BrainOutcome[],now:number,leaseToken:string):Promise<BrainEvidenceReview|null>{
   const d=brainDefinition(asset),previous=await readBrainReview(deps.redis,d,r);
   if(previous&&now-previous.createdAtMs<3600000&&now<previous.expiresAtMs&&!relevantLatch(asset,latches))return previous;
@@ -332,11 +373,6 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
   const p=prefix(runId),equity=markedEquity(portfolio),candidates=[];
   // Every setup that does not fill records why, so a SETUP without ENTRY is never silent.
   const skip=(asset:ConfiguredAsset,code:string)=>{skips.set(asset,code);};
-  if(!riskMarksReady(portfolio,now)||await deps.redis.get('swing:entryFreeze')!==null||await deps.redis.get('brain:v6:migration-freeze')!==null||
-    (await deps.redis.scanKeys(p+'outbox:*')).length||(portfolio.pendingLedgerEvents?.length??0)>0||
-    (portfolio.fundingTail??[]).some(t=>t.pendingTimes.length>0)||Object.values(portfolio.openPositions??{}).some(pos=>(pos.fundingPendingTimes?.length??0)>0)){
-    for(const x of setups)skip(x.asset,'ACCOUNT_NOT_READY_MARKS_FREEZE_OUTBOX_OR_FUNDING');return [];
-  }
   // A full nine-asset scan can outlast the five-second quote deadline, so the
   // open paper gate re-reads the executable quote/book just before filling.
   const fresh=new Map<ConfiguredAsset,RuntimeFrame>();
@@ -353,10 +389,11 @@ async function fillBatch(deps:RuntimeDeps,runId:string,token:string,frames:Runti
     if(!r||!proof||!f){skip(setup.asset,'NO_REGISTRATION_PROOF_OR_FRAME');continue;}
     if(portfolio.openPositions?.[setup.asset]){skip(setup.asset,'POSITION_ALREADY_OPEN');continue;}
     if(await deps.redis.get(p+'entryPosition:'+`v6:${runId}:${setup.id}`)!==null){skip(setup.asset,'SETUP_ALREADY_ENTERED');continue;}
-    const halt=relevantLatch(setup.asset,latches);if(halt&&(halt.kind!=='STREAK'||!proof.rearmed)){skip(setup.asset,'HALT_'+halt.kind);continue;}
-    const permissionContext={runId,sourceHash:r.sourceHash,costHash:r.costHash,riskPolicyHash:r.riskPolicyHash,exitPolicyHash:r.exitPolicyHash};
-    const permission=paperGateOpen()?paperGatePermission(proof,now,permissionContext):brainPermission(d,proof,now,{...permissionContext,riskTier:proof.riskTier});
-    if(!permission.allowed){skip(setup.asset,'PERMISSION_'+permission.reason);continue;}
+    const permission = reviewEntryPermission(runId, setup.asset, r, proof, latches, now);
+    if (!permission.allowed) {
+      skip(setup.asset, permission.reason.startsWith('HALT_') ? permission.reason : 'PERMISSION_' + permission.reason);
+      continue;
+    }
     const observation=shadowExecution(f,now,setup.direction,1,setup.entryPrice,setup.stopLoss),capacity=capacityNotionalCap({side:setup.direction==='LONG'?'BUY':'SELL',liquidity:f.liquidity});
     if(!observation){skip(setup.asset,'NO_FRESH_EXECUTABLE_QUOTE_OR_DEPTH');continue;}
     if(capacity===null){skip(setup.asset,'NO_LIQUIDITY_CAPACITY');continue;}
@@ -484,20 +521,45 @@ export async function runReplacementScan(overrides:Partial<RuntimeDeps>={}):Prom
     const reviews=new Map<ConfiguredAsset,BrainEvidenceReview>();
     for(const [asset,r] of registrations){const proof=await review(deps,r,asset,shadow,breakers.latches,paper.outcomes,now,token);if(!proof)continue;reviews.set(asset,proof);
       const row=assets.find(a=>a.asset===asset)!;row.mode=proof.mode;row.riskTier=proof.riskTier;row.evidence={historicalCount:proof.historicalCount,forwardCount:proof.forwardCount,
-        paperCount:proof.paperCount,nextEligibleAtMs:proof.nextEligibleAtMs,reasons:proof.reasons};}
+        paperCount:proof.paperCount,nextEligibleAtMs:proof.nextEligibleAtMs,reasons:proof.reasons};
+    }
     const learning=await refreshBrainLearning(deps,run.runId,now).catch(()=>null);
-    // A refused commit (deadline, lost race, changed evidence) writes nothing; it must
-    // not abort the scan heartbeat, or one bad batch would stall every later scan.
-    let fillError:string|null=null;const skips=new Map<ConfiguredAsset,string>();
-    const filled=breakers.rollingBlock?[]:await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning,skips)
-      .catch(error=>{fillError=error instanceof Error?error.message:String(error);return [] as ConfiguredAsset[];});
-    if(breakers.rollingBlock)for(const setup of setups)skips.set(setup.asset,'LOSS_BRAKE_'+breakers.rollingBlock);
-    for(const [asset,code] of skips){const row=assets.find(a=>a.asset===asset);if(row&&row.decision.status==='SETUP')row.decision={...row.decision,code:'SKIPPED_'+code,reason:'Setup found but not entered: '+code};}
-    if(fillError)for(const setup of setups){const row=assets.find(a=>a.asset===setup.asset);if(row)row.evidence.reasons=[...row.evidence.reasons,`ENTRY_COMMIT_REFUSED: ${fillError}`];}
+    // A refused commit must not abort the scan heartbeat.
+    let accountBlock = breakers.rollingBlock ? 'LOSS_BRAKE_' + breakers.rollingBlock : null;
+    let fillError: string | null = null;
+    let filled: ConfiguredAsset[] = [];
+    const skips = new Map<ConfiguredAsset, string>();
+    try {
+      if (!accountBlock && !await paperAccountReady(deps, run.runId, portfolio, now)) accountBlock = ACCOUNT_ENTRY_BLOCK;
+      if (accountBlock) {
+        for (const setup of setups) skips.set(setup.asset, accountBlock);
+      } else {
+        filled = await fillBatch(deps,run.runId,token,frames,setups,registrations,reviews,portfolio,raw,breakers.latches,now,learning,skips);
+      }
+    } catch (error) {
+      fillError = error instanceof Error ? error.message : String(error);
+    }
+    for (const row of assets) {
+      const registration = registrations.get(row.asset), proof = reviews.get(row.asset);
+      const block = accountBlock ?? (portfolio.openPositions?.[row.asset] ? 'POSITION_ALREADY_OPEN' : null);
+      if (block) row.entryPermission = { allowed: false, reason: block };
+      else if (registration && proof && !fillError) row.entryPermission = reviewEntryPermission(run.runId, row.asset, registration, proof, breakers.latches, now);
+      const skipped = skips.get(row.asset);
+      if (row.decision.status === 'SETUP' && skipped) {
+        row.decision = { ...row.decision, code: 'SKIPPED_' + skipped, reason: 'Setup found but not entered: ' + skipped };
+      } else if (row.decision.status === 'SETUP' && fillError) {
+        row.decision = { ...row.decision, code: 'ENTRY_COMMIT_REFUSED', reason: 'Entry commit could not be confirmed: ' + fillError };
+      }
+    }
     for(const asset of filled)assets.find(a=>a.asset===asset)!.decision.status='ENTRY';
     const mode=breakers.latches.some(l=>l.kind!=='STREAK')?'REDUCE_ONLY':paperGateOpen()||assets.some(a=>a.mode==='PAPER_ACTIVE')?'PAPER_ACTIVE':'SHADOW';
     const result=status(deps,run.runId,mode,now,assets,[...breakers.latches.map(l=>l.reason),...(breakers.rollingBlock?[breakers.rollingBlock]:[])]);
     result.equityUsdt=markedEquity(portfolio);result.virtualShadow={equityUsdt:shadowEquity(shadow),openPositions:Object.keys(shadow.open).length,capitalAllocatedUsdt:0};
+    result.shadowResearch = {
+      completed: shadow.outcomes.length, flagged: shadow.outcomes.filter(row => row.criticalViolation).length,
+      open: Object.keys(shadow.open).length, pendingFunding: shadow.pending.length, missedDailyMarks: shadow.gaps.length,
+      lastDailyReturnDayMs: shadow.dailyReturns.at(-1)?.dayStartMs ?? null,
+    };
     result.scanId=(await deps.redis.get<number>(p+'scanSequence')??0)+1;await deps.redis.set(p+'scanSequence',result.scanId);
     await deps.ledger({id:`scan:${run.runId}:${decisionId}`,type:'SCAN_COMPLETED',source:'REPLACEMENT_SWING_V6',timestamp:result.generatedAt,payload:{runId:run.runId,decisionId,
       scanId:result.scanId,sourceHash:source,capitalAllocatedUsdt:0,entries:filled,mode:result.mode}});
@@ -509,17 +571,58 @@ export async function runReplacementShadowSweep(overrides:Partial<RuntimeDeps>={
   const deps=dependencies(overrides),run=await currentRun(deps);if(!run)return;
   const p=prefix(run.runId),peek=await deps.redis.get<BrainShadowState>(p+'shadow');if(!peek)return;
   const held=[...new Set([...Object.keys(peek.open),...peek.pending.map(x=>x.setup.asset)])] as ConfiguredAsset[];
-  if(!held.length)return;
+  if (!held.length) return;
   const captured=await Promise.allSettled(held.map(a=>deps.executionCapture!(a))),funding=await prefetchFunding(deps,run.runId,deps.clock()),now=deps.clock();
   const frames=captured.flatMap(x=>x.status==='fulfilled'&&Number.isFinite(x.value.availableAtMs)&&x.value.availableAtMs<=now?[x.value]:[]);
   const token=randomUUID();if(!await deps.redis.set(LOCK,token,{nx:true,ex:60}))return;
   try{
     const raw=await deps.redis.readRaw([ACTIVE,p+'shadow']);const old=parse<BrainShadowState>(rawString(raw,p+'shadow'));if(!old)return;
-    const registrations=new Map<ConfiguredAsset,BrainRegistration>();
-    for(const asset of CONFIGURED_ASSETS){const r=await deps.redis.get<BrainRegistration>(p+'runtimeRegistration:'+asset);if(r)registrations.set(asset,r);}
-    const next=await advanceBrainShadow({state:old,frames,setups:[],registrations,nowMs:now,funding});
+    const next=await advanceBrainShadow({state:old,frames,setups:[],registrations:new Map(),nowMs:now,funding});
     await deps.redis.commitBrainObservation({runId:run.runId,leaseToken:token,expected:raw,writes:{[p+'shadow']:JSON.stringify(next)}});
   }finally{await deps.redis.compareAndDelete(LOCK,token);}
+}
+
+/** Read valuation independently of depth and never hold the financial lease during market I/O. */
+export async function runReplacementDailyMarkSweep(overrides: Partial<RuntimeDeps> = {}): Promise<void> {
+  const deps = dependencies(overrides);
+  const boundary = shadowDailyBoundary(deps.clock());
+  const capture = deps.dailyMarkCapture;
+  if (boundary === null || !capture) return;
+  const run = await currentRun(deps);
+  if (!run) return;
+  const key = prefix(run.runId) + 'shadow';
+  const peek = await deps.redis.get<BrainShadowState>(key);
+  if (!peek || boundary <= (peek.dailyAnchor?.dayStartMs ?? -1)) return;
+
+  const source = deps.sourceHash();
+  const current = await Promise.all(CONFIGURED_ASSETS.map(asset => readRuntimeRegistration(deps, run.runId, asset, source)));
+  const registrations = new Map<ConfiguredAsset, BrainRegistration>();
+  CONFIGURED_ASSETS.forEach((asset, index) => {
+    const registration = current[index].existing;
+    if (registration && registration.runId === run.runId && registrationCurrent(registration, asset, brainDefinition(asset), source)) {
+      registrations.set(asset, registration);
+    }
+  });
+  if (!registrations.size) return;
+
+  const positions = peek.dailySnapshot?.boundary === boundary ? peek.dailySnapshot.positions : peek.open;
+  const captures = await Promise.allSettled([...registrations.keys()].filter(asset => positions[asset]).map(capture));
+  const marks = captures.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+  const token = randomUUID();
+  if (!await deps.redis.set(LOCK, token, { nx: true, ex: 60 })) return;
+  try {
+    const raw = await deps.redis.readRaw([ACTIVE, key]);
+    const old = parse<BrainShadowState>(rawString(raw, key));
+    const now = deps.clock();
+    if (!old || old.runId !== run.runId || shadowDailyBoundary(now) !== boundary) return;
+    const next = recordShadowDailyReturn({ state: old, marks, registrations, nowMs: now });
+    if (next === old ||
+        (next.dailyAnchor?.dayStartMs !== boundary && old.dailySnapshot?.boundary === boundary)) return;
+    await deps.redis.commitBrainObservation({ runId: run.runId, leaseToken: token, expected: raw,
+      writes: { [key]: JSON.stringify(next) } });
+  } finally {
+    await deps.redis.compareAndDelete(LOCK, token);
+  }
 }
 
 /** Five-second protection updates account latches independently of the slower entry scan. */

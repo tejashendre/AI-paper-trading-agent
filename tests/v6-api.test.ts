@@ -113,3 +113,50 @@ test('brain panel names current epoch, unavailable counts, shared capital and ga
   const current = renderToStaticMarkup(createElement(BrainStatusPanel, { status: await (await GET(request())).json(), isDark: false }));
   assert.match(current, /api-proof/); assert.doesNotMatch(current, /private\/archive/);
 });
+
+test('fresh v6 telemetry publishes paper permission separately from evidence and shows shadow research', async t => {
+  const redis = await fixture(t);
+  await redis.set(ACTIVE_AI_RUN_KEY, active);
+  await redis.set(aiRunKeys(active.runId).portfolio, { usd: 10000 });
+  const day = Date.UTC(2026, 10, 10);
+  await redis.set('brain:v6:status', {
+    version: 'v6', runId: active.runId, mode: 'PAPER_ACTIVE', generatedAtMs: Date.now(),
+    assets: [{ ...brainDefinition('BTC'), mode: 'REDUCE_ONLY',
+      entryPermission: { allowed: true, reason: 'PAPER_GATE_OPEN', privateMarker: 'private' },
+      decision: { status: 'NO_TRADE', code: 'STALE_SETUP', reason: 'Completed setup bar expired' },
+    }],
+    shadowResearch: { completed: 11, flagged: 11, open: 4, pendingFunding: 0,
+      missedDailyMarks: 1, lastDailyReturnDayMs: day, privateMarker: 'private' },
+  });
+  const status = await (await GET(request())).json();
+  assert.deepEqual(status.assets[0].entryPermission, { allowed: true, reason: 'PAPER_GATE_OPEN' });
+  assert.equal(status.assets[1].entryPermission, null);
+  assert.equal(status.assets[0].mode, 'REDUCE_ONLY');
+  assert.deepEqual(status.shadowResearch, { completed: 11, flagged: 11, open: 4, pendingFunding: 0,
+    missedDailyMarks: 1, lastDailyReturnDay: '2026-11-10' });
+  const html = renderToStaticMarkup(createElement(BrainStatusPanel, { status, isDark: true }));
+  for (const expected of [/Paper-entry gate/, /Permitted/, /Evidence review/, /REDUCE_ONLY/, /Completed setup bar expired/, /2026-11-10/]) {
+    assert.match(html, expected);
+  }
+  await redis.set('brain:v6:status', { version: 'v6', runId: 'old-run', generatedAtMs: Date.now(),
+    shadowResearch: { completed: 42 } });
+  const stale = await (await GET(request())).json();
+  assert.equal(stale.shadowResearch, null);
+  assert.equal(stale.assets[0].entryPermission, null);
+});
+
+test('historical-only XSEC keeps its last rebalance and publishes no overdue schedule', async t => {
+  const redis = await fixture(t);
+  const { GET: getBook } = await import('@/app/api/book/route');
+  await redis.set('perp:tickers:v1', [{ symbol: 'BTCUSDT', markPrice: 60000 }]);
+  const lastAtMs = Date.UTC(2026, 9, 28, 2);
+  await redis.set('xsec:lastRebalanceAt', lastAtMs);
+  assert.equal((await (await getBook()).json()).rebalanceSchedule.overdue, true);
+  for (const retirementKey of [ACTIVE_AI_RUN_KEY, 'brain:v6:xsecMode']) {
+    await redis.set(retirementKey, retirementKey === ACTIVE_AI_RUN_KEY ? active : 'HISTORICAL_ONLY');
+    const historical = await (await getBook()).json();
+    assert.equal(historical.mode, 'HISTORICAL_ONLY');
+    assert.deepEqual(historical.rebalanceSchedule, { lastAtMs, nextDueAtMs: null, overdue: false });
+    await redis.del(retirementKey);
+  }
+});

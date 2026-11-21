@@ -1,5 +1,5 @@
 "use client";
-import { diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
+import { BrainStatusPanel, diagnosticMetric, type BrainStatusView } from './BrainStatusPanel';
 import CrossSectionalBook from "@/components/CrossSectionalBook";
 import Benchmarks from "@/components/Benchmarks";
 import { Component, ReactNode, useEffect, useState, useCallback, useRef } from "react";
@@ -1499,7 +1499,11 @@ function DashboardContent({ isSpectator, onLogout }: { isSpectator: boolean; onL
                   </div>
                 )}
 
-                {viewMode === "ai" && legacyStatusVerified && <details className={`border rounded-xl p-4 ${bgCard}`}>
+                {viewMode === "ai" && replacementActive && <details className={`border rounded-xl p-4 ${bgCard}`}>
+                  <summary className={`cursor-pointer text-xs font-mono ${textPrimary}`}>Paper-entry decisions and shadow research</summary>
+                  <div className="mt-3"><BrainStatusPanel status={brainStatus} isDark={isDark} /></div>
+                </details>}
+                {viewMode === "ai" && (legacyStatusVerified || replacementActive) && <details className={`border rounded-xl p-4 ${bgCard}`}>
                   <summary className={`cursor-pointer text-xs font-mono ${textPrimary}`}>Historical XSEC and benchmarks: excluded from v6 capital and evidence</summary>
                   <CrossSectionalBook isDark={isDark} plainLanguage={plainLanguage} />
                   <Benchmarks isDark={isDark} />

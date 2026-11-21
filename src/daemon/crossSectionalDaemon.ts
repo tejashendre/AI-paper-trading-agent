@@ -38,6 +38,7 @@ import {
   settleBookFunding,
   SHADOW_BOOK_EQUITY_CURVE_KEY,
   SHADOW_BOOK_PORTFOLIO_KEY,
+  replacementEpochRetiresXsec,
 } from "../lib/execution/bookRebalancer";
 import {
   BOOK_RISK_POLICY_VERSION,
@@ -478,11 +479,6 @@ async function runCycle() {
     lastFundingCheckAt = Date.now();
     await runFunding().catch(() => undefined);
   }
-}
-
-async function replacementEpochRetiresXsec():Promise<boolean>{
-  const redis=getRedis();
-  return await redis.get('brain:v6:activeRun')!==null||await redis.get('brain:v6:xsecMode')==='HISTORICAL_ONLY';
 }
 
 async function main() {
